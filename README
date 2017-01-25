@@ -1,0 +1,30 @@
+======================================================
+= Simulation and Inference of Neuron Networks (SINN) =
+=        Copyright (c) 2017 Alexandre René           =
+======================================================
+
+
+
+
+Development installation
+===============================
+
+- Create the virtual environment if required
+
+  python3 -m venv --system-site-packages ~/usr/venv/mackelab
+
+  You can omit --system-site-packages if you install all dependencies (like
+  SciPy) within the virtual environment.
+
+
+- Activate the virtual environment
+
+  source ~/usr/venv/mackelab/bin/activate
+
+
+- cd to the directory containing this file
+
+
+- Install the code in "Development mode"
+
+  pip install -e .
