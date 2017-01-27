@@ -16,12 +16,17 @@ librairies = set()
 if 'theano' in librairies:
     try:
         import theano
-        librairies.append('theano')
+        import theano.ifelse
     except ImportError:
         print("The theano library was not found.")
         librairies.remove('theano')
+        use_theano = False
+    finally:
+        use_theano = True
 
-if 'theano' in librairies:
+#######################
+# Set functions to cast to numerical float
+if use_theano
     if theano.config.floatX == 'float32':
         floatX = np.float32
     elif theano.config.floatX == 'float64':
@@ -31,6 +36,9 @@ if 'theano' in librairies:
 else:
     floatX = float
 
+
+######################
+# Set numerical tolerance
 
 # Check if we have single or double precision
 # Tolerance sets how close two numbers have to be to be consider equal
@@ -44,4 +52,4 @@ else:
     abs_tolerance = 1e-4
 
 
-# TODO: reload function
+# TODO: reload function. Should reload lib.py as well

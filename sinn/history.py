@@ -27,7 +27,7 @@ class History:
         + dt                    : Timestep size
         + _tarr      https://www.youtube.com/watch?v=WmVLcj-XKnM           : Ordered array of all time bins
         + _cur_tidx             : Tracker for the latest time bin for which we know history.
-        + _ext_compute_function : Function taking a time and returning the history
+        + _update_function : Function taking a time and returning the history
                                   at that time
 
     Functions deriving from this class **must** implement the following methods:
@@ -46,7 +46,7 @@ class History:
         the time point or an interval from the precalculated history.
         It does not check whether history has been calculated sufficiently far.
         '''
-        if isinstance(key, int):
+        if lib.istype(key, 'int'):
             […]
         elif isintance(key, slice):
             […]
@@ -112,7 +112,7 @@ class History:
         '''
     """
 
-    def __init__(self, t0, tn, dt, shape, f, iterative=True):
+    def __init__(self, t0, tn, dt, shape, f=None, iterative=True):
         """
         Initialize History object.
 
@@ -129,12 +129,15 @@ class History:
             E.g. a movie history might store NxN frames in an TxNxN array.
             (N,N) would be the shape, and T would be (tn-t0)/dt.
         f:  function (t) -> shape
-            Function, which takes a time (float) as argument and computes the
+            (Optional) Function, which takes a time (float) as argument and computes the
             associated time slice. Self-references to history are permitted,
             for times strictly smaller than t. This function should correspond
             to the mean of the true f over the interval [t, t+dt).
+            If this parameter is not specified when constructing the class, then
+            the `set_update_function` method must be called before the history
+            is required to update itself.
         iterative: bool (default: True)
-            If true, indicates that f must be computed iteratively. I.e. having
+            (Optional) If true, indicates that f must be computed iteratively. I.e. having
             computed f(t) is required in order to compute f(t+1). When false,
             when computed f for multiple times t, these will be passed as an array
             to f, using only one function call. Default is to force iterative computation.
@@ -149,7 +152,11 @@ class History:
         self.dt = np.array(dt, dtype=floatX)
         self._cur_tidx = -1    # Tracker for the latest time bin for which we
                                # know history.
-        self._ext_compute_function = f
+        if f is None:
+            # Set a default function that will raise an error when called
+            def f(*arg):
+                raise RuntimeError("The update function for {} is not set.".format(self))
+        self._update_function = f
         self._iterative = iterative
 
         self._tarr = np.arange(self.t0,
@@ -173,7 +180,7 @@ class History:
         may well refer to a time *before* t0.
         """
 
-        if isinstance(key, int):
+        if lib.istype(key, 'int'):
             end = key
             if end < 0:
                 end = len(self._tarr) + end       # a[-1] is the last element of a
@@ -201,6 +208,18 @@ class History:
             self.compute_up_to(end)
 
         return self.retrieve(key)
+
+    def set_update_function(self, func):
+        """
+        Parameters
+        ----------
+        func: callable
+            The update function. Its signature should be
+            `func(t)`
+        """
+        #def f(t):
+        #    return func(t, self.dt)
+        self._update_function = f
 
     def pad_time(self, before, after=0):
         """Extend the time array before and after the history. If called
@@ -242,20 +261,25 @@ class History:
 
     def compute_up_to(self, tidx):
         """Compute the history up to `tidx` inclusive."""
-        #TODO: Check if the module implementing _ext_compute_function, also
+        #TODO: Check if the module implementing _update_function, also
         #      has a function for compute_up_to  (might have special optimizations).
         #      Such optimized functions would work well for external inputs, but might
         #      be tricky to code if there are circular dependencies between histories.
-        time_slice = slice(self._cur_tidx + 1, tidx + 1)
+        lib.check(lib.istype(tidx, 'int'))
+        if tidx >= 0:
+            time_slice = slice(self._cur_tidx + 1, tidx + 1)
+        else:
+
+
         if not self._iterative:
             # Computation doesn't depend on history – just compute the whole thing in
             # one go
             raise NotImplementedError # TODO: Allow self.update to take multiple times
             self.update((time_slice.start, time_slice.stop),
-                        self._ext_compute_function(self._tarr[time_slice]))
+                        self._update_function(self._tarr[time_slice]))
         else:
             for i in range(*time_slice.indices(tidx + 1)):
-                self.update(i, self._ext_compute_function(self._tarr[i]))
+                self.update(i, self._update_function(self._tarr[i]))
 
     def get_time_array(self, include_padding=False):
         """Return the time array.
@@ -287,7 +311,7 @@ class History:
         If t is an index (i.e. int), return the time corresponding to t_idx.
         Else just return t
         """
-        if isinstance(t, int):
+        if lib.istype(t, 'int'):
             return self._tarr[0] + t*self.dt
         else:
             return t
@@ -297,7 +321,7 @@ class History:
          It is ok for the t to correspond to a time "in the future",
          and for the data array not yet to contain a point at that time.
          """
-         if isinstance(t, int):
+         if lib.istype(t, 'int'):
              # It's an easy error to make, specify a time as an int
              # Print a warning, just in case.
 #             print("Called get_t_idx on an integer ({}). Assuming this to be an INDEX".format(t)
@@ -348,7 +372,7 @@ class Spiketimes(History):
         # expected to continually improve as simulations get longer.
         if subscriptable:
             if hasattr(init_data, 'shape'):
-                assert(init_data.shape == self.shape)
+                lib.check(init_data.shape == self.shape)
 
             self.spike_times = [ [ deque([init_data[pop_idx][neuron_idx]])
                                    for pop_idx in range(len(self.shape)) ]
@@ -381,7 +405,7 @@ class Spiketimes(History):
             [:] is much more efficient than [0:] if you want all spike times, as
             it just returns the internal list without processing.
         '''
-        if isinstance(key, int) or isinstance(key, float):
+        if lib.istype(key, 'int') or lib.istype(key, 'float'):
             t = self.get_time(key)
             return [ [ 1 if t in spikelist else 0
                        for spikelist in pop ]
@@ -417,7 +441,7 @@ class Spiketimes(History):
             Each iterable is a list of neuron indices that fired in this bin.
         '''
         newidx = self.get_t_idx(tidx)
-        assert(newidx <= self._cur_tidx + 1)
+        lib.check(newidx <= self._cur_tidx + 1)
 
         time = self.get_time(tidx)
         for neuron_lst, spike_times in zip(value, self.spike_times):
@@ -545,8 +569,8 @@ class Series(History):
             The timeslice to store.
         '''
         # TODO: Allow specifying tidx as an array
-        assert(isinstance(tidx, int))
-        assert(tidx <= self._cur_tidx + 1)  # Ensure that we update at most one step in the future
+        lib.check(lib.istype(tidx, 'int'))
+        lib.check(tidx <= self._cur_tidx + 1)  # Ensure that we update at most one step in the future
         self._data[tidx] = value
         self._cur_tidx = tidx    # If we updated in the past, this will reduce _cur_tidx – which is what we want
 
@@ -591,7 +615,7 @@ class Series(History):
             If an array, its shape should match that of the history.
         """
         if hasattr(value, 'shape'):
-            assert(value.shape == self.shape)
+            lib.check(value.shape == self.shape)
             self.inf_bin = value
         else:
             self.inf_bin = np.ones(self.shape) * value
@@ -635,7 +659,7 @@ class Series(History):
 
         if component is None:
             return self._data[start:stop]
-        elif isinstance(component, int):
+        elif lib.istype(component, 'int'):
             return self._data[start:stop, component]
         elif len(component) == 1:
             return self._data[start:stop, component[0]]
@@ -650,10 +674,14 @@ class Series(History):
         computed history by some other means, or we specified it as a function
         (common for inputs).
 
-        A variety of types for `source` are accepted: functions, arrays, single values
+        Accepted types for `source`: functions, arrays, single values
         These are all converted into a time-series with the same time bins as the history.
 
         If source has the attribute `shape`, than it is checked to be the same as this history's `shape`
+
+        If no source is specified, the series own update function is used, provided
+        it has been previously defined.
+        can be used to force computation of the whole series.
         """
 
         data = None
@@ -661,10 +689,10 @@ class Series(History):
         tarr = self._tarr
 
         if source is None:
-            # Default to zero input
-            data = np.zeros(tarr.shape + self.shape)
+            # Default is to use series' own compute functions
+            self._compute_up_to(-1)
 
-        elif isinstance(source, float) or isinstance(source, int):
+        elif lib.istype(source, 'float') or lib.istype(source, 'int'):
             # Constant input
             data = np.ones(tarr.shape + self.shape) * source
 
@@ -693,9 +721,9 @@ class Series(History):
                     raise Exception("\nExternal input should be specified as either a NumPy array or a function"
                                   ) from e  #.with_traceback(e.__traceback__)
 
-        assert(data is not None)
-        assert(data.shape == self._data.shape)
-        assert(data.shape[0] == len(tarr))
+        lib.check(data is not None)
+        lib.check(data.shape == self._data.shape)
+        lib.check(data.shape[0] == len(tarr))
 
         self._data = data
         self._cur_tidx = len(tarr) - 1
@@ -704,7 +732,7 @@ class Series(History):
     def convolve(self, kernel, t, start=None, stop=None):
 
         # TODO: allow 'kernel' to be a plain function
-        dis_kernel = self._discretize_kernel(kernel)
+        dis_kernel = self.discretize_kernel(kernel)
 
         if start is None:
             start_idx = 0
@@ -718,14 +746,14 @@ class Series(History):
         if stop_idx == start_idx:
             # Integrating over a zero-width kernel
             return 0
-        assert(stop_idx > start_idx)
+        lib.check(stop_idx > start_idx)
         conv_len = stop_idx - start_idx
 
         if np.isscalar(t):
             tidx = self.get_t_idx(t)
             adjusted_tidx = tidx - dis_kernel.idx_shift
         elif isinstance(t, slice):
-            assert(t.step in [1, None])
+            lib.check(t.step in [1, None])
             tidx = slice(self.get_t_idx(t.start), self.get_t_idx(t.stop))
             output_tidx = slice(self.get_t_idx(t.start) - conv_len - dis_kernel.idx_shift,
                                 self.get_t_idx(t.stop) - conv_len - dis_kernel.idx_shift)
@@ -740,7 +768,7 @@ class Series(History):
         # When indexing data, make sure to use self[…] rather than self._data[…],
         # to trigger calculations if neccesary
         if np.isscalar(t):
-            assert(adjusted_tidx >= conv_len)
+            lib.check(adjusted_tidx >= conv_len)
             return self.dt * np.sum(dis_kernel[start_idx:stop_idx][::-1]
                                     * self[adjusted_tidx - conv_len:adjusted_tidx])
 
@@ -750,7 +778,7 @@ class Series(History):
                                          mode='valid')[output_tidx]
 
 
-    def _discretize_kernel(self, kernel):
+    def discretize_kernel(self, kernel):
 
         discretization_name = "discrete" + "_" + str(id(self))  # Unique id for discretized kernel
 

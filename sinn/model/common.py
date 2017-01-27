@@ -34,8 +34,6 @@ def make_shared_tensor_params(params):
                 param_lst.append(theano.shared(val))
         param_lst[-1].name = name
 
-        param_lst[-1].name = name
-
     return TParameters(*param_lst)
 
 def make_cst_tensor_params(param_names, params):
@@ -113,11 +111,38 @@ class Model:
 
 #TODO: Discretized kernels as a mixin class
 
-class ExpKernel:
+class Kernel:
+    """Generic Kernel class. All kernels should derive from this."""
+
+    def __init__(self, name, f, memory_time, t0=0):
+        """
+        Parameters
+        ----------
+        name: str
+            A unique identifier. May be printed to identify this kernel in output.
+        f: callable
+            Function defining the kernel. Signature: f(t) -> float
+        memory_time: float
+            Time after which we can truncate the kernel.
+        t0: float
+            The time corresponding to f(0). Kernel is zero before this time.
+        """
+        self.name = name
+        self.t0 = t0
+
+        self.eval = f
+        self.shape = f(0).shape
+        self.memory_time = memory_time
+
+    def convolve(self, hist, t):
+        return hist.convolve(self, t)
+
+
+class ExpKernel(Kernel):
     """An exponential kernel, of the form κ(s) = c exp(-(s-t0)/τ).
     """
 
-    def __init__(self, name, multiplier, decay_const, t0=0):
+    def __init__(self, name, multiplier, decay_const, memory_time=None, t0=0):
         """
         Parameters
         ----------
@@ -127,6 +152,9 @@ class ExpKernel:
             Constant multiplying the exponential. c, in the expression above.
         decay_const: float or ndarray
             Characteristic time of the exponential. τ, in the expression above.
+        memory_time: float
+            (Optional) Time after which we can truncate the kernel. If left
+            unspecified, calculated automatically.
         t0: float or ndarray
             Time at which the kernel 'starts', i.e. κ(t0) = c,
             and κ(t) = 0 for t < t0.
@@ -150,7 +178,10 @@ class ExpKernel:
         # Truncating after memory_time should not discard more than a fraction
         # config.truncation_ratio of the total area under the kernel.
         # (Divide \int_t^∞ by \int_0^∞ to get this formula.)
-        self.memory_time = -decay_const * np.log(config.truncation_ratio)
+        if memory_time is None:
+            self.memory_time = -decay_const * np.log(config.truncation_ratio)
+        else:
+            self.memory_time = memory_time
 
         self.last_t = None     # Keep track of the last convolution time
         self.last_conv = None  # Keep track of the last convolution result
@@ -174,3 +205,5 @@ class ExpKernel:
         self.last_hist = hist
 
         return result
+
+# TODO? : Indicator kernel ? Optimizations possible ?
