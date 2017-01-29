@@ -9,7 +9,9 @@ import numpy as np
 from collections import deque
 
 import sinn.config as config
+import sinn.shim as shim
 floatX = config.floatX
+lib = shim.lib
 
 class History:
     """
@@ -25,7 +27,7 @@ class History:
         + t0                    : Time at which history starts
         + tn                    : Time at which history ends
         + dt                    : Timestep size
-        + _tarr      https://www.youtube.com/watch?v=WmVLcj-XKnM           : Ordered array of all time bins
+        + _tarr                 : Ordered array of all time bins
         + _cur_tidx             : Tracker for the latest time bin for which we know history.
         + _update_function : Function taking a time and returning the history
                                   at that time
@@ -46,7 +48,7 @@ class History:
         the time point or an interval from the precalculated history.
         It does not check whether history has been calculated sufficiently far.
         '''
-        if lib.istype(key, 'int'):
+        if shim.istype(key, 'int'):
             […]
         elif isintance(key, slice):
             […]
@@ -146,12 +148,15 @@ class History:
         -------
         None
         """
-        self.shape = shape   # shape at a single time point, or number of elements in the system
+        self.shape = shape
+            # shape at a single time point, or number of elements
+            # in the system
         self.t0 = np.array(t0, dtype=floatX)
         self.tn = np.array(np.ceil( (tn - t0)/dt ) * dt + t0, dtype=floatX)
         self.dt = np.array(dt, dtype=floatX)
-        self._cur_tidx = -1    # Tracker for the latest time bin for which we
-                               # know history.
+        self._cur_tidx = -1
+            # Tracker for the latest time bin for which we
+            # know history.
         if f is None:
             # Set a default function that will raise an error when called
             def f(*arg):
@@ -167,6 +172,9 @@ class History:
 
         self.t0idx = 0       # the index associated to t0
         self._unpadded_length = len(self._tarr)  # Save this, because _tarr might change with padding
+        self._updates = None
+            # Stores a Theano update dictionary. This value can only be
+            # changed once.
 
     def __len__(self):
         return self._unpadded_length
@@ -176,29 +184,35 @@ class History:
         Ensure that history has been computed far enough to retrieve
         the desired timeslice, and then call the class' `retrieve` method.
 
-        NOTE: key will *not* be shifted to reflect history padding. So `key = 0`
+        NOTE: key will not be shifted to reflect history padding. So `key = 0`
         may well refer to a time *before* t0.
         """
 
-        if lib.istype(key, 'int'):
-            end = key
-            if end < 0:
-                end = len(self._tarr) + end       # a[-1] is the last element of a
+        if shim.istype(key, 'int'):
+            end = shim.ifelse(key >= 0,
+                             key,
+                             len(self._tarr) + key)
+                # key = -1 returns last element
 
         elif isinstance(key, slice):
             # Get the latest point queried for in `key`
             start, stop = key.start, key.stop
             if start is None:
                 start = 0
-            elif start < 0:
-                start = len(self._tarr) + start
+            else:
+                start = shim.ifelse(start >= 0,
+                                   start,
+                                   len(self._tarr) + start)
 
             if stop is None:
                 stop = len(self._tarr)
-            elif stop < 0:
-                stop = len(self._tarr) + stop     # a[3:-1] goes up to the *second last* element of a
+            else:
+                stop = shim.ifelse(stop >= 0,
+                                  stop,
+                                  len(self._tarr) + start)
 
-            end = max(start, stop - 1)  # `stop` is the first point beyond the array
+            end = shim.max_of_2(start, stop - 1)
+                # `stop` is the first point beyond the array
 
         else:
             raise ValueError("Trying to index using {} ({}). 'key' should be an integer or a slice"
@@ -219,7 +233,16 @@ class History:
         """
         #def f(t):
         #    return func(t, self.dt)
-        self._update_function = f
+        self._update_function = func
+
+    def set_range_update_function(self, func):
+        """
+        Parameters
+        ----------
+        func: callable
+            The update function. Its signature should be `func(slice)`
+        """
+        self.compute_range = func
 
     def pad_time(self, before, after=0):
         """Extend the time array before and after the history. If called
@@ -261,24 +284,25 @@ class History:
 
     def compute_up_to(self, tidx):
         """Compute the history up to `tidx` inclusive."""
-        #TODO: Check if the module implementing _update_function, also
-        #      has a function for compute_up_to  (might have special optimizations).
-        #      Such optimized functions would work well for external inputs, but might
-        #      be tricky to code if there are circular dependencies between histories.
-        lib.check(lib.istype(tidx, 'int'))
-        if tidx >= 0:
-            time_slice = slice(self._cur_tidx + 1, tidx + 1)
-        else:
+        shim.check(shim.istype(tidx, 'int'))
+        start =self.cur_tidx + 1
+        stop = ifelse(tidx >= 0,
+                      tidx + 1,
+                      len(self._tarr) + tidx + 1)
 
+        if self.compute_range is not None:
+            # A specialized function for computing multiple time points
+            # has been defined – use it.
+            self.compute_range(start, stop)
 
-        if not self._iterative:
+        elif not self._iterative:
             # Computation doesn't depend on history – just compute the whole thing in
             # one go
             raise NotImplementedError # TODO: Allow self.update to take multiple times
             self.update((time_slice.start, time_slice.stop),
                         self._update_function(self._tarr[time_slice]))
         else:
-            for i in range(*time_slice.indices(tidx + 1)):
+            for i in lib.arange(start, stop):
                 self.update(i, self._update_function(self._tarr[i]))
 
     def get_time_array(self, include_padding=False):
@@ -311,7 +335,7 @@ class History:
         If t is an index (i.e. int), return the time corresponding to t_idx.
         Else just return t
         """
-        if lib.istype(t, 'int'):
+        if shim.istype(t, 'int'):
             return self._tarr[0] + t*self.dt
         else:
             return t
@@ -321,7 +345,7 @@ class History:
          It is ok for the t to correspond to a time "in the future",
          and for the data array not yet to contain a point at that time.
          """
-         if lib.istype(t, 'int'):
+         if shim.istype(t, 'int'):
              # It's an easy error to make, specify a time as an int
              # Print a warning, just in case.
 #             print("Called get_t_idx on an integer ({}). Assuming this to be an INDEX".format(t)
@@ -335,6 +359,14 @@ class History:
                  print("(t0 above is the earliest time, including padding.)")
                  raise ValueError("Tried to obtain the time index of t=" + str(t) + ", but it does not seem to exist.")
              return int(round(t_idx))
+
+    def theano_reset(self):
+        """Allow theano functions to be called again.
+        It is assumed that variables in self._updates have been safely
+        updated externally.
+        """
+        self._updates = None
+
 
 class Spiketimes(History):
     """A class to store spiketrains.
@@ -372,7 +404,7 @@ class Spiketimes(History):
         # expected to continually improve as simulations get longer.
         if subscriptable:
             if hasattr(init_data, 'shape'):
-                lib.check(init_data.shape == self.shape)
+                shim.check(init_data.shape == self.shape)
 
             self.spike_times = [ [ deque([init_data[pop_idx][neuron_idx]])
                                    for pop_idx in range(len(self.shape)) ]
@@ -405,7 +437,7 @@ class Spiketimes(History):
             [:] is much more efficient than [0:] if you want all spike times, as
             it just returns the internal list without processing.
         '''
-        if lib.istype(key, 'int') or lib.istype(key, 'float'):
+        if shim.istype(key, 'int') or shim.istype(key, 'float'):
             t = self.get_time(key)
             return [ [ 1 if t in spikelist else 0
                        for spikelist in pop ]
@@ -441,7 +473,7 @@ class Spiketimes(History):
             Each iterable is a list of neuron indices that fired in this bin.
         '''
         newidx = self.get_t_idx(tidx)
-        lib.check(newidx <= self._cur_tidx + 1)
+        shim.check(newidx <= self._cur_tidx + 1)
 
         time = self.get_time(tidx)
         for neuron_lst, spike_times in zip(value, self.spike_times):
@@ -513,14 +545,14 @@ class Spiketimes(History):
             return  EwiseIter( [
                             EwiseIter( [ np.fromiter( ( sum( f(to_pop_idx, from_pop_idx)(t-s) for s in neuron_spike_times )
                                                         for neuron_spike_times in self.spike_times[from_pop_idx] ),
-                                                      dtype=theano.config.floatX )
+                                                      dtype=config.floatX )
                                         for from_pop_idx in range(len(self.shape)) ] )
                             for to_pop_idx in range(len(self.shape))] )
         else:
             return EwiseIter( [
                            EwiseIter( [ np.fromiter( ( sum( f(to_pop_idx, from_pop_idx)(t-s) if begin <= s < end else 0 for s in neuron_spike_times )
                                                        for neuron_spike_times in self.spike_times[from_pop_idx] ),
-                                                     dtype=theano.config.floatX )
+                                                     dtype=config.floatX )
                                         for from_pop_idx in range(len(self.shape)) ] )
                            for to_pop_idx in range(len(self.shape)) ] )
 
@@ -550,29 +582,78 @@ class Series(History):
         # Migration note: _data was previously called self.array
         self._data = np.zeros(self._tarr.shape + self.shape, dtype=floatX)
         self.inf_bin = np.zeros(self.shape, dtype=floatX)
-
+        self._original_data = None
+            # Stores a Theano update dictionary. This value can only be
+            # changed once.
 
     def retrieve(self, key):
-        '''A function taking either an index or a splice and returning respectively
-        the time point or an interval from the precalculated history.
-        It does not check whether history has been calculated sufficiently far.
+        '''A function taking either an index or a splice and returning
+        respectively the time point or an interval from the
+        precalculated history. It does not check whether history has
+        been calculated sufficiently far.
+
         '''
         return self._data[key]
 
     def update(self, tidx, value):
-        '''Store the a new time slice.
+        '''Store a new time slice.
         Parameters
         ----------
-        tidx: int
+        tidx: int or slice(int, int)
             The time index at which to store the value.
+            If specified as a slice, the length of the range should match
+            value.shape[0].
         value: timeslice
             The timeslice to store.
         '''
-        # TODO: Allow specifying tidx as an array
-        lib.check(lib.istype(tidx, 'int'))
-        lib.check(tidx <= self._cur_tidx + 1)  # Ensure that we update at most one step in the future
-        self._data[tidx] = value
-        self._cur_tidx = tidx    # If we updated in the past, this will reduce _cur_tidx – which is what we want
+        assert(not isinstance(tidx, theano.gof.Variable))
+            # time indices must not be variables
+        if isinstance(value, tuple):
+            # `value` is a theano.scan-style return tuple
+            assert(len(value) == 2)
+            updates = value[1]
+            assert(isinstance(updates, dict))
+            value = value[0]
+        else:
+            update = None
+
+        if shim.istype(tidx, 'int'):
+            end = tidx
+            shim.check(tidx <= self._cur_tidx + 1)
+                # Ensure that we update at most one step in the future
+        else:
+            assert(isinstance(tidx, slice))
+            shim.check(tidx.end > tidx.start)
+            end = tidx.end
+            shim.check(tidx.start <= self._cur_tidx + 1)
+                # Ensure that we update at most one step in the future
+
+        if isinstance(value, theano.gof.Variable):
+            if self._original_data is not None or self.updates is not None:
+                raise RuntimeError("You can only update data once within a "
+                                   "Theano computational graph. If you need "
+                                   "to update repeatedly, compile a single "
+                                   "update as a function, and call that "
+                                   "function repeatedly.")
+            self._original_data = self._data
+                # Persistently store the current _data
+                # It's important not to reuse variables after they've
+                # been used in set_subtensor, but they must remain
+                # in memory.
+            self._data = T.set_subtensor(self._original_data[tidx], value)
+            if updates is not None:
+                self.updates = updates
+            else:
+                self.updates = {}
+
+        else:
+            if updates is not None:
+                raise RuntimeError("For normal Python and Numpy functions, update variables in place rather than using an update dictionary.")
+            self._data[tidx] = value
+
+        self._cur_tidx = end
+            # If we updated in the past, this will reduce _cur_tidx
+            # – which is what we want
 
     def pad(self, before, after=0, **kwargs):
         '''Extend the time array before and after the history. If called
@@ -615,7 +696,7 @@ class Series(History):
             If an array, its shape should match that of the history.
         """
         if hasattr(value, 'shape'):
-            lib.check(value.shape == self.shape)
+            shim.check(value.shape == self.shape)
             self.inf_bin = value
         else:
             self.inf_bin = np.ones(self.shape) * value
@@ -659,7 +740,7 @@ class Series(History):
 
         if component is None:
             return self._data[start:stop]
-        elif lib.istype(component, 'int'):
+        elif shim.istype(component, 'int'):
             return self._data[start:stop, component]
         elif len(component) == 1:
             return self._data[start:stop, component[0]]
@@ -692,7 +773,7 @@ class Series(History):
             # Default is to use series' own compute functions
             self._compute_up_to(-1)
 
-        elif lib.istype(source, 'float') or lib.istype(source, 'int'):
+        elif shim.istype(source, 'float') or shim.istype(source, 'int'):
             # Constant input
             data = np.ones(tarr.shape + self.shape) * source
 
@@ -709,7 +790,7 @@ class Series(History):
                     # TODO: Use integration
                     data = np.concatenate(
                                         [np.asarray(external_input(t),
-                                                    dtype=theano.config.floatX)[np.newaxis,...] for t in tarr],
+                                                    dtype=config.floatX)[np.newaxis,...] for t in tarr],
                                         axis=0)
 
                     # Check that the obtained shape for the input is correct
@@ -721,13 +802,20 @@ class Series(History):
                     raise Exception("\nExternal input should be specified as either a NumPy array or a function"
                                   ) from e  #.with_traceback(e.__traceback__)
 
-        lib.check(data is not None)
-        lib.check(data.shape == self._data.shape)
-        lib.check(data.shape[0] == len(tarr))
+        shim.check(data is not None)
+        shim.check(data.shape == self._data.shape)
+        shim.check(data.shape[0] == len(tarr))
 
         self._data = data
         self._cur_tidx = len(tarr) - 1
         return data
+
+    def theano_reset(self, new_data):
+        """Refresh data to allow a new call returning theano variables.
+        `new_data` should not a complex type, like the result of a `scan`"""
+        self._data = new_data
+        self._original_data = None
+        super.theano_reset()
 
     def convolve(self, kernel, t, start=None, stop=None):
 
@@ -746,14 +834,14 @@ class Series(History):
         if stop_idx == start_idx:
             # Integrating over a zero-width kernel
             return 0
-        lib.check(stop_idx > start_idx)
+        shim.check(stop_idx > start_idx)
         conv_len = stop_idx - start_idx
 
         if np.isscalar(t):
             tidx = self.get_t_idx(t)
             adjusted_tidx = tidx - dis_kernel.idx_shift
         elif isinstance(t, slice):
-            lib.check(t.step in [1, None])
+            shim.check(t.step in [1, None])
             tidx = slice(self.get_t_idx(t.start), self.get_t_idx(t.stop))
             output_tidx = slice(self.get_t_idx(t.start) - conv_len - dis_kernel.idx_shift,
                                 self.get_t_idx(t.stop) - conv_len - dis_kernel.idx_shift)
@@ -768,7 +856,7 @@ class Series(History):
         # When indexing data, make sure to use self[…] rather than self._data[…],
         # to trigger calculations if neccesary
         if np.isscalar(t):
-            lib.check(adjusted_tidx >= conv_len)
+            shim.check(adjusted_tidx >= conv_len)
             return self.dt * np.sum(dis_kernel[start_idx:stop_idx][::-1]
                                     * self[adjusted_tidx - conv_len:adjusted_tidx])
 

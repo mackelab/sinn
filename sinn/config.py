@@ -16,7 +16,7 @@ librairies = set()
 if 'theano' in librairies:
     try:
         import theano
-        import theano.ifelse
+        #librairies.append('theano')
     except ImportError:
         print("The theano library was not found.")
         librairies.remove('theano')
@@ -36,6 +36,21 @@ if use_theano
 else:
     floatX = float
 
+#######################
+# Set functions to cast to an integer variable
+# These will be a Theano type, if Theano is used
+if use_theano
+    def cast_varint16(x):
+        return T.cast(x, 'int16')
+    def cast_varint32(x):
+        return T.cast(x, 'int32')
+    def cast_varint64(x):
+        return T.cast(x, 'int64')
+
+else:
+    cast_varint16 = np.int16
+    cast_varint32 = np.int32
+    cast_varint64 = np.int64
 
 ######################
 # Set numerical tolerance
@@ -51,5 +66,14 @@ else:
     rel_precision = 1e-4
     abs_tolerance = 1e-4
 
+#####################
+# Set rounding function
+def round(x):
+    try:
+        res = x.round()  # Theano variables have a round method
+    except AttributeError:
+        res = round(x)
+    return res
 
-# TODO: reload function. Should reload lib.py as well
+
+# TODO: reload function

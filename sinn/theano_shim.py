@@ -143,6 +143,28 @@ def ifelse(condition, then_branch, else_branch, name=None):
             return else_branch
 
 ######################
+# Shared variable constructor (no-op for Numpy)
+
+class FakeShared:
+
+    def __init__(value, name=None, strict=False, allow_downcast=None, **kwargs):
+        self.name = name
+        self._value = value
+
+    def get_value(self, borrow=False, return_internal_type=False):
+        return self._value
+
+    def set_value(new_value, borrow=False):
+        self._value = new_value
+
+def shared(value, name=None, strict=False, allow_downcast=None, **kwargs):
+    if config.use_theano:
+        return theano.shared(value, name, strict, allow_downcast, **kwargs)
+    else:
+        return FakeShared(value, name, strict, allow_downcast, **kwargs)
+
+
+######################
 # Interchangeable set_subtensor
 def set_subtensor(x, y, inplace=False, tolerate_aliasing=False):
     if config.use_theano and isinstance(x, theano.gof.Variable):
@@ -151,4 +173,13 @@ def set_subtensor(x, y, inplace=False, tolerate_aliasing=False):
         assert(x.base is not None)
             # Ensure that x is a view of another ndarray
         x[:] = y
+        return x.base
+
+def inc_subtensor(x, y, inplace=False, tolerate_aliasing=False):
+    if config.use_theano and isinstance(x, theano.gof.Variable):
+        return T.inc_subtensor(x, y, inplace, tolerate_aliasing)
+    else:
+        assert(x.base is not None)
+            # Ensure that x is a view of another ndarray
+        x[:] += y
         return x.base
