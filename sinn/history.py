@@ -174,7 +174,12 @@ class History:
         self._unpadded_length = len(self._tarr)  # Save this, because _tarr might change with padding
         self._updates = None
             # Stores a Theano update dictionary. This value can only be
-            # changed once.
+            # changed once, unless a call to self.theano_refresh is made
+        self._conv_cache = {}
+        self._old_conv_cache = {}
+            # Store convolutions so they don't have to be recalculated.
+            # The dictionary is keyed by the id of the kernels with which
+            # convolutions were computed.
 
     def __len__(self):
         return self._unpadded_length
@@ -375,6 +380,8 @@ class History:
         It is assumed that variables in self._updates have been safely
         updated externally.
         """
+        for key in self._old_conv_cache:
+            self._old_conv_cache[key] = None
         self._updates = None
 
 
@@ -833,25 +840,60 @@ class Series(History):
         self._original_data = None
         super.theano_reset()
 
-    def convolve(self, kernel, t, start=None, stop=None):
+    def convolve(self, kernel, t, kernel_start=None, kernel_stop=None):
+        """
+        Compute the convolution with `kernel`, with `kernel` truncated to between
+        `kernel_start` and `kernel_stop` (inclusive-exclusive bounds).
+
+        If `t` is a scalar, the convolution at that time is computed.
+        If `t` is a slice, the *entire* convolution, for all time lags, is computed,
+        even if `t` is a slice of a single element. It's then cached and
+        `t` is used to select the appropriate subarray.
+        Be aware that every call with different start and stop bounds may
+        trigger a copy of the cache.
+
+        `kernel_start`, `kernel_stop` may be specified as iterables, in which case
+        the convolution is computed for each pair of kernel bounds (the two
+        iterables should have the same bounds). This can be used to avoid copying
+        the cache when multiple calls are made.
+
+        If you are going to compute the convolution at most lags, it can be worth
+        using slices to trigger the caching mechanism and exploit possible
+        optimizations for batch convolutions.
+        """
+        # TODO: Use namedtuple for _conv_cache (.data & .idcs) ?
 
         # TODO: allow 'kernel' to be a plain function
         dis_kernel = self.discretize_kernel(kernel)
 
-        if start is None:
-            start_idx = 0
-        else:
-            start_idx = dis_kernel.get_t_idx(start)
-        if stop is None:
-            stop_idx = len(dis_kernel._tarr)
-        else:
-            stop_idx = dis_kernel.get_t_idx(stop)
+        # Test that kernel bound lists match and wrap them in list if necessary
+        try:
+            len(kernel_start)
+        except TypeError:
+            kernel_start = [kernel_start]
+        try:
+            len(kernel_stop)
+        except TypeError:
+            kernel_stop = [kernel_stop]
+        if not len(kernel_start) == len(kernel_stop):
+            raise ValueError("The lists of kernel start and stop bounds must "
+                             "have the same length")
 
-        if stop_idx == start_idx:
-            # Integrating over a zero-width kernel
-            return 0
-        shim.check(stop_idx > start_idx)
-        conv_len = stop_idx - start_idx
+        def get_start_idx(t):
+            return 0 if t is None else dis_kernel.get_t_idx(t)
+        def get_stop_idx(t):
+            return len(dis_kernel._tarr) if t is None else dis_kernel.get_t_idx(t)
+
+        kernel_idx_slices = [ slice( get_start_idx(start), get_stop_idx(stop) )
+                              for start, stop in zip(kernel_start, kernel_stop) ]
+
+#        if kernel_stop_idx == kernel_start_idx:
+#            # Integrating over a zero-width kernel
+#            return 0
+
+        shim.check(kernel_stop_idx > kernel_start_idx)
+        conv_len = kernel_stop_idx - kernel_start_idx
+            # FIXME: ensure that all full convolutions have length len()
 
         if np.isscalar(t):
             tidx = self.get_t_idx(t)
@@ -870,16 +912,59 @@ class Series(History):
             raise ValueError("'t' should be either a scalar or a slice object.")
 
         # When indexing data, make sure to use self[…] rather than self._data[…],
-        # to trigger calculations if neccesary
+        # to trigger calculations if necessary
         if np.isscalar(t):
             shim.check(adjusted_tidx >= conv_len)
-            return self.dt * np.sum(dis_kernel[start_idx:stop_idx][::-1]
-                                    * self[adjusted_tidx - conv_len:adjusted_tidx])
+            return self.dt * lib.sum(dis_kernel[kernel_start_idx:kernel_stop_idx][::-1]
+                                     * self[adjusted_tidx - conv_len:adjusted_tidx])
 
         else:
-            # self[:] returns a numpy array
-            return self.dt * np.convolve(self[:], dis_kernel[start_idx:stop_idx],
-                                         mode='valid')[output_tidx]
+            cached_idcs = [None]*len(kernel_idx_slices)
+            # Store a list of references to the cached convolutions we need
+            # Storing None indicates that the convolution with that kernel slice
+            # needs to be calculated
+            if id(kernel) in self._conv_cache:
+                for i, slc in enumerate(kernel_idx_slices):
+                    try:
+                        cached_idcs[i] = self._conv_cache[id(kernel)]['index list'][slc]
+                    except KeyError:
+                        pass
+            else:
+                # Create a new empty cache
+                self._conv_cache[id(kernel)] = {
+                    'data':       shim.shared(np.zeros((0, len(self)) + self.shape)),
+                    'index list': {}
+                    }
+                self._old_conv_cache[id(kernel)] = None
+
+            if None in cached_idcs:
+                # There are new convolutions we need to compute
+                new_data = self.dt * lib.stack( [
+                      lib.convolve(self[:], dis_kernel[slc], mode='valid')
+                      for slc, cache_idx in zip(kernel_idx_slices, cache_idcs)
+                      if cache_idx is None ] )
+                # Add the indices they will have in the newly augmented cache
+                k = self._conv_cache[id(kernel)]['data'].get_value().shape[0]
+                for i, slc in enumerate(kernel_idx_slices) if slc is None:
+                    kernel_idx_slices[i] = k
+                    self._conv_cache[id(kernel)]['index list'][slc] = k
+                    k += 1
+                # Create the new data cache
+                if config.use_theano:
+                    assert(self._old_conv_cache is None)
+                    # Make the old cache persistent, otherwise updates mechanism will break
+                    self._old_conv_cache[id(kernel)]['data'] = self._conv_cache[id(kernel)]['data']
+                    self._conv_cache[id(kernel)]['data'] = lib.concatenate(
+                          (self._old_conv_cache[id(kernel)]['data'], new_data), axis = 0 )
+                    # This is a shared variable, so add to the updates list
+                    self._updates[self._old_conv_cache[id(kernel)]['data']] = \
+                          self._conv_cache[id(kernel)]['data']
+                else:
+                    # Don't create _old_conv_cache and allow reuse of _conv_cache memory
+                    self._conv_cache = lib.concatenate(
+                          (self._conv_cache[id(kernel)], new_data), axis = 0 )
+
+            return self._conv_cache[id(kernel)]['data'][cached_idcs][:,output_tidx]
 
 
     def discretize_kernel(self, kernel):
