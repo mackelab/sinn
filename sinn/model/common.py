@@ -148,16 +148,18 @@ class ExpKernel(Kernel):
         ----------
         name: str
             A unique identifier. May be printed to identify this kernel in output.
-        multiplier: float or ndarray
+        multiplier: float, ndarray, Theano var
             Constant multiplying the exponential. c, in the expression above.
-        decay_const: float or ndarray
+        decay_const: float, ndarray, Theano var
             Characteristic time of the exponential. τ, in the expression above.
         memory_time: float
             (Optional) Time after which we can truncate the kernel. If left
             unspecified, calculated automatically.
+            Must *not* be a Theano variable.
         t0: float or ndarray
             Time at which the kernel 'starts', i.e. κ(t0) = c,
-            and κ(t) = 0 for t < t0.
+            and κ(t) = 0 for t< t0.
+            Must *not* be a Theano variable.
         """
         self.name = name
         self.multiplier = multiplier
@@ -165,21 +167,21 @@ class ExpKernel(Kernel):
         self.t0 = t0
 
         def f(s):
-            return self.multiplier * np.exp(-(s-self.t0) / self.decay_const)
+            return self.multiplier * lib.exp(-(s-self.t0) / self.decay_const)
         self.eval = f
 
         try:
             self.shape = f(0).shape
         except ValueError:
             raise ValueError("The shapes of the parameters 'multiplier', 'decay_const' and 't0' don't seem to match.")
-        except:
-            raise
 
         # Truncating after memory_time should not discard more than a fraction
         # config.truncation_ratio of the total area under the kernel.
-        # (Divide \int_t^∞ by \int_0^∞ to get this formula.)
+        # (Divide ∫_t^∞ by ∫_0^∞ to get this formula.)
         if memory_time is None:
-            self.memory_time = -decay_const * np.log(config.truncation_ratio)
+            # We want a numerical value, so we use the test value associated to the variables
+            decay_const_val = shim.get_test_value(decay_const)
+            self.memory_time = -decay_const_val * np.log(config.truncation_ratio)
         else:
             self.memory_time = memory_time
 
@@ -197,7 +199,7 @@ class ExpKernel(Kernel):
             result = hist.convolve(self, t)
         else:
             Δt = t - self.last_t
-            result = ( np.exp(-Δt/self.decay_const) * self.last_conv
+            result = ( lib.exp(-Δt/self.decay_const) * self.last_conv
                        + hist.convolve(self, t, 0, Δt) )
 
         self.last_t = t

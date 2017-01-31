@@ -231,8 +231,6 @@ class History:
             The update function. Its signature should be
             `func(t)`
         """
-        #def f(t):
-        #    return func(t, self.dt)
         self._update_function = func
 
     def set_range_update_function(self, func):
@@ -248,6 +246,10 @@ class History:
         """Extend the time array before and after the history. If called
         with one argument, array is only padded before. If necessary,
         padding amounts are reduced to make them exact multiples of dt.
+
+        FUTURE WARNING: In the future, will check if the history is
+        already padded and only ensure that there is at least as much
+        padding time as `before` or `after`.
 
         Parameters
         ----------
@@ -266,6 +268,7 @@ class History:
             A integer tuple `(n, m)` where `n` is the number of bins added
             before, and `m` the number of bins added after
         """
+        # TODO: Only add as much padding as needed
 
         before_idx_len = int(before // self.dt)
         after_idx_len = int(after // self.dt)
@@ -293,13 +296,12 @@ class History:
         if self.compute_range is not None:
             # A specialized function for computing multiple time points
             # has been defined – use it.
-            self.compute_range(start, stop)
+            self.compute_range(self._tarr[slice(start, stop)])
 
         elif not self._iterative:
             # Computation doesn't depend on history – just compute the whole thing in
             # one go
-            raise NotImplementedError # TODO: Allow self.update to take multiple times
-            self.update((time_slice.start, time_slice.stop),
+            self.update(slice(start,stop),
                         self._update_function(self._tarr[time_slice]))
         else:
             for i in lib.arange(start, stop):
@@ -533,6 +535,12 @@ class Spiketimes(History):
         ndarray of shape `self.shape`
 
         '''
+        # TODO: To avoid iterating over the entire list, save the last `end`
+        #       time and an array (one element per neuron) of the index of the latest
+        #       spike before `end`. Iterations starting at `end` can then exclude all
+        #       spikes before that point.
+        #       Use `np.find` to get the `start` and `end` index, and sum between them
+
         if callable(kernel):
             f = kernel
         else:
@@ -685,21 +693,21 @@ class Series(History):
 
         self._data = np.pad(self._data, pad_width, **kwargs)
 
-    def set_inf_bin(self, value):
-        """
-        Set the ∞-bin with `value`.
+    # def set_inf_bin(self, value):
+    #     """
+    #     Set the ∞-bin with `value`.
 
-        Parameters
-        ----------
-        value: float or ndarray
-            If a float, every component of the ∞-bin will be set to this value.
-            If an array, its shape should match that of the history.
-        """
-        if hasattr(value, 'shape'):
-            shim.check(value.shape == self.shape)
-            self.inf_bin = value
-        else:
-            self.inf_bin = np.ones(self.shape) * value
+    #     Parameters
+    #     ----------
+    #     value: float or ndarray
+    #         If a float, every component of the ∞-bin will be set to this value.
+    #         If an array, its shape should match that of the history.
+    #     """
+    #     if hasattr(value, 'shape'):
+    #         shim.check(value.shape == self.shape)
+    #         self.inf_bin = value
+    #     else:
+    #         self.inf_bin = np.ones(self.shape) * value
 
     def zero(self):
         """Zero out the series. The initial data point will NOT be zeroed"""
@@ -880,7 +888,7 @@ class Series(History):
             elif config.integration_precision == 2:
                 # TODO: Avoid recalculating eval at the same places by writing
                 #       a _compute_up_to function and passing that to the series
-                kernel_func = lambda t: (kernel.eval(t) + kernel.eval(t+self.dt))
+                kernel_func = lambda t: (kernel.eval(t) + kernel.eval(t+self.dt)) / 2
             else:
                 # TODO: higher order integration with trapeze or simpson's rule
                 raise NotImplementedError
@@ -888,6 +896,7 @@ class Series(History):
             # The kernel may start at a position other than zero, resulting in a shift
             # of the index corresponding to 't' in the convolution
             idx_shift = int(round(kernel.t0 / self.dt))
+                # We don't use shim.round because time indices must be Python numbers
             t0 = idx_shift * self.dt  # Ensure the discretized kernel's t0 is a multiple of dt
 
             dis_kernel = Series(t0, t0 + kernel.memory_time,

@@ -33,7 +33,7 @@ if config.use_theano:
     import theano.tensor as T
     import theano.tensor as lib
     import theano.ifelse
-    from theano.tensor.shared_randomstreams import RandomStreams  # CPU only
+    import theano.tensor.shared_randomstreams  # CPU only
     #from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams  # CPU & GPU
 
     inf = 1e12
@@ -57,6 +57,20 @@ def check(stmt):
             return None
         else:
             assert(stmt.tag.test_value)
+
+######################
+# Retrieving test values
+def get_test_value(var):
+    if isinstance(var, theano.gof.Variable):
+        try:
+            retval = var.tag.test_value
+        except AttributeError:
+            raise AttributeError("You've attempted to execute a function that "
+                                 "requires a test_value for the variable {} to "
+                                 "be set, and this value is not set.".format(var))
+    else:
+        retval = decay_const
+    return retval
 
 ######################
 # Type checking
@@ -114,12 +128,21 @@ def max_of_2(x, y):
 
 #####################
 # Set random functions
+
+class ShimmedRandomStreams:
+    def __init__(self, seed=314):
+        np.random.seed(seed)
+
+    def normal(size=None, avg=0.0, std=1.0, ndim=None, dtype=None):
+        return np.random(loc=avg, scale=std, size=size).astype(dtype)
+
 if config.use_theano:
-    def seed(seed=None):
-        global rndstream
-        rndstream = RandomStreams(seed=314)
+    RandomStreams = theano.tensor.shared_randomstreams.RandomStreams
+
 else:
-    seed = np.random.seed
+    RandomStreams = ShimmedRandomStreams
+
+
 
 ################################################
 # Define Theano placeins, which execute
@@ -145,7 +168,7 @@ def ifelse(condition, then_branch, else_branch, name=None):
 ######################
 # Shared variable constructor (no-op for Numpy)
 
-class FakeShared:
+class ShimmedShared:
 
     def __init__(value, name=None, strict=False, allow_downcast=None, **kwargs):
         self.name = name
@@ -161,7 +184,7 @@ def shared(value, name=None, strict=False, allow_downcast=None, **kwargs):
     if config.use_theano:
         return theano.shared(value, name, strict, allow_downcast, **kwargs)
     else:
-        return FakeShared(value, name, strict, allow_downcast, **kwargs)
+        return ShimmedShared(value, name, strict, allow_downcast, **kwargs)
 
 
 ######################
