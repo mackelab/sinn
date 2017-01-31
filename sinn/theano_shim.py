@@ -80,17 +80,30 @@ def istype(obj, type_str):
     ----------
     obj: object
         The object of which we want to check the type.
-    type_str: string
+    type_str: string or iterable
         If `obj` is of this type, the function returns True,
         otherwise it returns False. Valid values of `type_str`
         are those expected for a dtype. Examples are:
         - 'int', 'int32', etc.
         - 'float', 'float32', etc.
+        `type_str` can also be an iterable of aforementioned
+        strings. Function will return True if `obj` is of any
+        of the specifed types
+
+    Returns
+    -------
+    bool
     """
-    if not config.use_theano or not isinstance(x, theano.gof.Variable):
-        return 'int' in str(np.asarray(x).dtype)
+    # Wrap type_str if it was not passed as an iterable
+    if instance(type_str, str):
+        type_str = [type_str]
+    # Check type
+    if not config.use_theano or not isinstance(obj, theano.gof.Variable):
+        return any(ts in str(np.asarray(obj)).dtype for ts in type_str)
+            # We cast to string to be consistent with Theano, which uses
+            # strings for it's dtypes
     else:
-        return type_str in x.dtype
+        return any(ts in obj.dtype for ts in type_str)
 
 #######################
 # Set functions to cast to an integer variable
@@ -130,7 +143,7 @@ def max_of_2(x, y):
 # Set random functions
 
 class ShimmedRandomStreams:
-    def __init__(self, seed=314):
+    def __init__(self, seed=None):
         np.random.seed(seed)
 
     def normal(size=None, avg=0.0, std=1.0, ndim=None, dtype=None):

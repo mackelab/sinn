@@ -27,53 +27,60 @@ if 'theano' in librairies:
 #######################
 # Set functions to cast to numerical float
 if use_theano
-    if theano.config.floatX == 'float32':
-        floatX = np.float32
-    elif theano.config.floatX == 'float64':
+    floatX = theano.config.floatX
+    if floatX == 'float32':
+        cast_floatX = np.float32
+    elif floatX == 'float64':
         floatX = np.float64
     else:
         raise ValueError("The theano float type is set to '{}', which is unrecognized.".format(theano.config.floatX))
 else:
-    floatX = float
+    cast_floatX = float
+    if floatX(0.09) * 1e10 == 9e8:
+        # Evaluates to true on a 64-bit float, but not a 32-bit.
+        floatX = 'float64'
+    else:
+        floatX = 'float32'
 
-#######################
-# Set functions to cast to an integer variable
-# These will be a Theano type, if Theano is used
-if use_theano
-    def cast_varint16(x):
-        return T.cast(x, 'int16')
-    def cast_varint32(x):
-        return T.cast(x, 'int32')
-    def cast_varint64(x):
-        return T.cast(x, 'int64')
-
-else:
-    cast_varint16 = np.int16
-    cast_varint32 = np.int32
-    cast_varint64 = np.int64
 
 ######################
 # Set numerical tolerance
+# This determines how close two numbers have to be to be consider equal
 
-# Check if we have single or double precision
-# Tolerance sets how close two numbers have to be to be consider equal
-if floatX(0.09) * 1e10 == 9e8:
-    # Double precision
-    rel_tolerance = 1e-12
-    abs_tolerance = 1e-12
-else:
-    # Float32 has ~10 significant digits -> leaves 6
-    rel_precision = 1e-4
-    abs_tolerance = 1e-4
+precision_dict = {
+    '32': {'abs': 1e-4,
+           'rel': 1e-4},
+    '64': {'abs': 1e-12,
+           'rel': 1e-12}}
 
-#####################
-# Set rounding function
-def round(x):
-    try:
-        res = x.round()  # Theano variables have a round method
-    except AttributeError:
-        res = round(x)
-    return res
+def get_tolerance(var, tol_type):
+    """
+    Parameters
+    ----------
+    var: variable
+        Variable for which we want to know the numerical tolerance.
+    tol_type:
+        Tolerance type. One of 'abs' or 'rel'.
 
+    Returns
+    -------
+    float
+    """
+    var_type = np.asarray(var).dtype
+    if var_type == np.float32:
+        return precision_dict['32'][tol_type]
+    elif var_type == np.float64:
+        return precision_dict['64'][tol_type]
+    else:
+        raise ValueError("Unknown dtype '{}'.".format(dtype_str))
 
-# TODO: reload function
+def get_abs_tolerance(var):
+    get_tolerance(var, 'abs')
+
+def get_rel_tolerance(var):
+    get_tolerance(var, 'rel'
+
+# Direct access to the floatX tolerance:
+rel_tolerance = get_rel_tolerance(floatX(1))
+abs_tolerance = get_abs_tolerance(floatX(1))
+

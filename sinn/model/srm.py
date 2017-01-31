@@ -158,13 +158,20 @@ class Activity(Model):
             shim.check(lib.sum(self.occN[1:]) == self.params.N)
         self.occN = shim.shared(self._occN_arr)
 
-    def a_onestep(self, tidx, lastA, JsᕽAᐩI, occN):
+        self.rndstream = shim.RandomStreams(seed=314)
+
+    def check_indexing(t):
+        # On reason this test might fail is if A and a have different padding
+        # and indices are used (rather than times)
+        assert(self.a._tarr[self.a.get_t_idx(t)] == self.A._tarr[A.get_t_idx])
+
+    def a_onestep(self, t, lastA, JsᕽAᐩI, occN):
 
         # Update θ
         θ = self.η
 
         # Update h
-        h = self.κ.convolve(JsᕽAᐩI, tidx)
+        h = self.κ.convolve(JsᕽAᐩI, t)
 
         # Update ρ
         ρ = self.c * lib.concatenate( ( np.ones(self.a.shape), # ∞-bin
@@ -176,7 +183,7 @@ class Activity(Model):
         #  intermediate value – don't use it except in next line)
         # ( superfluous bin => len(occN) = len(ρ) + 1 )
         new_occN = lib.concatenate(
-                           (occN[1:] * (1 - self.ρ*self.dt),
+                           (occN[1:] * (1 - self.ρ*self.a.dt),
                             lastA.dimshuffle('x', 0)),
                            axis=0)
         # Combine bins 0 and 1 into bin 1
@@ -186,44 +193,57 @@ class Activity(Model):
         return (lib.sum( self.ρ * new_new_occN[1:], axis=1 ),
                 {occN: new_new_occN})
 
-    def a_fn(self, tidx):
-        return a_onestep(self, tidx, self.A[tidx-1], self.JsᕽAᐩI, self.occN)
+    def a_fn(self, t):
+        # Check that the indexing in a and A match
+        self.check_indexing(t)
+        # Compute a(t)
+        return a_onestep(self, t, self.A[t - self.A.dt], self.JsᕽAᐩI, self.occN)
 
     def compute_range_a(self, t_array):
+        """
+        Parameters
+        ----------
+        t_array: ndarray
+            Array of floats or ints. If floats, interpreted as times; if ints,
+            interpreted as *indices* to a._tarr.
+            The elements of `t_array` must be in ascending order and correspond
+            to successive steps (no time bins are skipped). For performance
+            reasons this is not enforced, so do be careful.
+        """
 
-        lib.check( issubdtype(t_array.dtype, np.integer)
-                   and t_array[0] < t_array[-1] )
+        lib.check( t_array[0] < t_array[-1] )
             # We don't want to check that the entire array is ordered; this is a compromise
         lib.check( t_array[0] == self.cur_tidx + 1 )
             # Because we only store the last value of occN, calculation
             # must absolutely be done iteratively
+        self.check_indexing(t_array[0])
+            # Check that the indexing in a and A match
 
         if not use_theano:
 
-            def loop(tidx):
-                res_a, updates = a_fn(tidx)
+            def loop(t):
+                res_a, updates = a_fn(t)
                 occN.set_value(updates[self.occN])
                 return res_a
 
-            return [loop(tidx) for tidx in t_array]
+            return [loop(t) for t in t_array]
 
         else:
-            (res_a, updates) = theano.scan(
-                                          self.a_fn,
-                                          sequences=[t_array,
-                                                     self.A[start:stop]]
-                                          outputs_info=[None],
-                                          non_sequences=[self.JsᕽAᐩI, self.occN],
-                                          name='a scan')
+            (res_a, updates) = theano.scan(self.a_onestep,
+                                           sequences=[t_array,
+                                                      self.A[start:stop]]
+                                           outputs_info=[None],
+                                           non_sequences=[self.JsᕽAᐩI, self.occN],
+                                           name='a scan')
                 # NOTE: time index sequence must be specified as a numpy
                 # array, because History expects time indices to be
                 # non-Theano variables
             return res_a, updates
 
-    def A_fn(self, tidx):
-        return np.random.normal(loc=self.a[tidx],
-                                scale=lib.sqrt(self.a[tidx]/self.params.N/dt),
-                                size=self.A.shape)
+    def A_fn(self, t):
+        return self.rndstream.normal(size=self.A.shape,
+                                     avg=self.a[t],
+                                     std=lib.sqrt(self.a[t]/self.params.N/dt))
 
     def update_params(self, new_params):
         """Change parameter values, and refresh the affected kernels."""
@@ -235,5 +255,3 @@ class Activity(Model):
         #TODO: delete all discretizations of affected kernels
 
         raise NotImplementedError
-
-        pass

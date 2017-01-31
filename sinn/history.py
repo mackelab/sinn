@@ -188,15 +188,18 @@ class History:
         may well refer to a time *before* t0.
         """
 
-        if shim.istype(key, 'int'):
-            end = shim.ifelse(key >= 0,
-                             key,
+        if shim.istype(key, ('int', 'float')):
+            tidx = self.get_t_idx(key)
+                # If `key` is a negative integer, returns as is
+                # If `key` is a negative float, returns a positive index integer
+            end = shim.ifelse(tidx >= 0,
+                             tidx,
                              len(self._tarr) + key)
                 # key = -1 returns last element
 
         elif isinstance(key, slice):
             # Get the latest point queried for in `key`
-            start, stop = key.start, key.stop
+            start, stop = self.get_t_idx(key.start), self.get_t_idx(key.stop)
             if start is None:
                 start = 0
             else:
@@ -215,7 +218,8 @@ class History:
                 # `stop` is the first point beyond the array
 
         else:
-            raise ValueError("Trying to index using {} ({}). 'key' should be an integer or a slice"
+            raise ValueError("Trying to index using {} ({}). 'key' should be an "
+                             "integer, a float, or a slice of integers and floats"
                              .format(key, type(key)))
 
         if end > self._cur_tidx:
@@ -354,8 +358,12 @@ class History:
 #                   + " (rather than a time) and returning unchanged.")
              return t
          else:
+             if t * config.get_rel_tolerance(t) > dt:
+                 raise ValueError("You've tried to convert a time (float) into an index "
+                                  "(int), but the value is too large to ensure the absence "
+                                  "of numerical errors. Try using a higher precision type.")
              t_idx = (t - self._tarr[0]) / self.dt
-             if abs(t_idx - round(t_idx)) > config.abs_tolerance / self.dt:
+             if abs(t_idx - round(t_idx)) > config.get_abs_tolerance(t) / self.dt:
                  print("t: {}, t0: {}, t-t0: {}, t_idx: {}, dt: {}"
                      .format(t, self._tarr[0], t - self._tarr[0], t_idx, self.dt) )
                  print("(t0 above is the earliest time, including padding.)")
