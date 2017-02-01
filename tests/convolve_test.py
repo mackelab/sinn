@@ -22,7 +22,7 @@ def convolve_test():
         return np.sin(t)
     data = history.Series(0, 4, dt, (), data_fn)
 
-    kern = com.ExpKernel('κ', 1, τ, 0)
+    kern = com.ExpKernel('κ', 1, τ)
 
     def true_conv(t, a=0, b=np.inf):
         """The analytical solution to the convolution"""

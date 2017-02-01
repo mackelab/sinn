@@ -13,6 +13,7 @@ truncation_ratio = 0.001
 librairies = set()
 #librairies = ['theano']
 
+
 if 'theano' in librairies:
     try:
         import theano
@@ -23,10 +24,12 @@ if 'theano' in librairies:
         use_theano = False
     finally:
         use_theano = True
+else:
+    use_theano = False
 
 #######################
 # Set functions to cast to numerical float
-if use_theano
+if use_theano:
     floatX = theano.config.floatX
     if floatX == 'float32':
         cast_floatX = np.float32
@@ -36,7 +39,7 @@ if use_theano
         raise ValueError("The theano float type is set to '{}', which is unrecognized.".format(theano.config.floatX))
 else:
     cast_floatX = float
-    if floatX(0.09) * 1e10 == 9e8:
+    if cast_floatX(0.09) * 1e10 == 9e8:
         # Evaluates to true on a 64-bit float, but not a 32-bit.
         floatX = 'float64'
     else:
@@ -72,15 +75,15 @@ def get_tolerance(var, tol_type):
     elif var_type == np.float64:
         return precision_dict['64'][tol_type]
     else:
-        raise ValueError("Unknown dtype '{}'.".format(dtype_str))
+        raise ValueError("Unknown dtype '{}'.".format(var_type))
 
 def get_abs_tolerance(var):
-    get_tolerance(var, 'abs')
+    return get_tolerance(var, 'abs')
 
 def get_rel_tolerance(var):
-    get_tolerance(var, 'rel'
+    return get_tolerance(var, 'rel')
 
 # Direct access to the floatX tolerance:
-rel_tolerance = get_rel_tolerance(floatX(1))
-abs_tolerance = get_abs_tolerance(floatX(1))
+rel_tolerance = get_rel_tolerance(cast_floatX(1))
+abs_tolerance = get_abs_tolerance(cast_floatX(1))
 

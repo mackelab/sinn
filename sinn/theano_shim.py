@@ -22,7 +22,7 @@ Pointers for writing theano switches
 # TODO?: Move functions to another module, to minimise possible clashes with the * imports ?
 
 import numpy as np
-import config
+import sinn.config as config
 
 #######################
 # Import the appropriate numerical library into this namespace,
@@ -61,7 +61,7 @@ def check(stmt):
 ######################
 # Retrieving test values
 def get_test_value(var):
-    if isinstance(var, theano.gof.Variable):
+    if config.use_theano and isinstance(var, theano.gof.Variable):
         try:
             retval = var.tag.test_value
         except AttributeError:
@@ -69,7 +69,7 @@ def get_test_value(var):
                                  "requires a test_value for the variable {} to "
                                  "be set, and this value is not set.".format(var))
     else:
-        retval = decay_const
+        retval = var
     return retval
 
 ######################
@@ -95,11 +95,11 @@ def istype(obj, type_str):
     bool
     """
     # Wrap type_str if it was not passed as an iterable
-    if instance(type_str, str):
+    if isinstance(type_str, str):
         type_str = [type_str]
     # Check type
     if not config.use_theano or not isinstance(obj, theano.gof.Variable):
-        return any(ts in str(np.asarray(obj)).dtype for ts in type_str)
+        return any(ts in str(np.asarray(obj).dtype) for ts in type_str)
             # We cast to string to be consistent with Theano, which uses
             # strings for it's dtypes
     else:
@@ -108,7 +108,7 @@ def istype(obj, type_str):
 #######################
 # Set functions to cast to an integer variable
 # These will be a Theano type, if Theano is used
-if config.use_theano
+if config.use_theano:
     def cast_varint16(x):
         return T.cast(x, 'int16')
     def cast_varint32(x):
@@ -183,14 +183,14 @@ def ifelse(condition, then_branch, else_branch, name=None):
 
 class ShimmedShared:
 
-    def __init__(value, name=None, strict=False, allow_downcast=None, **kwargs):
+    def __init__(self, value, name=None, strict=False, allow_downcast=None, **kwargs):
         self.name = name
         self._value = value
 
     def get_value(self, borrow=False, return_internal_type=False):
         return self._value
 
-    def set_value(new_value, borrow=False):
+    def set_value(self, new_value, borrow=False):
         self._value = new_value
 
 def shared(value, name=None, strict=False, allow_downcast=None, **kwargs):

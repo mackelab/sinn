@@ -9,7 +9,7 @@ import numpy as np
 from collections import deque
 
 import sinn.config as config
-import sinn.shim as shim
+import sinn.theano_shim as shim
 floatX = config.floatX
 lib = shim.lib
 
@@ -162,6 +162,7 @@ class History:
             def f(*arg):
                 raise RuntimeError("The update function for {} is not set.".format(self))
         self._update_function = f
+        self._compute_range = None
         self._iterative = iterative
 
         self._tarr = np.arange(self.t0,
@@ -172,7 +173,7 @@ class History:
 
         self.t0idx = 0       # the index associated to t0
         self._unpadded_length = len(self._tarr)  # Save this, because _tarr might change with padding
-        self._updates = None
+        self._theano_updates = {}
             # Stores a Theano update dictionary. This value can only be
             # changed once, unless a call to self.theano_refresh is made
         self._conv_cache = {}
@@ -204,20 +205,21 @@ class History:
 
         elif isinstance(key, slice):
             # Get the latest point queried for in `key`
-            start, stop = self.get_t_idx(key.start), self.get_t_idx(key.stop)
-            if start is None:
+            if key.start is None:
                 start = 0
             else:
+                start = self.get_t_idx(key.start)
                 start = shim.ifelse(start >= 0,
                                    start,
                                    len(self._tarr) + start)
 
-            if stop is None:
+            if key.stop is None:
                 stop = len(self._tarr)
             else:
+                stop = self.get_t_idx(key.stop)
                 stop = shim.ifelse(stop >= 0,
-                                  stop,
-                                  len(self._tarr) + start)
+                                   stop,
+                                   len(self._tarr) + start)
 
             end = shim.max_of_2(start, stop - 1)
                 # `stop` is the first point beyond the array
@@ -249,7 +251,7 @@ class History:
         func: callable
             The update function. Its signature should be `func(slice)`
         """
-        self.compute_range = func
+        self._compute_range = func
 
     def pad_time(self, before, after=0):
         """Extend the time array before and after the history. If called
@@ -297,15 +299,15 @@ class History:
     def compute_up_to(self, tidx):
         """Compute the history up to `tidx` inclusive."""
         shim.check(shim.istype(tidx, 'int'))
-        start =self.cur_tidx + 1
-        stop = ifelse(tidx >= 0,
-                      tidx + 1,
-                      len(self._tarr) + tidx + 1)
+        start = self._cur_tidx + 1
+        stop = shim.ifelse(tidx >= 0,
+                           tidx + 1,
+                           len(self._tarr) + tidx + 1)
 
-        if self.compute_range is not None:
+        if self._compute_range is not None:
             # A specialized function for computing multiple time points
             # has been defined – use it.
-            self.compute_range(self._tarr[slice(start, stop)])
+            self._compute_range(self._tarr[slice(start, stop)])
 
         elif not self._iterative:
             # Computation doesn't depend on history – just compute the whole thing in
@@ -363,7 +365,7 @@ class History:
 #                   + " (rather than a time) and returning unchanged.")
              return t
          else:
-             if t * config.get_rel_tolerance(t) > dt:
+             if t * config.get_rel_tolerance(t) > self.dt:
                  raise ValueError("You've tried to convert a time (float) into an index "
                                   "(int), but the value is too large to ensure the absence "
                                   "of numerical errors. Try using a higher precision type.")
@@ -377,12 +379,12 @@ class History:
 
     def theano_reset(self):
         """Allow theano functions to be called again.
-        It is assumed that variables in self._updates have been safely
+        It is assumed that variables in self._theano_updates have been safely
         updated externally.
         """
         for key in self._old_conv_cache:
             self._old_conv_cache[key] = None
-        self._updates = None
+        self._theano_updates = {}
 
 
 class Spiketimes(History):
@@ -629,7 +631,8 @@ class Series(History):
         value: timeslice
             The timeslice to store.
         '''
-        assert(not isinstance(tidx, theano.gof.Variable))
+        assert(not config.use_theano
+               or not isinstance(tidx, theano.gof.Variable))
             # time indices must not be variables
         if isinstance(value, tuple):
             # `value` is a theano.scan-style return tuple
@@ -638,7 +641,7 @@ class Series(History):
             assert(isinstance(updates, dict))
             value = value[0]
         else:
-            update = None
+            updates = None
 
         if shim.istype(tidx, 'int'):
             end = tidx
@@ -651,8 +654,8 @@ class Series(History):
             shim.check(tidx.start <= self._cur_tidx + 1)
                 # Ensure that we update at most one step in the future
 
-        if isinstance(value, theano.gof.Variable):
-            if self._original_data is not None or self.updates is not None:
+        if config.use_theano and isinstance(value, theano.gof.Variable):
+            if self._original_data is not None or self._theano_updates != {}:
                 raise RuntimeError("You can only update data once within a "
                                    "Theano computational graph. If you need "
                                    "to update repeatedly, compile a single "
@@ -665,9 +668,7 @@ class Series(History):
                 # in memory.
             self._data = T.set_subtensor(self._original_data[tidx], value)
             if updates is not None:
-                self.updates = updates
-            else:
-                self.updates = {}
+                self._theano_updates.update(updates)
 
         else:
             if updates is not None:
@@ -842,7 +843,7 @@ class Series(History):
 
     def convolve(self, kernel, t, kernel_start=None, kernel_stop=None):
         """
-        Compute the convolution with `kernel`, with `kernel` truncated to between
+        Compute the convolution with `kernel`, with `kernel` truncated to be between
         `kernel_start` and `kernel_stop` (inclusive-exclusive bounds).
 
         If `t` is a scalar, the convolution at that time is computed.
@@ -862,6 +863,8 @@ class Series(History):
         optimizations for batch convolutions.
         """
         # TODO: Use namedtuple for _conv_cache (.data & .idcs) ?
+        # TODO: Move caching to parent history class, and define two methods
+        #       in the derived classes: _convolve_op_single_t and _convolve_op_batch
 
         # TODO: allow 'kernel' to be a plain function
         dis_kernel = self.discretize_kernel(kernel)
@@ -891,42 +894,57 @@ class Series(History):
 #            # Integrating over a zero-width kernel
 #            return 0
 
-        shim.check(kernel_stop_idx > kernel_start_idx)
-        conv_len = kernel_stop_idx - kernel_start_idx
-            # FIXME: ensure that all full convolutions have length len()
+#        shim.check(kernel_stop_idx > kernel_start_idx)
+#        conv_len = kernel_stop_idx - kernel_start_idx
+
+        # if np.isscalar(t):
+        #     tidx = self.get_t_idx(t)
+        #     #adjusted_tidx = self.get_t_idx(t) - dis_kernel.idx_shift
+        # elif isinstance(t, slice):
+        #     shim.check(t.step in [1, None])
+        #     #tidx = slice(self.get_t_idx(t.start), self.get_t_idx(t.stop))
+        #     output_tidx = slice(self.get_t_idx(t.start) - dis_kernel.stop - dis_kernel.idx_shift,
+        #                         self.get_t_idx(t.stop) - dis_kernel.stop - dis_kernel.idx_shift)
+        #     # We have to adjust the index because the 'valid' mode removes
+        #     # time bins at the ends.
+        #     # E.g.: assume kernel.idx_shift = 0. Then (convolution result)[0] corresponds
+        #     # to the convolution evaluated at tarr[conv_len]. So to get the result
+        #     # at tarr[tidx], we need (convolution result)[tidx - conv_len].
+        # else:
+        #     raise ValueError("'t' should be either a scalar or a slice object.")
 
         if np.isscalar(t):
             tidx = self.get_t_idx(t)
-            adjusted_tidx = tidx - dis_kernel.idx_shift
-        elif isinstance(t, slice):
-            shim.check(t.step in [1, None])
-            tidx = slice(self.get_t_idx(t.start), self.get_t_idx(t.stop))
-            output_tidx = slice(self.get_t_idx(t.start) - conv_len - dis_kernel.idx_shift,
-                                self.get_t_idx(t.stop) - conv_len - dis_kernel.idx_shift)
+
+            return self.dt * lib.stack( [
+                  #lib.sum(dis_kernel[kernel_start_idx:kernel_stop_idx][::-1]
+                  #        * self[tidx - slc.stop - dis_kernel.idx_shift:adjusted_tidx])
+                  #######################################
+                  # CUSTOMIZATION: Here is the call to the custom convolution function
+                  self._convolve_op_single_t(dis_kernel, slc, tidx)
+                  #######################################
+                  for slc in kernel_idx_slices ] )
+
+        else:
+            output_tidx = slice(self.get_t_idx(t.start) - self.t0idx,
+                                self.get_t_idx(t.stop) - self.t0idx)
             # We have to adjust the index because the 'valid' mode removes
             # time bins at the ends.
             # E.g.: assume kernel.idx_shift = 0. Then (convolution result)[0] corresponds
-            # to the convolution evaluated at tarr[conv_len]. So to get the result
-            # at tarr[tidx], we need (convolution result)[tidx - conv_len].
-        else:
-            raise ValueError("'t' should be either a scalar or a slice object.")
+            # to the convolution evaluated at tarr[kernel.stop]. So to get the result
+            # at tarr[tidx], we need (convolution result)[tidx - kernel.stop].
 
-        # When indexing data, make sure to use self[…] rather than self._data[…],
-        # to trigger calculations if necessary
-        if np.isscalar(t):
-            shim.check(adjusted_tidx >= conv_len)
-            return self.dt * lib.sum(dis_kernel[kernel_start_idx:kernel_stop_idx][::-1]
-                                     * self[adjusted_tidx - conv_len:adjusted_tidx])
 
-        else:
-            cached_idcs = [None]*len(kernel_idx_slices)
+            #TODO: Use a variable conv_cache = self._conv_cache[id(kernel)]. Maybe also one for 'data'
+            cache_idcs = [None]*len(kernel_idx_slices)
             # Store a list of references to the cached convolutions we need
             # Storing None indicates that the convolution with that kernel slice
             # needs to be calculated
             if id(kernel) in self._conv_cache:
+                # Retrieve the indices of the already cached convolutions
                 for i, slc in enumerate(kernel_idx_slices):
                     try:
-                        cached_idcs[i] = self._conv_cache[id(kernel)]['index list'][slc]
+                        cache_idcs[i] = self._conv_cache[id(kernel)]['index list'][slc]
                     except KeyError:
                         pass
             else:
@@ -937,35 +955,84 @@ class Series(History):
                     }
                 self._old_conv_cache[id(kernel)] = None
 
-            if None in cached_idcs:
+            if None in cache_idcs:
                 # There are new convolutions we need to compute
                 new_data = self.dt * lib.stack( [
-                      lib.convolve(self[:], dis_kernel[slc], mode='valid')
+                      #lib.convolve(self[:], dis_kernel[slc], mode='valid')
+                      ###########################################
+                      # CUSTOMIZATION: Here is the call to the custom convolution function
+                      self._convolve_op_batch(dis_kernel, slc)
+                      ###########################################
                       for slc, cache_idx in zip(kernel_idx_slices, cache_idcs)
                       if cache_idx is None ] )
                 # Add the indices they will have in the newly augmented cache
                 k = self._conv_cache[id(kernel)]['data'].get_value().shape[0]
-                for i, slc in enumerate(kernel_idx_slices) if slc is None:
-                    kernel_idx_slices[i] = k
-                    self._conv_cache[id(kernel)]['index list'][slc] = k
-                    k += 1
+                for i, slc in enumerate(kernel_idx_slices):
+                    if slc is None:
+                        kernel_idx_slices[i] = k
+                        self._conv_cache[id(kernel)]['index list'][slc] = k
+                        k += 1
                 # Create the new data cache
                 if config.use_theano:
                     assert(self._old_conv_cache is None)
-                    # Make the old cache persistent, otherwise updates mechanism will break
+                    # Keep the old cache in memory, otherwise updates mechanism will break
                     self._old_conv_cache[id(kernel)]['data'] = self._conv_cache[id(kernel)]['data']
                     self._conv_cache[id(kernel)]['data'] = lib.concatenate(
                           (self._old_conv_cache[id(kernel)]['data'], new_data), axis = 0 )
                     # This is a shared variable, so add to the updates list
-                    self._updates[self._old_conv_cache[id(kernel)]['data']] = \
+                    self._theano_updates[self._old_conv_cache[id(kernel)]['data']] = \
                           self._conv_cache[id(kernel)]['data']
                 else:
-                    # Don't create _old_conv_cache and allow reuse of _conv_cache memory
+                    # Since we aren't using Theano, we don't need to create _old_conv_cache
+                    # and can allow reuse of _conv_cache memory
                     self._conv_cache = lib.concatenate(
-                          (self._conv_cache[id(kernel)], new_data), axis = 0 )
+                          (self._conv_cache[id(kernel)]['data'].get_value(), new_data), axis = 0 )
 
-            return self._conv_cache[id(kernel)]['data'][cached_idcs][:,output_tidx]
+            return self._conv_cache[id(kernel)]['data'][cache_idcs][:,output_tidx]
 
+    def _convolve_op_single_t(self, discretized_kernel, kernel_slice, tidx):
+        # When indexing data, make sure to use self[…] rather than self._data[…],
+        # to trigger calculations if necessary
+
+        if kernel_slice.start == kernel_slice.stop:
+            return 0
+        else:
+            # Algorithm assumes an increasing kernel_slice
+            shim.check(kernel_slice.stop > kernel_slice.start)
+
+            hist_start_idx = tidx - kernel_slice.stop - discretized_kernel.idx_shift
+            hist_slice = slice(hist_start_idx, hist_start_idx + kernel_slice.stop - kernel_slice.start)
+            shim.check(hist_slice.start >= 0)
+            return lib.sum(discretized_kernel[kernel_slice][::-1] * self[hist_slice])
+
+    def _convolve_op_batch(self, discretized_kernel, kernel_slice):
+        """Return the convolution at every lag with t0 and tn."""
+        # When indexing data, make sure to use self[…] rather than self._data[…],
+        # to trigger calculations if necessary
+
+        if kernel_slice.start == kernel_slice.stop:
+            return 0
+        else:
+            # Algorithm assumes an increasing kernel_slice
+            shim.check(kernel_slice.stop > kernel_slice.start)
+
+            # We compute the full 'valid' convolution, for all lags and then
+            # return just the subarray corresponding to [t0:tn]
+            # We have to adjust the index because the 'valid' mode removes
+            # time bins at the ends.
+            # E.g.: assume kernel.idx_shift = 0. Then (convolution result)[0] corresponds
+            # to the convolution evaluated at tarr[kernel.stop + kernel_idx_shift]. So to get the result
+            # at tarr[tidx], we need (convolution result)[tidx - kernel.stop - kernel_idx_shift].
+
+            domain_start = self.t0idx - kernel_slice.stop - discretized_kernel.idx_shift
+            domain_slice = slice(domain_start, domain_start + len(self))
+            shim.check(domain_slice.start >= 0)
+                # Check that there is enough padding before t0
+            retval = lib.convolve(self[:], discretized_kernel[kernel_slice],
+                                  mode='valid')[domain_slice]
+            shim.check(len(retval) == len(self))
+                # Check that there is enough padding after tn
+            return retval
 
     def discretize_kernel(self, kernel):
 
@@ -992,7 +1059,15 @@ class Series(History):
                 # We don't use shim.round because time indices must be Python numbers
             t0 = idx_shift * self.dt  # Ensure the discretized kernel's t0 is a multiple of dt
 
-            dis_kernel = Series(t0, t0 + kernel.memory_time,
+            memory_idx_len = int(kernel.memory_time // self.dt) - 1
+                # It is essential here to use the same forumla as pad_time
+                # We substract one because one bin more or less makes no difference,
+                # and doing so ensures that padding with `memory_time` always
+                # is sufficient (no dumb numerical precision errors adds a bin)
+            full_idx_len = memory_idx_len + idx_shift
+                # `memory_time` is the amount of time before t0
+
+            dis_kernel = Series(t0, t0 + full_idx_len*self.dt,
                                 self.dt, kernel.shape, kernel_func)
             dis_kernel.idx_shift = idx_shift
 

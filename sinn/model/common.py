@@ -11,7 +11,9 @@ from scipy.integrate import quad
 from collections import namedtuple
 
 import sinn.config as config
+import sinn.theano_shim as shim
 floatX = config.floatX
+lib = shim.lib
 
 def make_shared_tensor_params(params):
     TParameters = namedtuple('TParameters', params._fields)
