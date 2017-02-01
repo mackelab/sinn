@@ -916,7 +916,7 @@ class Series(History):
         if np.isscalar(t):
             tidx = self.get_t_idx(t)
 
-            return self.dt * lib.stack( [
+            retval = self.dt * lib.stack( [
                   #lib.sum(dis_kernel[kernel_start_idx:kernel_stop_idx][::-1]
                   #        * self[tidx - slc.stop - dis_kernel.idx_shift:adjusted_tidx])
                   #######################################
@@ -944,7 +944,7 @@ class Series(History):
                 # Retrieve the indices of the already cached convolutions
                 for i, slc in enumerate(kernel_idx_slices):
                     try:
-                        cache_idcs[i] = self._conv_cache[id(kernel)]['index list'][slc]
+                        cache_idcs[i] = self._conv_cache[id(kernel)]['index list'][(slc.start, slc.stop)]
                     except KeyError:
                         pass
             else:
@@ -967,10 +967,10 @@ class Series(History):
                       if cache_idx is None ] )
                 # Add the indices they will have in the newly augmented cache
                 k = self._conv_cache[id(kernel)]['data'].get_value().shape[0]
-                for i, slc in enumerate(kernel_idx_slices):
+                for i, slc in enumerate(cache_idcs):
                     if slc is None:
-                        kernel_idx_slices[i] = k
-                        self._conv_cache[id(kernel)]['index list'][slc] = k
+                        cache_idcs[i] = k
+                        self._conv_cache[id(kernel)]['index list'][(kernel_idx_slices[i].start, kernel_idx_slices[i].stop)] = k
                         k += 1
                 # Create the new data cache
                 if config.use_theano:
@@ -985,10 +985,19 @@ class Series(History):
                 else:
                     # Since we aren't using Theano, we don't need to create _old_conv_cache
                     # and can allow reuse of _conv_cache memory
-                    self._conv_cache = lib.concatenate(
+                    self._conv_cache[id(kernel)]['data'].set_value(
+                        lib.concatenate(
                           (self._conv_cache[id(kernel)]['data'].get_value(), new_data), axis = 0 )
+                        )
 
-            return self._conv_cache[id(kernel)]['data'][cache_idcs][:,output_tidx]
+            retval = self._conv_cache[id(kernel)]['data'][cache_idcs][:,output_tidx]
+
+        if len(retval) == 1:
+            # Caller only passed a single kernel slice, and so is not
+            # expecting the result to be wrapped in a list.
+            return retval[0]
+        else:
+            return retval
 
     def _convolve_op_single_t(self, discretized_kernel, kernel_slice, tidx):
         # When indexing data, make sure to use self[…] rather than self._data[…],

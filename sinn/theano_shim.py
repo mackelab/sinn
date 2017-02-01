@@ -187,6 +187,9 @@ class ShimmedShared:
         self.name = name
         self._value = value
 
+    def __getitem__(self, key):
+        return self._value[key]
+
     def get_value(self, borrow=False, return_internal_type=False):
         return self._value
 

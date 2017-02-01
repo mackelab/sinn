@@ -51,13 +51,18 @@ def convolve_test():
     print(np_conv)
     print(true_conv(t))
 
-    print("\nSlice test (slice, without caching, with caching)")
+    print("\nSlice test")
     tslice = slice(tidx, tidx + 5)
-    print(data.convolve(kern, tslice))
-    print([round(data.convolve(kern, s),8) for s in data._tarr[tslice]]) # witout caching
-    print([round(kern.convolve(data, s),8) for s in data._tarr[tslice]]) # with caching
+    tslice2 = slice(tidx+1, tidx +  5)
 
-    print("partial kernel")
+    np.set_printoptions(precision=8)
+    print("time slice:                        \n", data.convolve(kern, tslice))
+    print("same slice, uses history cache:    \n", data.convolve(kern, tslice))
+    print("different slice, still uses cache: \n", data.convolve(kern, tslice2))
+    print("no slice (5 single t calls):       \n", np.array([data.convolve(kern, s) for s in data._tarr[tslice]])) # witout caching
+    print("no slice, with exp. kernel cache:  \n", np.array([kern.convolve(data, s) for s in data._tarr[tslice]])) # with caching
+
+    print("\nPartial kernel\n")
     print(data.convolve(kern, t, 0.1, 0.3))
     print(true_conv(t, 0.1, 0.3))
 
