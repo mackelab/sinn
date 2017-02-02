@@ -18,6 +18,7 @@ import sinn.model.common as com
 lib = shim.lib
 Model  = com.Model
 Kernel = com.Kernel
+Parameter = com.Parameter
 
 # =============================================================================
 #
@@ -32,47 +33,59 @@ class Activity(Model):
     #################
     # kernel definitions
 
-    Parameters = namedtuple('Parameters',
-                            set(['N', 'c', 'Js']).union( set(K.Parameters._fields),
-                                                         set(H.Parameters._fields) ) )
+    Parameter_info = OrderedDict{'N'   : np.int,
+                                 'c'   : config.cast_floatX,
+                                 'Js'  : config.cast_floatX,
+                                 'τa'  : config.cast_floatX,
+                                 'τm'  : config.cast_floatX,
+                                 'τabs': config.cats_floatX}
+    Parameters = com.define_parameters(Parameter_info)
 
     def η2_fn(self, t):
         """The refractory kernel coming after the absolute refractory period"""
         return self.params.Jr * lib.exp(-(t-self.params.τabs)/self.params.τm)
 
-    def __init__(self, params, activity_history, activity_mean_history,
+    def __init__(self, params,
+                 activity_history, activity_mean_history, input_history,
                  memory_time=None, init_occupation_numbers=None):
 
-        shim.seed(314)
         self.A = activity_history
         self.a = activity_mean_history
+        self.I = input_history
 
         ###########################################
         # Excitatory component h
         ###########################################
 
+        κ = com.ExpKernel('κ',
+                          height      = 1,
+                          decay_const = params.τm,
+                          t0          = params.τabs,
+                          memory_time = memory_time)
+
         # Initialize series objects used in computation
         # (We shamelessly abuse of unicode support for legibility)
-        shim.check(self.A.dt == I.dt)
+        shim.check(self.A.dt == self.I.dt)
         self.JsᕽAᐩI = history.Series(self.A.t0,
-                                self.A.tn,
-                                self.A.dt,
-                                self.A.shape,
-                                lambda t: self.Js*A[t] + self.I[t])
-        κ = com.ExpKernel('κ',
-                          1, params.τm,
-                          t0=params.τ,
-                          memory_time)
+                                    self.A.tn,
+                                    self.A.dt,
+                                    self.A.shape,
+                                    lambda t: self.Js*A[t] + self.I[t])
+        self.JsᕽAᐩI._cur_tidx
+            # FIXME: Set this internally, maybe by defining +,* ops
 
         self.JsᕽAᐩI.pad(κ.memory_time)
         #self.h = history.Series(A.t0, A.tn, A.dt, A.shape)
 
         self.a.set_update_function(self.a_fn)
         self.a.set_range_update_function(self.compute_range_a)
-        self.A.set_update_function(self.make_A_fn(self.a))
 
         if self.A._cur_tidx >= len(A):
             # A already has all the data; we can calculate h in one go
+            # Caching mechanism takes care of actually remembering the result
+            self.κ.convolve(JsᕽAᐩI)
+        else:
+            self.A.set_update_function(self.make_A_fn(self.a))
 
 
         ##########################################
@@ -158,7 +171,7 @@ class Activity(Model):
             shim.check(lib.sum(self.occN[1:]) == self.params.N)
         self.occN = shim.shared(self._occN_arr)
 
-        self.rndstream = shim.RandomStreams(seed=314)
+#        self.rndstream = shim.RandomStreams(seed=314)
 
     def check_indexing(t):
         # On reason this test might fail is if A and a have different padding
