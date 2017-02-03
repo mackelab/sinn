@@ -179,7 +179,7 @@ def ifelse(condition, then_branch, else_branch, name=None):
             return else_branch
 
 ######################
-# Shared variable constructor (no-op for Numpy)
+# Shared variable constructor
 
 class ShimmedShared:
 
