@@ -203,6 +203,12 @@ def shared(value, name=None, strict=False, allow_downcast=None, **kwargs):
         return ShimmedShared(value, name, strict, allow_downcast, **kwargs)
 
 
+theano_updates = {}
+    # Stores a Theano update dictionary. This value can only be
+    # changed once, unless a call to self.theano_refresh is made
+def theano_reset():
+    theano_updates = {}
+
 ######################
 # Interchangeable set_subtensor
 def set_subtensor(x, y, inplace=False, tolerate_aliasing=False):

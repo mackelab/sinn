@@ -1,6 +1,24 @@
+
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Feb 2 2017
+
+Author: Alexandre René
+"""
+import numpy as np
+
+import sinn.common as com
+import sinn.config as config
+import sinn.theano_shim as shim
+import sinn.mixins as mixins
+floatX = config.floatX
+lib = shim.lib
+ConvolveMixin = mixins.ConvolveMixin
+
+
 #TODO: Discretized kernels as a mixin class
 
-class Kernel:
+class Kernel(ConvolveMixin):
     """Generic Kernel class. All kernels should derive from this."""
 
     def __init__(self, name, f, memory_time, t0=0):
@@ -16,15 +34,21 @@ class Kernel:
         t0: float
             The time corresponding to f(0). Kernel is zero before this time.
         """
+        super().__init__()
+
         self.name = name
         self.t0 = t0
 
         self.eval = f
-        self.shape = f(0).shape
+        try:
+            self.shape = f(0).shape
+        except ValueError:
+            raise ValueError("The parameters to the kernel's evaluation "
+                             "function seem to have incompatible shapes.")
         self.memory_time = memory_time
 
-    def convolve(self, hist, t):
-        return hist.convolve(self, t)
+    def _convolve_op_single_t(self, hist, t, kernel_slice):
+        return hist._convolve_op_single_t(self, t, kernel_slice)
 
 
 class ExpKernel(Kernel):
@@ -50,19 +74,14 @@ class ExpKernel(Kernel):
             and κ(t) = 0 for t< t0.
             Must *not* be a Theano variable.
         """
-        self.name = name
+
         self.height = height
         self.decay_const = decay_const
-        self.t0 = t0
 
         def f(s):
             return self.height * lib.exp(-(s-self.t0) / self.decay_const)
         self.eval = f
 
-        try:
-            self.shape = f(0).shape
-        except ValueError:
-            raise ValueError("The shapes of the parameters 'height', 'decay_const' and 't0' don't seem to match.")
 
         # Truncating after memory_time should not discard more than a fraction
         # config.truncation_ratio of the total area under the kernel.
@@ -70,18 +89,22 @@ class ExpKernel(Kernel):
         if memory_time is None:
             # We want a numerical value, so we use the test value associated to the variables
             decay_const_val = shim.get_test_value(decay_const)
-            self.memory_time = -decay_const_val * np.log(config.truncation_ratio)
-        else:
-            self.memory_time = memory_time
+            memory_time = -decay_const_val * np.log(config.truncation_ratio)
+
+        ########
+        # Initialize base class
+        super().__init__(name, f, memory_time, t0)
 
         self.last_t = None     # Keep track of the last convolution time
         self.last_conv = None  # Keep track of the last convolution result
         self.last_hist = None  # Keep track of the history object used for the last convolution
 
-    def convolve(self, hist, t):
+    def _convolve_op_single_t(self, hist, t, kernel_slice):
 
-        #TODO: allow t to be a slice
         #TODO: store multiple caches, one per history
+        #TODO: do something with kernel_slice
+        if kernel_slice != slice(None, None):
+            raise NotImplementedError
         if (self.last_conv is None
             or hist is not self.last_hist
             or t < self.last_t):
@@ -89,12 +112,14 @@ class ExpKernel(Kernel):
         else:
             Δt = t - self.last_t
             result = ( lib.exp(-Δt/self.decay_const) * self.last_conv
-                       + hist.convolve(self, t, 0, Δt) )
+                       + hist.convolve(self, t, slice(0, Δt)) )
 
         self.last_t = t
         self.last_conv = result
         self.last_hist = hist
 
         return result
+
+    #TODO: _convolve_op_batch ?
 
 # TODO? : Indicator kernel ? Optimizations possible ?

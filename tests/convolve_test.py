@@ -10,6 +10,7 @@ import scipy as sp
 import timeit
 
 import sinn.history as history
+import sinn.kernel as kernel
 import sinn.model.common as com
 
 def convolve_test():
@@ -22,7 +23,7 @@ def convolve_test():
         return np.sin(t)
     data = history.Series(0, 4, dt, (), data_fn)
 
-    kern = com.ExpKernel('κ', 1, τ)
+    kern = kernel.ExpKernel('κ', 1, τ)
 
     def true_conv(t, a=0, b=np.inf):
         """The analytical solution to the convolution"""
@@ -63,7 +64,7 @@ def convolve_test():
     print("no slice, with exp. kernel cache:  \n", np.array([kern.convolve(data, s) for s in data._tarr[tslice]])) # with caching
 
     print("\nPartial kernel\n")
-    print(data.convolve(kern, t, 0.1, 0.3))
+    print(data.convolve(kern, t, slice(0.1, 0.3)))
     print(true_conv(t, 0.1, 0.3))
 
     return

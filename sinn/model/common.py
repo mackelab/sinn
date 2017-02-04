@@ -120,7 +120,7 @@ class Model:
 
     Parameter_info = {}                                           # Overload this in derived classes
         # Entries to Parameter dict: 'key': Parameter(fn, default)
-    Parameters = namedtuple('Parameter', Parameter_dict.keys())   # Overload this in derived classes
+    Parameters = namedtuple('Parameter', Parameter_info.keys())   # Overload this in derived classes
 
     def __init__(self, params, history=None):
         """
