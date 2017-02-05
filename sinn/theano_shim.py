@@ -61,7 +61,9 @@ def check(stmt):
 ######################
 # Retrieving test values
 def get_test_value(var):
-    if config.use_theano and isinstance(var, theano.gof.Variable):
+    if config.use_theano and isinstance(var, T.sharedvar.SharedVariable):
+        retval = var.get_value()
+    elif config.use_theano and isinstance(var, theano.gof.Variable):
         try:
             retval = var.tag.test_value
         except AttributeError:
@@ -228,3 +230,38 @@ def inc_subtensor(x, y, inplace=False, tolerate_aliasing=False):
             # Ensure that x is a view of another ndarray
         x[:] += y
         return x.base
+
+######################
+# Convenience function to add an axis
+# E.g. to treat a scalar as a 1x1 matrix
+
+def add_axes(x, num=1, side='left'):
+    """
+    Add an axis to `x`, e.g. to treat a scalar as a 1x1 matrix.
+    This is meant as a simple function for typical usecases;
+    for more complex operations, like adding axes to the middle,
+    use the Theano or Numpy methods.
+
+    Parameters
+    ----------
+    num: int
+        Number of axes to add. Default: 1.
+    side: 'left' | 'right'
+        'left' turns a 1D vector into a row vector, while 'right'
+        would turn it into a column vector. Default is 'left'.
+    """
+    assert(side in ('left', 'right'))
+    if config.use_theano and isinstance(x, theano.gof.Variable):
+        if side == 'left':
+            shuffle_pattern = ['x']*num
+            shuffle_pattern.extend(range(x.ndim))
+        else:
+            shuffle_pattern = list(range(x.ndim))
+            shuffle_pattern.extend( ['x']*num )
+        return T.dimsuffle(shuffle_pattern)
+    else:
+        x = np.asarray(x)
+        if side == 'left':
+            return x.reshape( (1,)*num + x.shape )
+        else:
+            return x.reshape( x.shape + (1,)*num )

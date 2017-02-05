@@ -10,15 +10,18 @@ import scipy as sp
 from collections import namedtuple, OrderedDict
 
 import sinn
+import sinn.com as com
 import sinn.config as config
 import sinn.theano_shim as shim
 import sinn.history as history
-import sinn.model.common as com
+import sinn.kernel as kernel
+import sinn.model as model
+import sinn.model.com
 
 lib = shim.lib
-Model  = com.Model
+Model  = model.com.Model
 Kernel = com.Kernel
-Parameter = com.Parameter
+#Parameter = com.Parameter
 
 # =============================================================================
 #
@@ -33,12 +36,12 @@ class Activity(Model):
     #################
     # kernel definitions
 
-    Parameter_info = OrderedDict{'N'   : np.int,
-                                 'c'   : config.cast_floatX,
-                                 'Js'  : config.cast_floatX,
-                                 'τa'  : config.cast_floatX,
-                                 'τm'  : config.cast_floatX,
-                                 'τabs': config.cats_floatX}
+    Parameter_info = OrderedDict( ( 'N'   , np.int ),
+                                  ( 'c'   , config.cast_floatX ),
+                                  ( 'Js'  , config.cast_floatX ),
+                                  ( 'τa'  , config.cast_floatX ),
+                                  ( 'τm'  , config.cast_floatX ),
+                                  ( 'τabs', config.cats_floatX ) )
     Parameters = com.define_parameters(Parameter_info)
 
     def η2_fn(self, t):
@@ -57,7 +60,7 @@ class Activity(Model):
         # Excitatory component h
         ###########################################
 
-        κ = com.ExpKernel('κ',
+        κ = kernel.ExpKernel('κ',
                           height      = 1,
                           decay_const = params.τm,
                           t0          = params.τabs,

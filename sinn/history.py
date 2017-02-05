@@ -119,7 +119,7 @@ class History(HistoryBase):
         '''
     """
 
-    def __init__(self, t0, tn, dt, shape, f=None, iterative=True):
+    def __init__(self, t0, tn, dt, *args, shape=None, f=None, iterative=True):
         """
         Initialize History object.
 
@@ -131,7 +131,8 @@ class History(HistoryBase):
             Time at which the history ends
         dt: float
             Timestep
-        shape:
+        (following are keyword-only arguments)
+        shape: int tuple
             Shape of a history slice at a single point in time.
             E.g. a movie history might store NxN frames in an TxNxN array.
             (N,N) would be the shape, and T would be (tn-t0)/dt.
@@ -155,6 +156,7 @@ class History(HistoryBase):
         """
         super().__init__(t0, np.ceil( (tn - t0)/dt ) * dt + t0)
             # Set t0 and tn, ensuring (tn - t0) is a round multiple of dt
+        assert(shape is not None)
         self.shape = shape
             # shape at a single time point, or number of elements
             # in the system
@@ -424,7 +426,8 @@ class Spiketimes(ConvolveMixin, History):
         assert(all( shim.istype(s, 'int') for s in pop_sizes ))
         self.pop_sizes = pop_sizes
 
-        shape = (np.prod(pop_sizes),)
+        shape = (np.sum(pop_sizes),)
+        conv_shape = (len(pop_sizes),)
 
         # kwargs should not have shape, as it's calculated
         # Return an error if it's different from the calculated value
@@ -433,7 +436,15 @@ class Spiketimes(ConvolveMixin, History):
             raise ValueError("Specifying a shape to Spiketimes is "
                              "unecessary, as it's calculated from pop_sizes")
 
-        super().__init__(t0, tn, dt, shape, **kwargs)
+        self.pop_idcs = np.concatenate( [ [i]*size
+                                          for i, size in enumerate(pop_sizes) ] )
+        self.pop_slices = []
+        i = 0
+        for pop_size in pop_sizes:
+            self.pop_slices.append(slice(i, i+pop_size))
+            i += pop_size
+
+        super().__init__(t0, tn, dt, shape, convolve_shape=conv_shape, **kwargs)
 
     def initialize(self, init_data=-np.inf):
         """
@@ -443,6 +454,7 @@ class Spiketimes(ConvolveMixin, History):
             Either a scalar (to which each neuron will initialized) or an
             iterable of same length as the number of neurons.
         """
+        # TODO: Allow either a nested or flattened list for init_data
 
         try:
             init_data[0]
@@ -457,19 +469,16 @@ class Spiketimes(ConvolveMixin, History):
         # and ~3% improvement for sims of 2000 time bins. The payoff is
         # expected to continually improve as simulations get longer.
         if subscriptable:
-            if hasattr(init_data, 'shape'):
-                shim.check(len(init_data) == len(self.pop_sizes))
-                shim.check(all(len(pop_init) == pop_size
-                               for pop_init, pop_size
-                               in zip(init_data, self.pop_sizes)))
+            shim.check(len(init_data) == np.sum(self.pop_sizes))
+            #shim.check(all(len(pop_init) == pop_size
+            #                for pop_init, pop_size
+            #                in zip(init_data, self.pop_sizes)))
 
-            self.spike_times = [ [ deque([init_data[pop_idx][neuron_idx]])
-                                   for pop_idx in range(len(self.pop_sizes)) ]
-                                 for neuron_idx in range(self.pop_sizes[pop_idx]) ]
+            self.spike_times = [ deque([init_data[neuron_idx]])
+                                 for neuron_idx in range(np.sum(self.pop_sizes)) ]
         else:
-            self.spike_times = [ [ deque([init_data])
-                                   for pop_idx in range(len(self.pop_sizes)) ]
-                                 for neuron_idx in range(self.pop_sizes[pop_idx]) ]
+            self.spike_times = [ deque([init_data])
+                                 for neuron_idx in range(np.sum(self.pop_sizes)) ]
 
     def retrieve(self, key):
         '''A function taking either an index or a splice and returning respectively
@@ -483,9 +492,9 @@ class Spiketimes(ConvolveMixin, History):
         Returns
         -------
         If `key` is int or float:
-            Returns a list of binary vectors, each vector representing a population,
-            each element representing a neuron. Values are 1 if the neuron fired in
-            this bin, 0 if it didn't fire.
+            Returns a binary vector of same size as the total number of neurons, each
+            element representing a neuron (populations are flattened). Values are 1
+            if the neuron fired in this bin, 0 if it didn't fire.
             If key is a float, it must match the bin time exactly. Generally using
             bin indices should be more reliable than bin times.
         If `key` is slice:
@@ -496,27 +505,25 @@ class Spiketimes(ConvolveMixin, History):
         '''
         if shim.istype(key, 'int') or shim.istype(key, 'float'):
             t = self.get_time(key)
-            return [ [ 1 if t in spikelist else 0
-                       for spikelist in pop ]
-                     for pop in self.spike_times ]
+            return [ 1 if t in spikelist else 0
+                     for spikelist in self.spike_times ]
         elif isintance(key, slice):
             if (key.start is None) and (key.stop is None):
                 return self.spike_times
             else:
-                start = -np.inf if key.start is None else self.get_time(key.start)
-                end = np.inf if key.end is None else self.get_time(np.inf)
+                start = -shim.inf if key.start is None else self.get_time(key.start)
+                end = shim.inf if key.end is None else self.get_time(np.inf)
                 end =- self.dt  # exclude upper bound, consistent with slicing conv.
                 # At present, deque's don't implement slicing. When they do, use that.
-                return [ [ list(itertools.islice(spikelist,
+                return [ list(itertools.islice(spikelist,
                                                  np.searchsorted(spikelist, start),
                                                  np.searchsorted(spikelist, end)))
-                           for spikelist in pop ]
-                         for pop in self.spike_times ]
+                         for spikelist in self.spike_times ]
         else:
             raise ValueError("Key must be either an integer, float or a splice object.")
 
     #was :  def update(self, t, pop_idx, spike_arr):
-    def update(self, tidx, value):
+    def update(self, tidx, neuron_idcs):
         '''Add to each neuron specified in `value` the spiketime `tidx`.
         Parameters
         ----------
@@ -525,17 +532,19 @@ class Spiketimes(ConvolveMixin, History):
             to actual time and saved.
             Can optionally also be a float, in which case no conversion is made.
             Should not correspond to more than one bin ahead of _cur_tidx.
-        value: list of iterables
-            Should be as many iterables as there are populations.
-            Each iterable is a list of neuron indices that fired in this bin.
+        neuron_idcs: iterable
+            List of neuron indices that fired in this bin.
         '''
         newidx = self.get_t_idx(tidx)
         shim.check(newidx <= self._cur_tidx + 1)
 
         time = self.get_time(tidx)
-        for neuron_lst, spike_times in zip(value, self.spike_times):
-            for neuron_idx in neuron_lst:
-                spike_times[neuron_idx].append(time)
+        for neuron_idx, spike_list in zip(neuron_idcs, self.spike_times):
+            spike_list[neuron_idx].append(time)
+
+        # for neuron_lst, spike_times in zip(value, self.spike_times):
+        #     for neuron_idx in neuron_lst:
+        #         spike_times[neuron_idx].append(time)
 
         self._cur_tidx = newidx  # Set the cur_idx. If tidx was less than the current index,
                                  # then the latter is *reduced*, since we no longer know
@@ -588,7 +597,8 @@ class Spiketimes(ConvolveMixin, History):
 
         Returns
         -------
-        ndarray of shape `self.shape`
+        ndarray of shape 'npops' x 'npops'.
+            It is indexed as result[from pop idx][to pop idx]
 
         '''
         # TODO: To avoid iterating over the entire list, save the last `end`
@@ -597,7 +607,7 @@ class Spiketimes(ConvolveMixin, History):
         #       spikes before that point.
         #       Use `np.find` to get the `start` and `end` index, and sum between them
 
-        # TODO: move to callable test ConvolveMixin
+        # TODO: move callable test to ConvolveMixin
         # if callable(kernel):
         #    f = kernel
         # else:
@@ -605,23 +615,41 @@ class Spiketimes(ConvolveMixin, History):
         begin = kernel_slice.start
         end = kernel_slice.stop
 
+        shim.check( kernel.shape[0] == len(self.pop_sizes) )
+        shim.check( len(kernel.shape) == 2 and kernel.shape[0] == kernel.shape[1] )
+
         if begin is None:
             if end is not None:
                 raise NotImplementedError
 
-            return  EwiseIter( [
-                            EwiseIter( [ np.fromiter( ( sum( f(to_pop_idx, from_pop_idx)(t-s) for s in neuron_spike_times )
-                                                        for neuron_spike_times in self.spike_times[from_pop_idx] ),
-                                                      dtype=config.floatX )
-                                        for from_pop_idx in range(len(self.shape)) ] )
-                            for to_pop_idx in range(len(self.shape))] )
+            # TODO: truncate at memory_time
+            return np.stack (
+                     np.sum( f(t-s, from_pop_idx)
+                             for spike_list in self.spike_times[self.pop_slices[from_pop_idx]]
+                             for s in spike_list )
+                     for from_pop_idx in range(len(self.pop_sizes)) )
+
+        #     return  EwiseIter( [
+        #                     EwiseIter( [ np.fromiter( ( sum( f(to_pop_idx, from_pop_idx)(t-s) for s in neuron_spike_times )
+        #                                                 for neuron_spike_times in self.spike_times[from_pop_idx] ),
+        #                                               dtype=config.floatX )
+        #                                 for from_pop_idx in range(len(self.shape)) ] )
+        #                     for to_pop_idx in range(len(self.shape))] )
+        # # TODO: allow kernel to return a value for each neuron
         else:
-            return EwiseIter( [
-                           EwiseIter( [ np.fromiter( ( sum( f(to_pop_idx, from_pop_idx)(t-s) if begin <= s < end else 0 for s in neuron_spike_times )
-                                                       for neuron_spike_times in self.spike_times[from_pop_idx] ),
-                                                     dtype=config.floatX )
-                                        for from_pop_idx in range(len(self.shape)) ] )
-                           for to_pop_idx in range(len(self.shape)) ] )
+
+            return np.stack(
+                     np.sum( f(t-s, from_pop_idx)
+                             for spike_list in self.spike_times[self.pop_slices[from_pop_idx]]
+                             for s in self[begin:end] )
+                     for from_pop_idx in range(len(self.pop_idcs)) )
+
+            # return EwiseIter( [
+            #                EwiseIter( [ np.fromiter( ( sum( f(to_pop_idx, from_pop_idx)(t-s) if begin <= s < end else 0 for s in neuron_spike_times )
+            #                                            for neuron_spike_times in self.spike_times[from_pop_idx] ),
+            #                                          dtype=config.floatX )
+            #                             for from_pop_idx in range(len(self.shape)) ] )
+            #                for to_pop_idx in range(len(self.shape)) ] )
 
 
 
@@ -634,17 +662,17 @@ class Series(ConvolveMixin, History):
     at t = -∞.
     """
 
-    def __init__(self, *args):
+    def __init__(self, *args, **kwargs):
         """
         Initialize a Series instance, derived from History.
 
         Parameters
         ----------
-        *args:
-            Arguments required by History.
+        *args, **kwargs:
+            Arguments required by History and ConvolveMixin
         """
-
-        super().__init__(*args)
+        conv_shape = kwargs['shape'] + kwargs['shape']
+        super().__init__(*args, convolve_shape=conv_shape, **kwargs)
 
         # Migration note: _data was previously called self.array
         self._data = np.zeros(self._tarr.shape + self.shape, dtype=floatX)
@@ -993,7 +1021,7 @@ class Series(ConvolveMixin, History):
                 # `memory_time` is the amount of time before t0
 
             dis_kernel = Series(t0, t0 + full_idx_len*self.dt,
-                                self.dt, kernel.shape, kernel_func)
+                                self.dt, shape=kernel.shape, f=kernel_func)
             dis_kernel.idx_shift = idx_shift
 
             setattr(kernel, discretization_name, dis_kernel)

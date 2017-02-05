@@ -16,14 +16,19 @@ import sinn.model.common as com
 def convolve_test():
 
     # test convolution: ∫_a^b e^{-s/τ} * sin(t - s) ds
+
     τ = 0.1
     dt = 0.0001
 
     def data_fn(t):
         return np.sin(t)
-    data = history.Series(0, 4, dt, (), data_fn)
+    data = history.Series(0, 4, dt, shape=(1,), f=data_fn)
 
-    kern = kernel.ExpKernel('κ', 1, τ)
+    params = kernel.ExpKernel.Parameters(
+        height = 1,
+        decay_const = τ
+        )
+    kern = kernel.ExpKernel('κ', (1,1), params=params, convolve_shape=(1,1))
 
     def true_conv(t, a=0, b=np.inf):
         """The analytical solution to the convolution"""
@@ -35,7 +40,7 @@ def convolve_test():
 
 
     dis_kern = history.Series(0, kern.memory_time,
-                              dt, (), kern.eval)
+                              dt, shape=(1,), f=kern.eval)
     conv_len = len(dis_kern._tarr)  # The 'valid' convolution will be
                                     # (conv_len-1) bins shorter than data._tarr
 

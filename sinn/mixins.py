@@ -12,12 +12,31 @@ import sinn.theano_shim as shim
 floatX = config.floatX
 lib = shim.lib
 
+# TODO: Only require convolve_shape for descendents of HistoryBase
+
 # This class cannot be in the same module as HistoryBase,
 # in order for tests with isinstance to work.
+# (Not sure if this is really true)
 class ConvolveMixin:
 
     def __init__(self, *args, **kwargs):
-        self._conv_cache = com.OpCache(self, self._convolve_op_batch)
+        """
+        Parameters
+        ----------
+        convolve_shape: int tuple (keyword only)
+            Shape the result of a convolution takes. Should
+            match the output of _conv_op_single_t.
+        *args, **kwargs:
+            Passed to base initializer
+        """
+
+        try:
+            convolve_shape = kwargs.pop('convolve_shape')
+        except KeyError:
+            raise TypeError("Unsufficient arguments: ConvolveMixin "
+                            "requires a `convolve_shape` argument.")
+        self._conv_cache = com.OpCache(self, self._convolve_op_batch,
+                                       convolve_shape)
             # Store convolutions so they don't have to be recalculated.
             # The dictionary is keyed by the id of the kernels with which
             # convolutions were computed.
