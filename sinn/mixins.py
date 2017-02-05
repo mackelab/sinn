@@ -65,9 +65,6 @@ class ConvolveMixin:
         # TODO: Use namedtuple for _conv_cache (.data & .idcs) ?
         # TODO: allow 'kernel' to be a plain function
 
-        if not isinstance(kernel_slice, slice):
-            raise ValueError("Kernel bounds must be specified as a slice.")
-
         # Determine history and kernel
         if isinstance(self, com.HistoryBase):
             history = self
@@ -82,6 +79,8 @@ class ConvolveMixin:
             len(kernel_slice)
         except TypeError:
             kernel_slice = [kernel_slice]
+        if not isinstance(kernel_slice[0], slice):
+            raise ValueError("Kernel bounds must be specified as a slice.")
 
         if np.isscalar(t):
             #tidx = self.get_t_idx(t)
@@ -95,7 +94,7 @@ class ConvolveMixin:
             def convolve_single_t(t, slc):
                 try:
                     # Use a cached convolution if it exists
-                    cache_idx = self._conv_cache.get(kernel,slc)[output_tidx]
+                    return self._conv_cache.get(kernel,slc)[output_tidx]
                 except KeyError:
                     #######################################
                     # CUSTOMIZATION: Here is the call to the custom convolution function

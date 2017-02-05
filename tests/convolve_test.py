@@ -48,9 +48,9 @@ def convolve_test():
 
     np_conv = np.convolve(data[:], dis_kern[:], 'valid')[tidx - conv_len] * dt
 
-    print(sinn_conv)
-    print(np_conv)
-    print(true_conv(t))
+    print("single t, sinn (ExpKernel): ", sinn_conv)
+    print("single t, numpy:            ", np_conv)
+    print("single t, true:             ", true_conv(t))
 
     print("\nSlice test")
     tslice = slice(tidx, tidx + 5)

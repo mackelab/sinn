@@ -931,7 +931,7 @@ class Series(ConvolveMixin, History):
             return self.dt * lib.sum(discretized_kernel[kernel_slice][::-1] * self[hist_slice])
 
     def _convolve_op_batch(self, discretized_kernel, kernel_slice):
-        """Return the convolution at every lag with t0 and tn."""
+        """Return the convolution at every lag within t0 and tn."""
         # When indexing data, make sure to use self[…] rather than self._data[…],
         # to trigger calculations if necessary
 
@@ -953,7 +953,7 @@ class Series(ConvolveMixin, History):
             domain_slice = slice(domain_start, domain_start + len(self))
             shim.check(domain_slice.start >= 0)
                 # Check that there is enough padding before t0
-            retval = lib.convolve(self[:], discretized_kernel[kernel_slice],
+            retval = self.dt * lib.convolve(self[:], discretized_kernel[kernel_slice],
                                   mode='valid')[domain_slice]
             shim.check(len(retval) == len(self))
                 # Check that there is enough padding after tn
