@@ -40,7 +40,7 @@ class Activity(Model):
                                   ( 'c'   , config.cast_floatX ),
                                   ( 'Js'  , config.cast_floatX ),
                                   ( 'τa'  , config.cast_floatX ),
-                                  ( 'τm'  , config.cast_floatX ),
+                                  ( 'τm' , config.cast_floatX ),
                                   ( 'τabs', config.cats_floatX ) )
     Parameters = com.define_parameters(Parameter_info)
 

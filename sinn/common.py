@@ -220,7 +220,7 @@ class ParameterMixin:
 
     Parameter_info = {}
         # Overload this in derived classes
-    # Entries to Parameter dict: 'key': Parameter(fn, default)
+        # Entries to Parameter dict: 'key': (dtype, default)
     Parameters = define_parameters(Parameter_info)
         # Overload this in derived classes
 
@@ -237,12 +237,12 @@ class ParameterMixin:
         param_dict = {}
         for key in self.Parameters._fields:
             if isinstance(self.Parameter_info[key], tuple):
-                param_dict[key] = self.Parameter_info[key][1](getattr(params, key))
+                param_dict[key] = np.asarray(getattr(params,key), dtype=self.Parameter_info[key][0])
             else:
-                param_dict[key] = self.Parameter_info[key](getattr(params, key))
+                param_dict[key] = np.asarray(getattr(params, key), dtype=self.Parameter_info[key])
             # Wrap scalars in a 2D matrix so they play nice with algorithms
-            if not hasattr(param_dict[key], 'shape'):
-                param_dict[key] = shim.add_axes(param_dict[key], 2)
+            if shim.get_ndims(param_dict[key]) < 2:
+                param_dict[key] = shim.add_axes(param_dict[key], 2 - shim.get_ndims(param_dict[key]))
 
         self.params = self.Parameters(**param_dict)
 

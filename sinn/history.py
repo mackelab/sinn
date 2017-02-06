@@ -627,7 +627,9 @@ class Spiketimes(ConvolveMixin, History):
                      np.sum( f(t-s, from_pop_idx)
                              for spike_list in self.spike_times[self.pop_slices[from_pop_idx]]
                              for s in spike_list )
-                     for from_pop_idx in range(len(self.pop_sizes)) )
+                     for from_pop_idx in range(len(self.pop_sizes)) ).T
+                # We don't need to specify an axis here, because the sum is over distinct
+                # arrays f(.,.), and so np.sum sums the arrays but doesn't flatten them.
 
         #     return  EwiseIter( [
         #                     EwiseIter( [ np.fromiter( ( sum( f(to_pop_idx, from_pop_idx)(t-s) for s in neuron_spike_times )
@@ -642,7 +644,7 @@ class Spiketimes(ConvolveMixin, History):
                      np.sum( f(t-s, from_pop_idx)
                              for spike_list in self.spike_times[self.pop_slices[from_pop_idx]]
                              for s in self[begin:end] )
-                     for from_pop_idx in range(len(self.pop_idcs)) )
+                     for from_pop_idx in range(len(self.pop_idcs)) ).T
 
             # return EwiseIter( [
             #                EwiseIter( [ np.fromiter( ( sum( f(to_pop_idx, from_pop_idx)(t-s) if begin <= s < end else 0 for s in neuron_spike_times )
@@ -956,7 +958,13 @@ class Series(ConvolveMixin, History):
             hist_start_idx = tidx - kernel_slice.stop - discretized_kernel.idx_shift
             hist_slice = slice(hist_start_idx, hist_start_idx + kernel_slice.stop - kernel_slice.start)
             shim.check(hist_slice.start >= 0)
-            return self.dt * lib.sum(discretized_kernel[kernel_slice][::-1] * self[hist_slice])
+            return self.dt * lib.sum(discretized_kernel[kernel_slice][::-1]
+                                         * shim.add_axes(self[hist_slice], 1, 'before last'),
+                                     axis=0)
+                # history needs to be augmented by a dimension to match the kernel
+                # Since kernels are [to idx][from idx], the augmentation has to be on
+                # the second-last axis for broadcasting to be correct.
+                # TODO: This will break with multi-dim timeslices
 
     def _convolve_op_batch(self, discretized_kernel, kernel_slice):
         """Return the convolution at every lag within t0 and tn."""
@@ -981,8 +989,7 @@ class Series(ConvolveMixin, History):
             domain_slice = slice(domain_start, domain_start + len(self))
             shim.check(domain_slice.start >= 0)
                 # Check that there is enough padding before t0
-            retval = self.dt * lib.convolve(self[:], discretized_kernel[kernel_slice],
-                                  mode='valid')[domain_slice]
+            retval = self.dt * shim.conv1d(self[:], discretized_kernel[kernel_slice])[domain_slice]
             shim.check(len(retval) == len(self))
                 # Check that there is enough padding after tn
             return retval
@@ -996,6 +1003,9 @@ class Series(ConvolveMixin, History):
             return getattr(kernel, discretization_name)
 
         else:
+            shim.check(kernel.shape == self.shape*2)
+                # Ensure the kernel is square and of the right shape for this history
+
             if config.integration_precision == 1:
                 kernel_func = kernel.eval
             elif config.integration_precision == 2:

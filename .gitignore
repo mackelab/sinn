@@ -1,0 +1,13 @@
+*.ipynb_*
+__pycache__
+*.pdf
+*.egg*
+*.pyc
+dbggraph*.png
+scratch*
+local_runs
+*.db
+debuglog*
+data
+TMPNOTES
+venv

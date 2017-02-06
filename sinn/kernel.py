@@ -22,7 +22,10 @@ ParameterMixin = com.ParameterMixin
 #TODO: Discretized kernels as a mixin class
 
 class Kernel(ConvolveMixin, ParameterMixin):
-    """Generic Kernel class. All kernels should derive from this."""
+    """Generic Kernel class. All kernels should derive from this.
+    Kernels associated to histories with shape (M,) should have shape (M,M),
+    with indexing following kernel[to idx][from idx].
+    """
 
     def __init__(self, name, shape, f=None, memory_time=None, t0=0, **kwargs):
         """
@@ -61,8 +64,8 @@ class ExpKernel(Kernel):
     """An exponential kernel, of the form κ(s) = c exp(-(s-t0)/τ).
     """
 
-    Parameter_info = OrderedDict( ( ( 'height'     , config.cast_floatX ),
-                                    ( 'decay_const', config.cast_floatX ) ) )
+    Parameter_info = OrderedDict( ( ( 'height'     , (config.cast_floatX,) ),
+                                    ( 'decay_const', (config.cast_floatX,) ) ) )
     Parameters = com.define_parameters(Parameter_info)
 
     def __init__(self, name, shape, memory_time=None, t0=0, **kwargs):
@@ -107,8 +110,8 @@ class ExpKernel(Kernel):
         self.last_hist = None  # Keep track of the history object used for the last convolution
 
     def eval(self, s, from_idx=slice(None,None)):
-        return ( self.params.height[from_idx,:]
-                 * lib.exp(-(s-self.t0) / self.params.decay_const[from_idx,:]) )
+        return ( self.params.height[:,from_idx]
+                 * lib.exp(-(s-self.t0) / self.params.decay_const[:,from_idx]) )
 
     def _convolve_op_single_t(self, hist, t, kernel_slice):
 
@@ -122,7 +125,7 @@ class ExpKernel(Kernel):
             result = hist.convolve(self, t)
         else:
             Δt = t - self.last_t
-            result = ( lib.exp(-Δt/self.decay_const) * self.last_conv
+            result = ( lib.exp(-Δt/self.params.decay_const) * self.last_conv
                        + hist.convolve(self, t, slice(0, Δt)) )
 
         self.last_t = t

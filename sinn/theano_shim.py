@@ -22,6 +22,7 @@ Pointers for writing theano switches
 # TODO?: Move functions to another module, to minimise possible clashes with the * imports ?
 
 import numpy as np
+import scipy.signal
 import sinn.config as config
 
 #######################
@@ -231,6 +232,12 @@ def inc_subtensor(x, y, inplace=False, tolerate_aliasing=False):
         x[:] += y
         return x.base
 
+def get_ndims(x):
+    if config.use_theano and isinstance(x, theano.gof.Variable):
+        return x.ndim
+    else:
+        return len(x.shape)
+
 ######################
 # Convenience function to add an axis
 # E.g. to treat a scalar as a 1x1 matrix
@@ -246,22 +253,84 @@ def add_axes(x, num=1, side='left'):
     ----------
     num: int
         Number of axes to add. Default: 1.
-    side: 'left' | 'right'
-        'left' turns a 1D vector into a row vector, while 'right'
-        would turn it into a column vector. Default is 'left'.
+    side: 'left' | 'right' | 'before last'
+        - 'left' turns a 1D vector into a row vector. (Default)
+        - 'right' turns a 1D vector into a column vector.
+        - 'before last' adds axes to the second-last position.
+          Equivalent to 'left' on 1D vectors.'.
     """
-    assert(side in ('left', 'right'))
     if config.use_theano and isinstance(x, theano.gof.Variable):
         if side == 'left':
             shuffle_pattern = ['x']*num
             shuffle_pattern.extend(range(x.ndim))
-        else:
+        elif side  == 'right':
             shuffle_pattern = list(range(x.ndim))
             shuffle_pattern.extend( ['x']*num )
+        elif side == 'before last':
+            shuffle_pattern = list(range(x.ndim))
+            shuffle_pattern = shuffle_pattern[:-1] + ['x']*num + shuffle_pattern[-1:]
+        else:
+            raise ValueError("Unrecognized argument {} for side.".format(side))
         return T.dimsuffle(shuffle_pattern)
     else:
         x = np.asarray(x)
         if side == 'left':
             return x.reshape( (1,)*num + x.shape )
-        else:
+        elif side == 'right':
             return x.reshape( x.shape + (1,)*num )
+        elif side == 'before last':
+            return x.reshape( x.shape[:-1] + (1,)*num + x.shape[-1:] )
+        else:
+            raise ValueError("Unrecognized argument {} for side.".format(side))
+
+########################
+# Wrapper for discrete 1D convolutions
+
+# TODO: Use fftconvolve if ~500 time bins or more
+
+def conv1d(history_arr, discrete_kernel_arr, mode='valid'):
+    """
+    Applies the convolution to each component of the history
+    and stacks the result into an array
+
+    Parameters
+    ----------
+    history: ndarray | theano.tensor
+        Return value from indexing history[begin1:end1],
+        where history is a Series instance with shape (M,)
+    discrete_kernel: ndarray | theano.tensor
+        Return value from indexing discrete_kernel[begin2:end2],
+        where discret_kernel is a Series instance with shape (M, M)
+        obtained by calling history.discretize_kernel.
+
+    Returns
+    -------
+    ndarray:
+        Result has shape (M, M)
+    """
+
+    check(len(history_arr.shape) == 2)
+
+    # Convolutions leave the time component on the inside, but we want it on the outside
+    # So we do the iterations in reverse order, and flip the result with transpose()
+    # The result is indexed as [tidx][to idx][from idx]
+    if config.use_theano:
+        # We use slices from_idx:from_idx+1 because conv2d expects 2D objects
+        # We then index [:,0] to remove the spurious dimension
+        return T.stack(
+                  [ T.stack(
+                       [ T.signal.conv.conv2d(history_arr[:, from_idx:from_idx+1 ],
+                                              discrete_kernel_arr[:, to_idx, from_idx:from_idx+1 ],
+                                              image_shape = (len(history_arr._tarr), 1),
+                                              filter_shape = (len(kernel_arr._tarr), 1),
+                                              border_mode = mode)[:,0]
+                         for to_idx in T.arange(history_arr.shape[1]) ] )
+                       for from_idx in T.arange(history_arr.shape[1]) ] ).T
+    else:
+        return np.stack(
+                  [ np.stack(
+                       [ scipy.signal.convolve(history_arr[:, from_idx ],
+                                            discrete_kernel_arr[:, to_idx, from_idx ],
+                                            mode=mode)
+                         for to_idx in np.arange(history_arr.shape[1]) ] )
+                       for from_idx in np.arange(history_arr.shape[1]) ] ).T
