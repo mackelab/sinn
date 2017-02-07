@@ -61,5 +61,8 @@ class Model(com.ParameterMixin):
         if history is not None and hasattr(self, 'eval'):
             history.set_update_function(self.eval)
 
+        super().__init__(params=params)
+            # ParameterMixin requires params as a keyword parameter
+
     #TODO: Provide default gradient (through theano.grad) if likelihood is provided
 

@@ -664,7 +664,7 @@ class Series(ConvolveMixin, History):
     at t = -∞.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, shape=None, **kwargs):
         """
         Initialize a Series instance, derived from History.
 
@@ -673,8 +673,15 @@ class Series(ConvolveMixin, History):
         *args, **kwargs:
             Arguments required by History and ConvolveMixin
         """
-        conv_shape = kwargs['shape'] + kwargs['shape']
-        super().__init__(*args, convolve_shape=conv_shape, **kwargs)
+        if shape is None:
+            raise ValueError("'shape' is a required keyword "
+                             "for Series intializer.")
+        if 'convolve_shape' in kwargs:
+            assert(kwargs['convolve_shape'] == shape)
+        else:
+            kwargs['convolve_shape'] = shape*2
+
+        super().__init__(*args, shape=shape, **kwargs)
 
         # Migration note: _data was previously called self.array
         self._data = np.zeros(self._tarr.shape + self.shape, dtype=floatX)
@@ -869,7 +876,9 @@ class Series(ConvolveMixin, History):
             # Default is to use series' own compute functions
             self._compute_up_to(-1)
 
-        elif shim.istype(source, 'float') or shim.istype(source, 'int'):
+        elif (not hasattr(source, 'shape')
+              and (shim.istype(source, 'float')
+                   or shim.istype(source, 'int'))):
             # Constant input
             data = np.ones(tarr.shape + self.shape) * source
 
@@ -878,7 +887,7 @@ class Series(ConvolveMixin, History):
                 # Input specified as an array
                 if source.shape != tarr.shape + self.shape:
                     raise ValueError("The given external input series does not match the dimensions of the history")
-                data = external_input
+                data = source
 
             else:
                 try:

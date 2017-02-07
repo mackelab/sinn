@@ -40,6 +40,11 @@ class Kernel(ConvolveMixin, ParameterMixin):
         t0: float
             The time corresponding to f(0). Kernel is zero before this time.
         """
+        if 'convolve_shape' in kwargs:
+            assert( kwargs['convolve_shape'] == shape )
+        else:
+            kwargs['convolve_shape'] = shape
+
         super().__init__(**kwargs)
 
         self.name = name

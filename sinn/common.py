@@ -152,9 +152,9 @@ def define_parameters(param_dict):
     Parameters = namedtuple('Parameters', keys)
     # Set default values for the parameters. A default value of`None`
     # indicates that the parameter is mandatory.
-    Parameters.__new__.__defaults__ = tuple([param_dict[key][2] for key in keys
-                                       if isinstance(param_dict[key], tuple)
-                                          and len(param_dict[key]) == 3])
+    Parameters.__new__.__defaults__ = tuple([param_dict[key][1] for key in keys
+                                             if isinstance(param_dict[key], tuple)
+                                             and len(param_dict[key]) == 2])
         # http://stackoverflow.com/a/18348004
     return Parameters
 

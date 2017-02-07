@@ -149,8 +149,8 @@ class ShimmedRandomStreams:
     def __init__(self, seed=None):
         np.random.seed(seed)
 
-    def normal(size=None, avg=0.0, std=1.0, ndim=None, dtype=None):
-        return np.random(loc=avg, scale=std, size=size).astype(dtype)
+    def normal(self, size=None, avg=0.0, std=1.0, ndim=None, dtype=None):
+        return np.random.normal(loc=avg, scale=std, size=size).astype(dtype)
 
 if config.use_theano:
     RandomStreams = theano.tensor.shared_randomstreams.RandomStreams
@@ -253,24 +253,24 @@ def add_axes(x, num=1, side='left'):
     ----------
     num: int
         Number of axes to add. Default: 1.
-    side: 'left' | 'right' | 'before last'
-        - 'left' turns a 1D vector into a row vector. (Default)
-        - 'right' turns a 1D vector into a column vector.
+    side: 'before' | 'left' | 'after' | 'right' | 'before last'
+        - 'before', 'left' turns a 1D vector into a row vector. (Default)
+        - 'after', 'right' turns a 1D vector into a column vector.
         - 'before last' adds axes to the second-last position.
           Equivalent to 'left' on 1D vectors.'.
     """
     if config.use_theano and isinstance(x, theano.gof.Variable):
-        if side == 'left':
+        if side in ['left', 'before']:
             shuffle_pattern = ['x']*num
             shuffle_pattern.extend(range(x.ndim))
-        elif side  == 'right':
+        elif side  == ['right', 'after']:
             shuffle_pattern = list(range(x.ndim))
             shuffle_pattern.extend( ['x']*num )
         elif side == 'before last':
             shuffle_pattern = list(range(x.ndim))
             shuffle_pattern = shuffle_pattern[:-1] + ['x']*num + shuffle_pattern[-1:]
         else:
-            raise ValueError("Unrecognized argument {} for side.".format(side))
+            raise ValueError("Unrecognized argument `{}` for side.".format(side))
         return T.dimsuffle(shuffle_pattern)
     else:
         x = np.asarray(x)
