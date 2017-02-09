@@ -195,13 +195,14 @@ class History(HistoryBase):
         """
 
         if shim.istype(key, ('int', 'float')):
-            tidx = self.get_t_idx(key)
+            key = self.get_t_idx(key)
                 # If `key` is a negative integer, returns as is
                 # If `key` is a negative float, returns a positive index integer
-            end = shim.ifelse(tidx >= 0,
-                             tidx,
-                             len(self._tarr) + key)
+            key = shim.ifelse(key >= 0,
+                              key,
+                              len(self._tarr) + key)
                 # key = -1 returns last element
+            end = key
 
         elif isinstance(key, slice):
             # Get the latest point queried for in `key`
@@ -221,8 +222,10 @@ class History(HistoryBase):
                                    stop,
                                    len(self._tarr) + start)
 
-            end = shim.max_of_2(start, stop - 1)
+            end = shim.largest(start, stop - 1)
                 # `stop` is the first point beyond the array
+
+            key = slice(start, stop)
 
         else:
             raise ValueError("Trying to index using {} ({}). 'key' should be an "
@@ -427,7 +430,7 @@ class Spiketimes(ConvolveMixin, History):
         self.pop_sizes = pop_sizes
 
         shape = (np.sum(pop_sizes),)
-        conv_shape = (len(pop_sizes),)
+#        conv_shape = (len(pop_sizes),)
 
         # kwargs should not have shape, as it's calculated
         # Return an error if it's different from the calculated value
@@ -444,7 +447,7 @@ class Spiketimes(ConvolveMixin, History):
             self.pop_slices.append(slice(i, i+pop_size))
             i += pop_size
 
-        super().__init__(t0, tn, dt, shape, convolve_shape=conv_shape, **kwargs)
+        super().__init__(t0, tn, dt, shape, **kwargs)
 
     def initialize(self, init_data=-np.inf):
         """
@@ -676,10 +679,10 @@ class Series(ConvolveMixin, History):
         if shape is None:
             raise ValueError("'shape' is a required keyword "
                              "for Series intializer.")
-        if 'convolve_shape' in kwargs:
-            assert(kwargs['convolve_shape'] == shape)
-        else:
-            kwargs['convolve_shape'] = shape*2
+        # if 'convolve_shape' in kwargs:
+        #     assert(kwargs['convolve_shape'] == shape)
+        # else:
+        #     kwargs['convolve_shape'] = shape*2
 
         super().__init__(*args, shape=shape, **kwargs)
 
@@ -697,6 +700,7 @@ class Series(ConvolveMixin, History):
         been calculated sufficiently far.
 
         '''
+        assert(not isinstance(key, float))
         return self._data[key]
 
     def update(self, tidx, value):
@@ -1012,8 +1016,9 @@ class Series(ConvolveMixin, History):
             return getattr(kernel, discretization_name)
 
         else:
-            shim.check(kernel.shape == self.shape*2)
-                # Ensure the kernel is square and of the right shape for this history
+            #TODO: Add compability check of the kernel's shape with this history.
+            #shim.check(kernel.shape == self.shape*2)
+            #    # Ensure the kernel is square and of the right shape for this history
 
             if config.integration_precision == 1:
                 kernel_func = kernel.eval
@@ -1031,15 +1036,18 @@ class Series(ConvolveMixin, History):
                 # We don't use shim.round because time indices must be Python numbers
             t0 = idx_shift * self.dt  # Ensure the discretized kernel's t0 is a multiple of dt
 
-            memory_idx_len = int(kernel.memory_time // self.dt) - 1
+            memory_idx_len = int(kernel.memory_time // self.dt) - 1 - idx_shift
                 # It is essential here to use the same forumla as pad_time
                 # We substract one because one bin more or less makes no difference,
                 # and doing so ensures that padding with `memory_time` always
                 # is sufficient (no dumb numerical precision errors adds a bin)
-            full_idx_len = memory_idx_len + idx_shift
-                # `memory_time` is the amount of time before t0
+                # NOTE: kernel.memory_time includes the time between 0 and t0,
+                # and so we need to substract idx_shift to keep only the time after t0.
 
-            dis_kernel = Series(t0, t0 + full_idx_len*self.dt,
+            #full_idx_len = memory_idx_len + idx_shift
+            #    # `memory_time` is the amount of time before t0
+
+            dis_kernel = Series(t0, t0 + memory_idx_len*self.dt,
                                 self.dt, shape=kernel.shape, f=kernel_func)
             dis_kernel.idx_shift = idx_shift
 

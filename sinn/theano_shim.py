@@ -125,7 +125,7 @@ else:
     cast_varint64 = np.int64
 
 #####################
-# Set rounding function
+# Simple convenience functions
 def round(x):
     try:
         res = x.round()  # Theano variables have a round method
@@ -133,14 +133,42 @@ def round(x):
         res = round(x)
     return res
 
+def asvariable(x):
+    if config.use_theano:
+        # No `isinstance` here: the point is to cast to variable
+        return T.as_tensor_variable(x)
+    else:
+        return np.asarray(x)
+
+def asarray(x):
+    if config.use_theano and isinstance(x, theano.gof.Variable):
+        return T.as_tensor_variable(x)
+    else:
+        return np.asarray(x)
 #####################
-# Convenience function for choosing largest of two arguments
-def max_of_2(x, y):
-    # numpy and Theano's max functions would require first
-    # constructing an array from x and y, which is wasteful
-    # for such a simple binary selection (also probably
-    # makes the Theano graph more difficult to compute).
-    return ifelse(x > y, x, y)
+# Convenience function for max / min
+
+def largest(*args):
+    """Element-wise max operation."""
+    assert(len(args) >= 2)
+    if config.use_theano and any(isinstance(arg, theano.gof.Variable) for arg in args):
+        return T.largest(*args)
+    else:
+        retval = np.maximum(args[0], args[1])
+        for arg in args[2:]:
+            retval = np.maximum(retval, arg)
+        return retval
+
+def smallest(*args):
+    """Element-wise min operation."""
+    assert(len(args) >= 2)
+    if config.use_theano and any(isinstance(arg, theano.gof.Variable) for arg in args):
+        return T.smallest(*args)
+    else:
+        retval = np.minimum(args[0], args[1])
+        for arg in args[2:]:
+            retval = np.minimum(retval, arg)
+        return retval
 
 #####################
 # Set random functions
@@ -168,7 +196,34 @@ else:
 ################################################
 
 ######################
-# Interchangeable ifelse function
+# Conditionals
+
+def lt(a, b):
+    if (config.use_theano and isinstance(condition, theano.gof.Variable)):
+        return T.lt(a, b)
+    else:
+        return a < b
+def lt(a, b):
+    if (config.use_theano and isinstance(condition, theano.gof.Variable)):
+        return T.le(a, b)
+    else:
+        return a <= b
+def gt(a, b):
+    if (config.use_theano and isinstance(condition, theano.gof.Variable)):
+        return T.gt(a, b)
+    else:
+        return a > b
+def ge(a, b):
+    if (config.use_theano and isinstance(condition, theano.gof.Variable)):
+        return T.ge(a, b)
+    else:
+        return a >= b
+def eq(a, b):
+    if (config.use_theano and isinstance(condition, theano.gof.Variable)):
+        return T.eq(a, b)
+    else:
+        return a == b
+
 def ifelse(condition, then_branch, else_branch, name=None):
     if (config.use_theano and isinstance(condition, theano.gof.Variable)):
         # Theano function
@@ -180,6 +235,13 @@ def ifelse(condition, then_branch, else_branch, name=None):
             return then_branch
         else:
             return else_branch
+
+def switch(cond, ift, iff):
+    if (config.use_theano and isinstance(condition, theano.gof.Variable)):
+        return T.switch(cond, ift, iff)
+    else:
+        return np.where(cond, ift, iff)
+
 
 ######################
 # Shared variable constructor
@@ -232,6 +294,7 @@ def inc_subtensor(x, y, inplace=False, tolerate_aliasing=False):
         x[:] += y
         return x.base
 
+# TODO: Deprecate: numpy arrays have ndim
 def get_ndims(x):
     if config.use_theano and isinstance(x, theano.gof.Variable):
         return x.ndim
@@ -239,7 +302,7 @@ def get_ndims(x):
         return len(x.shape)
 
 ######################
-# Convenience function to add an axis
+# Axis manipulation functions
 # E.g. to treat a scalar as a 1x1 matrix
 
 def add_axes(x, num=1, side='left'):
@@ -263,7 +326,7 @@ def add_axes(x, num=1, side='left'):
         if side in ['left', 'before']:
             shuffle_pattern = ['x']*num
             shuffle_pattern.extend(range(x.ndim))
-        elif side  == ['right', 'after']:
+        elif side  in ['right', 'after']:
             shuffle_pattern = list(range(x.ndim))
             shuffle_pattern.extend( ['x']*num )
         elif side == 'before last':
@@ -274,14 +337,24 @@ def add_axes(x, num=1, side='left'):
         return T.dimsuffle(shuffle_pattern)
     else:
         x = np.asarray(x)
-        if side == 'left':
+        if side in ['left', 'before']:
             return x.reshape( (1,)*num + x.shape )
-        elif side == 'right':
+        elif side in ['right', 'after']:
             return x.reshape( x.shape + (1,)*num )
         elif side == 'before last':
             return x.reshape( x.shape[:-1] + (1,)*num + x.shape[-1:] )
         else:
             raise ValueError("Unrecognized argument {} for side.".format(side))
+
+def moveaxis(a, source, destination):
+    if config.use_theano and isinstance(x, theano.gof.Variable):
+        axes_lst = list(range(x.ndim))
+        axes_lst.pop(source)
+        axes_lst = axes_lst[:destination] + [source] + axes_lst[destination:]
+        return a.dimshuffle(axes_lst)
+    else:
+        return np.moveaxis(a, source, destination)
+
 
 ########################
 # Wrapper for discrete 1D convolutions
@@ -324,13 +397,13 @@ def conv1d(history_arr, discrete_kernel_arr, mode='valid'):
                                               image_shape = (len(history_arr._tarr), 1),
                                               filter_shape = (len(kernel_arr._tarr), 1),
                                               border_mode = mode)[:,0]
-                         for to_idx in T.arange(history_arr.shape[1]) ] )
-                       for from_idx in T.arange(history_arr.shape[1]) ] ).T
+                         for to_idx in T.arange(discrete_kernel_arr.shape[1]) ] )
+                       for from_idx in T.arange(discrete_kernel_arr.shape[2]) ] ).T
     else:
         return np.stack(
                   [ np.stack(
                        [ scipy.signal.convolve(history_arr[:, from_idx ],
                                             discrete_kernel_arr[:, to_idx, from_idx ],
                                             mode=mode)
-                         for to_idx in np.arange(history_arr.shape[1]) ] )
-                       for from_idx in np.arange(history_arr.shape[1]) ] ).T
+                         for to_idx in np.arange(discrete_kernel_arr.shape[1]) ] )
+                       for from_idx in np.arange(discrete_kernel_arr.shape[2]) ] ).T

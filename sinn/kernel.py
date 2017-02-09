@@ -25,6 +25,22 @@ class Kernel(ConvolveMixin, ParameterMixin):
     """Generic Kernel class. All kernels should derive from this.
     Kernels associated to histories with shape (M,) should have shape (M,M),
     with indexing following kernel[to idx][from idx].
+
+    IMPORTANT OPTIMIZATION NOTE:
+    If you only need the diagonal of the kernel (because it only depends
+    on the 'from' population), then it doesn't need to be MxM. Typical
+    options then for the 'shape':
+    MxM:
+        Usual shape. If the output is size M, it will be repeated (with tile)
+        to produce an MxM matrix. Avoid this if you can use broadcasting instead.
+    1xM or Mx1:
+        Leave the number of dimensions unchanged, but flatten into one column / rom.
+        This will typically work best with broadcasting.
+        1xM : independent of 'to' pop.
+        Mx1 : independent of 'from' pop.
+    M: DEPRECATED
+        Throw away the row dimension and treat the result as a 1D array.
+    Refer to the `shape_output` method to see exactly how the output is reshaped.
     """
 
     def __init__(self, name, shape, f=None, memory_time=None, t0=0, **kwargs):
@@ -40,10 +56,10 @@ class Kernel(ConvolveMixin, ParameterMixin):
         t0: float
             The time corresponding to f(0). Kernel is zero before this time.
         """
-        if 'convolve_shape' in kwargs:
-            assert( kwargs['convolve_shape'] == shape )
-        else:
-            kwargs['convolve_shape'] = shape
+        # if 'convolve_shape' in kwargs:
+        #     assert( kwargs['convolve_shape'] == shape )
+        # else:
+        #     kwargs['convolve_shape'] = shape
 
         super().__init__(**kwargs)
 
@@ -54,7 +70,10 @@ class Kernel(ConvolveMixin, ParameterMixin):
         if f is not None:
             self.eval = f
         if hasattr(self, 'eval'):
-            if not self.shape == self.eval(0).shape:
+            # Sanity test on the eval method
+            try:
+                self.shape_output(self.eval(0))
+            except ValueError:
                 raise ValueError("The parameters to the kernel's evaluation "
                                  "function seem to have incompatible shapes.")
         # TODO: add set_eval method, and make memory_time optional here
@@ -64,13 +83,37 @@ class Kernel(ConvolveMixin, ParameterMixin):
     def _convolve_op_single_t(self, hist, t, kernel_slice):
         return hist._convolve_op_single_t(self, t, kernel_slice)
 
+    def shape_output(self, output):
+        """It may be that the output is only the diagonal of the kernel
+        (i.e. the kernel depends only on the 'from' population, not the
+        'to' population). Check, and if so, reshape as needed by
+        duplicating the columns.
+
+        If the output shape matches the kernel's, return it as is.
+        If the output shape is "half" the kernel's (e.g. (2,) and (2,2)),
+          treat it as a column and repeat it horizontally with tile.
+          This will allocate memory.
+        Otherwise, try to reshape it with the kernel's shape.
+          This will fail if the number of elements don't match.
+        """
+        shim.check(self.shape == output.shape
+                   or self.shape == output.shape*2
+                   or np.prod(self.shape) == np.prod(output.shape))
+        shim.ifelse(output.shape == self.shape,
+                    output,
+                    shim.ifelse(self.shape == output.shape*2,
+                                lib.tile(shim.add_axes(output, output.ndim).T,
+                                         (1,)*output.ndim + output.shape),
+                                output.reshape(self.shape) ) )
+
 
 class ExpKernel(Kernel):
     """An exponential kernel, of the form κ(s) = c exp(-(s-t0)/τ).
     """
 
     Parameter_info = OrderedDict( ( ( 'height'     , (config.cast_floatX,) ),
-                                    ( 'decay_const', (config.cast_floatX,) ) ) )
+                                    ( 'decay_const', (config.cast_floatX,) ),
+                                    ( 't_offset'   , (config.cast_floatX,) ) ) )
     Parameters = com.define_parameters(Parameter_info)
 
     def __init__(self, name, shape, memory_time=None, t0=0, **kwargs):
@@ -102,9 +145,10 @@ class ExpKernel(Kernel):
         # (Divide ∫_t^∞ by ∫_0^∞ to get this formula.)
         params = kwargs['params']
         if memory_time is None:
+            assert(0 < config.truncation_ratio < 1)
             # We want a numerical value, so we use the test value associated to the variables
             decay_const_val = np.max(shim.get_test_value(params.decay_const))
-            memory_time = -decay_const_val * np.log(config.truncation_ratio)
+            memory_time = t0 -decay_const_val * np.log(config.truncation_ratio)
 
         ########
         # Initialize base class
@@ -114,16 +158,19 @@ class ExpKernel(Kernel):
         self.last_conv = None  # Keep track of the last convolution result
         self.last_hist = None  # Keep track of the history object used for the last convolution
 
-    def eval(self, s, from_idx=slice(None,None)):
-        return ( self.params.height[:,from_idx]
-                 * lib.exp(-(s-self.t0) / self.params.decay_const[:,from_idx]) )
+    def eval(self, t, from_idx=slice(None,None)):
+        return shim.switch(shim.lt(t, self.params.t_offset),
+                           0,
+                           self.params.height[:,from_idx]
+                             * lib.exp(-(t-self.params.t_offset)
+                                       / self.params.decay_const[:,from_idx]) )
 
     def _convolve_op_single_t(self, hist, t, kernel_slice):
 
         #TODO: store multiple caches, one per history
         #TODO: do something with kernel_slice
         if kernel_slice != slice(None, None):
-            raise NotImplementedError
+            result = hist.convolve(self, t, kernel_slice)
         if (self.last_conv is None
             or hist is not self.last_hist
             or t < self.last_t):

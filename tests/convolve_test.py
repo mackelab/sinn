@@ -30,9 +30,10 @@ def convolve_test():
 
     params = kernel.ExpKernel.Parameters(
         height = 1,
-        decay_const = τ
+        decay_const = τ,
+        t_offset = 0
         )
-    kern = kernel.ExpKernel('κ', (1,1), params=params, convolve_shape=(1,1))
+    kern = kernel.ExpKernel('κ', (1,1), params=params)
 
     def true_conv(t, a=0, b=np.inf):
         """The analytical solution to the convolution"""
@@ -58,7 +59,7 @@ def convolve_test():
     np_conv = np.convolve(data[:][:,0], dis_kern[:][:,0,0], 'valid')[tidx - conv_len] * dt
 
     print("single t, sinn (ExpKernel): ", sinn_conv)
-    print("single t, manual numpy:            ", np_conv)
+    print("single t, manual numpy:     ", np_conv)
     print("single t, true:             ", true_conv(t))
 
     print("\nSlice test")
@@ -88,8 +89,18 @@ def convolve_test():
     print("no slice, with special exponential optimization:  \n", res, "\nCalculation took {}ms\n".format((t2-t1)*1000))
 
     print("\nPartial kernel\n")
-    print("library convolution: ", data.convolve(kern, t, slice(0.1, 0.3)))
+    print("library convolution (history): ", data.convolve(kern, t, slice(0.1, 0.3)))
+    print("library convolution (kernel): ", kern.convolve(data, t, slice(0.1, 0.3)))
     print("true value:          ", true_conv(t, 0.1, 0.3))
+
+
+    print("\nCached convolutions\n")
+    kern.convolve(data)
+    print("(kernel): ", kern.convolve(data, t))
+    print("true:     ", true_conv(t))
+
+
+
 
     print("\n==========================")
     print("\n2 populations (2x2 kernel)\n")
@@ -100,9 +111,11 @@ def convolve_test():
         height = ((1,   0.3),
                   (0.7, 1.3)),
         decay_const = ((τ,   3*τ),
-                       (2*τ, 0.3*τ))
+                       (2*τ, 0.3*τ)),
+        t_offset = ((0, 0),
+                    (0, 0))
         )
-    kern2 = kernel.ExpKernel('κ', (2,2), params=params2, convolve_shape=(2,2))
+    kern2 = kernel.ExpKernel('κ', (2,2), params=params2)
 
 
     def true_conv2(t, a=0, b=np.inf):
@@ -170,6 +183,13 @@ def convolve_test():
     print("\nPartial kernel\n")
     print("library convolution: \n", data2.convolve(kern2, t, slice(0.1, 0.3)))
     print("true value:          \n", true_conv2(t, 0.1, 0.3))
+
+
+    print("\nCached convolutions\n")
+    kern2.convolve(data2)
+    print("(kernel): ", kern2.convolve(data2, t))
+    print("true:     ", true_conv2(t))
+
 
     return
 

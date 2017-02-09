@@ -28,7 +28,7 @@ class HistoryBase:
 
 class OpCache:
 
-    def __init__(self, source, op, op_shape):
+    def __init__(self, source, op):
         """
         Parameters
         ----------
@@ -38,14 +38,14 @@ class OpCache:
         op: callable
             Binary operation we want to cache. Return value
             should be a 1d array of same length as source
-        op_shape: int tuple
+        op_shape: DEPRECATED int tuple
             Shape of the operation's output.
         """
         self.cache = {}
         self.old_cache = {}
         self.source = source
         self.op = op
-        self.op_shape = op_shape
+        #self.op_shape = op_shape
 
     def theano_reset(self):
         for key in self.old_cache:
@@ -91,9 +91,9 @@ class OpCache:
             else:
                 assert( isinstance(other, HistoryBase) )
                 hist = other
-            entry_shape = (len(hist),) + self.op_shape
+            #entry_shape = (len(hist),) + self.op_shape
             self.cache[id(other)] = {
-                'data':       shim.shared(np.zeros((0,) + entry_shape)),
+                'data':       None,#shim.shared(np.zeros((0,) + entry_shape)),
                 'index list': {}
             }
             self.old_cache[id(other)] = None
@@ -110,30 +110,40 @@ class OpCache:
                 ###########################################
                 for arg, cache_idx in zip(args, data_keys)
                 if cache_idx is None ] )
-            # Add the indices they will have in the newly augmented cache
-            k = self.cache[id(other)]['data'].get_value().shape[0]
-            for i, (dkey, akey) in enumerate(zip(data_keys, arg_keys)):
-                if dkey is None:
-                    data_keys[i] = k
-                    self.cache[id(other)]['index list'][akey] = k
-                    k += 1
-            # Create the new data cache
-            if config.use_theano:
-                assert(self.old_cache is None)
-                # Keep the old cache in memory, otherwise updates mechanism will break
-                self.old_cache[id(other)] = self.cache[id(other)]['data']
-                self.cache[id(other)]['data'] = lib.concatenate(
-                            (self.old_cache[id(other)], data) )
-                # This is a shared variable, so add to the updates list
-                shim.theano_updates[self.old_cache[id(other)]['data']] = \
-                            self.cache[id(other)]['data']
+            if self.cache[id(other)]['data'] is None:
+                # First time we cache data – create a new structure
+                self.cache[id(other)]['data'] = shim.shared(new_data)
+                for i, akey in enumerate(arg_keys):
+                    data_keys[i] = i
+                    self.cache[id(other)]['index list'][akey] = i
             else:
-                # Since we aren't using Theano, we don't need to create old_cache
-                # and can allow reuse of cache memory
-                self.cache[id(other)]['data'].set_value(
-                    lib.concatenate(
-                        (self.cache[id(other)]['data'].get_value(), new_data), axis = 0 )
-                )
+                # Update the existing cache
+
+                # Add the indices they will have in the newly augmented cache
+                k = self.cache[id(other)]['data'].get_value().shape[0]
+                for i, (dkey, akey) in enumerate(zip(data_keys, arg_keys)):
+                    if dkey is None:
+                        data_keys[i] = k
+                        self.cache[id(other)]['index list'][akey] = k
+                        k += 1
+
+                # Create the new data cache
+                if config.use_theano:
+                    assert(self.old_cache is None)
+                    # Keep the old cache in memory, otherwise updates mechanism will break
+                    self.old_cache[id(other)] = self.cache[id(other)]['data']
+                    self.cache[id(other)]['data'] = lib.concatenate(
+                                (self.old_cache[id(other)], new_data) )
+                    # This is a shared variable, so add to the updates list
+                    shim.theano_updates[self.old_cache[id(other)]['data']] = \
+                                self.cache[id(other)]['data']
+                else:
+                    # Since we aren't using Theano, we don't need to create old_cache
+                    # and can allow reuse of cache memory
+                    self.cache[id(other)]['data'].set_value(
+                        lib.concatenate(
+                            (self.cache[id(other)]['data'].get_value(), new_data), axis = 0 )
+                    )
         return self.cache[id(other)]['data'][data_keys]
 
 #################################

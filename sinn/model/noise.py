@@ -33,7 +33,7 @@ class GaussianWhiteNoise(Model):
 
     def eval(self, t):
         return np.clip(self.rndstream.normal(avg  = 0,
-                                             std  = self.std/sp.sqrt(dt),
+                                             std  = self.params.std/np.sqrt(self.history.dt),
                                              size = self.params.shape),
                        -self.params.clip_limit,
                        self.params.clip_limit)

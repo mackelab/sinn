@@ -23,20 +23,20 @@ class ConvolveMixin:
         """
         Parameters
         ----------
-        convolve_shape: int tuple (keyword only)
+        convolve_shape: DEPRECATED int tuple (keyword only)
             Shape the result of a convolution takes. Should
             match the output of _conv_op_single_t.
         *args, **kwargs:
             Passed to base initializer
         """
 
-        try:
-            convolve_shape = kwargs.pop('convolve_shape')
-        except KeyError:
-            raise TypeError("Unsufficient arguments: ConvolveMixin "
-                            "requires a `convolve_shape` argument.")
-        self._conv_cache = com.OpCache(self, self._convolve_op_batch,
-                                       convolve_shape)
+        # try:
+        #     convolve_shape = kwargs.pop('convolve_shape')
+        # except KeyError:
+        #     raise TypeError("Unsufficient arguments: ConvolveMixin "
+        #                     "requires a `convolve_shape` argument.")
+        self._conv_cache = com.OpCache(self, self._convolve_op_batch)
+                                       #convolve_shape)
             # Store convolutions so they don't have to be recalculated.
             # The dictionary is keyed by the id of the kernels with which
             # convolutions were computed.

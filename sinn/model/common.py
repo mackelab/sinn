@@ -48,18 +48,24 @@ class Model(com.ParameterMixin):
     """
 
     def __init__(self, params, history=None):
+        # History is optional because more complex models have multiple histories.
+        # They should keep track of them themselves.
         """
         Parameters
         ----------
         params: self.Parameters instance
 
         history: History instance
-            If provided, and if this model has an `eval` method, then that method is
+            If provided, a reference is kept to this history: Model evaluation may require
+            querying some of its attributes, such as time step (dt). These may not be
+            constant in time.
+            If this model has an `eval` method, then that method is also
             attached to `history` as its update function.
         """
-        # Try to attach default updater
-        if history is not None and hasattr(self, 'eval'):
-            history.set_update_function(self.eval)
+        if history is not None:
+            self.history = history
+            if hasattr(self, 'eval'):
+                history.set_update_function(self.eval)
 
         super().__init__(params=params)
             # ParameterMixin requires params as a keyword parameter
