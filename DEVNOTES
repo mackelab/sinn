@@ -1,0 +1,4 @@
+
+TODOs:
+  - Determine the convolution shape in ConvolutionMixin, depending
+    on the history-kernel pair
