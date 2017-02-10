@@ -312,14 +312,16 @@ class Activity(Model):
         new_new_occN = shim.inc_subtensor(new_occN[1], new_occN[0])
 
         # Compute the new a
-        return (lib.sum( ρ * new_new_occN[1:], axis=1 ),
+        # In the writeup we set axis=1, because we sum once for the entire
+        # series, so t is another dimension
+        return (lib.sum( ρ * new_new_occN[1:] * self.a.dt, axis=0 ),
                 {occN: new_new_occN})
 
     def a_fn(self, t):
         # Check that the indexing in a and A match
         self.check_indexing(t)
         # Compute a(t)
-        return self.a_onestep(t, self.A[t - self.A.dt], self.JsᕽAᐩI, self.occN)
+        return self.a_onestep(t, self.A[self.A.get_t_idx(t) - 1], self.JsᕽAᐩI, self.occN)
 
     def compute_range_a(self, t_array):
         """

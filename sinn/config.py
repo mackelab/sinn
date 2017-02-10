@@ -3,7 +3,6 @@ import numpy as np
 integration_precision = 1
 truncation_ratio = 0.001
 
-
 # List of optional librairies we want to load.
 # Some code may e.g. choose to use theano objects if it is available
 # They may be added later with
@@ -29,6 +28,10 @@ else:
 
 #######################
 # Set functions to cast to numerical float
+
+# TODO: Rewrite these functions so they always check the value of floatX
+#       That way we can change the cast precision by just changing floatX
+
 if use_theano:
     floatX = theano.config.floatX
     if floatX == 'float32':

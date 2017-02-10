@@ -169,16 +169,22 @@ class ExpKernel(Kernel):
 
         #TODO: store multiple caches, one per history
         #TODO: do something with kernel_slice
+
+        t = hist.get_time(t) # Ensure t is a time, not an index
+
         if kernel_slice != slice(None, None):
             result = hist.convolve(self, t, kernel_slice)
-        if (self.last_conv is None
-            or hist is not self.last_hist
-            or t < self.last_t):
-            result = hist.convolve(self, t)
+        elif self.last_conv is not None and self.last_hist is hist:
+            if t > self.last_t:
+                Δt = t - self.last_t
+                result = ( lib.exp(-Δt/self.params.decay_const) * self.last_conv
+                           + hist.convolve(self, t, slice(self.t0, self.t0 + Δt)) )
+            elif t == self.last_t:
+                result = self.last_conv
+            else:
+                result = hist.convolve(self, t)
         else:
-            Δt = t - self.last_t
-            result = ( lib.exp(-Δt/self.params.decay_const) * self.last_conv
-                       + hist.convolve(self, t, slice(0, Δt)) )
+            result = hist.convolve(self, t)
 
         self.last_t = t
         self.last_conv = result

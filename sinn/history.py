@@ -252,7 +252,10 @@ class History(HistoryBase):
         Parameters
         ----------
         func: callable
-            The update function. Its signature should be `func(slice)`
+            The update function. Its signature should be `func(time array)`
+            `time array` will be passed as an array of consecutive times,
+            so `func` can safely assume that its input is ordered and that
+            it doesn't skip over any time bin.
         """
         self._compute_range = func
 
@@ -310,7 +313,8 @@ class History(HistoryBase):
         if self._compute_range is not None:
             # A specialized function for computing multiple time points
             # has been defined – use it.
-            self._compute_range(self._tarr[slice(start, stop)])
+            self.update(slice(start, stop),
+                        self._compute_range(self._tarr[slice(start, stop)]))
 
         elif not self._iterative:
             # Computation doesn't depend on history – just compute the whole thing in
@@ -351,8 +355,10 @@ class History(HistoryBase):
         If t is an index (i.e. int), return the time corresponding to t_idx.
         Else just return t
         """
+        # TODO: Is it OK to enforce single precision ?
+
         if shim.istype(t, 'int'):
-            return self._tarr[0] + t*self.dt
+            return config.cast_floatX(self._tarr[0] + t*self.dt)
         else:
             return t
 
@@ -390,15 +396,22 @@ class History(HistoryBase):
         else:
             return _get_tidx(t)
 
-    def theano_reset(self):
-        """Allow theano functions to be called again.
-        It is assumed that variables in self._theano_updates have been safely
-        updated externally.
-        """
-        try:
-            super().theano_reset()
-        except AttributeError:
-            pass
+    def make_positive_slice(self, slc):
+        def flip(idx):
+            assert(shim.istype(idx, 'int'))
+            return idx if idx >= 0 else len(self._tarr) + idx
+        return slice(0 if slc.start is None else flip(slc.start),
+                     len(self._tarr) if slc.stop is None else flip(slc.stop))
+
+    # def theano_reset(self):
+    #     """Allow theano functions to be called again.
+    #     It is assumed that variables in self._theano_updates have been safely
+    #     updated externally.
+    #     """
+    #     try:
+    #         super().theano_reset()
+    #     except AttributeError:
+    #         pass
 
 class Spiketimes(ConvolveMixin, History):
     """A class to store spiketrains.
@@ -732,8 +745,8 @@ class Series(ConvolveMixin, History):
                 # Ensure that we update at most one step in the future
         else:
             assert(isinstance(tidx, slice))
-            shim.check(tidx.end > tidx.start)
-            end = tidx.end
+            shim.check(tidx.stop > tidx.start)
+            end = tidx.stop - 1
             shim.check(tidx.start <= self._cur_tidx + 1)
                 # Ensure that we update at most one step in the future
 
@@ -751,7 +764,8 @@ class Series(ConvolveMixin, History):
                 # in memory.
             self._data = T.set_subtensor(self._original_data[tidx], value)
             if updates is not None:
-                self._theano_updates.update(updates)
+                shim.theano_updates.update(updates)
+                    #.update is a dictionary method
 
         else:
             if updates is not None:
@@ -965,12 +979,21 @@ class Series(ConvolveMixin, History):
         if kernel_slice.start == kernel_slice.stop:
             return 0
         else:
+            kernel_slice = self.make_positive_slice(kernel_slice)
             # Algorithm assumes an increasing kernel_slice
             shim.check(kernel_slice.stop > kernel_slice.start)
 
             hist_start_idx = tidx - kernel_slice.stop - discretized_kernel.idx_shift
             hist_slice = slice(hist_start_idx, hist_start_idx + kernel_slice.stop - kernel_slice.start)
-            shim.check(hist_slice.start >= 0)
+            try:
+                shim.check(hist_slice.start >= 0)
+            except AssertionError:
+                raise AssertionError(
+                    "When trying to compute the convolution at {}, we calculated "
+                    "a starting point preceding the history's padding. Is it "
+                    "possible you specified time as an integer instead of a float ? "
+                    "Floats are treated as times, while integers are treated as time indices."
+                    .format(tidx))
             return self.dt * lib.sum(discretized_kernel[kernel_slice][::-1]
                                          * shim.add_axes(self[hist_slice], 1, 'before last'),
                                      axis=0)
@@ -1000,8 +1023,14 @@ class Series(ConvolveMixin, History):
 
             domain_start = self.t0idx - kernel_slice.stop - discretized_kernel.idx_shift
             domain_slice = slice(domain_start, domain_start + len(self))
-            shim.check(domain_slice.start >= 0)
+            try:
                 # Check that there is enough padding before t0
+                shim.check(domain_slice.start >= 0)
+            except AssertionError:
+                raise AssertionError(
+                    "When trying to compute the convolution at {}, we calculated "
+                    "a starting point preceding the history's padding. Is it "
+                    "possible you specified time as an integer rather than scalar ?")
             retval = self.dt * shim.conv1d(self[:], discretized_kernel[kernel_slice])[domain_slice]
             shim.check(len(retval) == len(self))
                 # Check that there is enough padding after tn
