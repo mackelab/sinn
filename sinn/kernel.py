@@ -170,15 +170,22 @@ class ExpKernel(Kernel):
         #TODO: store multiple caches, one per history
         #TODO: do something with kernel_slice
 
-        t = hist.get_time(t) # Ensure t is a time, not an index
+        # We are careful here to avoid converting t to time if not required,
+        # so that kernel slicing can work on indices
 
-        if kernel_slice != slice(None, None):
+        if (kernel_slice != slice(None, None)
+            or shim.asarray(t).dtype != shim.asarray(self.last_t).dtype):
+                # The second condition catches the case where e.g. last_t is
+                # an index but t is a time (then t > last_t is a bad test).
             result = hist.convolve(self, t, kernel_slice)
         elif self.last_conv is not None and self.last_hist is hist:
             if t > self.last_t:
                 Δt = t - self.last_t
-                result = ( lib.exp(-Δt/self.params.decay_const) * self.last_conv
-                           + hist.convolve(self, t, slice(self.t0, self.t0 + Δt)) )
+                result = ( lib.exp(-hist.time_interval(Δt)/self.params.decay_const)
+                           * self.last_conv
+                           + hist.convolve(self, t,
+                                           slice(0, 0 + hist.index_interval(Δt))) )
+                                           # 0 idx corresponds to self.t0
             elif t == self.last_t:
                 result = self.last_conv
             else:

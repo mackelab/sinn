@@ -170,6 +170,16 @@ def smallest(*args):
             retval = np.minimum(retval, arg)
         return retval
 
+def abs(x):
+    if config.use_theano and isintance(x, theano.gof.Variable):
+        if x.ndim == 2:
+            return __builtins__['abs'](x)
+        else:
+            # Theano requires 2D objects for abs
+            shape = x.shape
+            return __builtins__['abs'](add_axes(x.flatten())).reshape(shape)
+    else:
+        return __builtins__['abs'](x)
 #####################
 # Set random functions
 

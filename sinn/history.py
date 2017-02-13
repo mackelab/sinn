@@ -350,6 +350,43 @@ class History(HistoryBase):
     def update(self, tidx, value):
         raise NotImplementedError  # update function is history type specific
 
+    def time_interval(self, Δt):
+        """
+        If Δt is a time (float), do nothing.
+        If Δt is an index (int), convert to time by multiplying by dt.
+        """
+        if shim.istype(Δt, 'int'):
+            return Δt*self.dt
+        else:
+            return Δt
+
+    def index_interval(self, Δt):
+        """
+        If Δt is a time (float), convert to index interval by multiplying by dt.
+        If Δt is an index (int), do nothing.
+        OPTIMIZATION NOTE: This is a slower routine than its inverse `time_interval`.
+        Avoid it in code that is called repeatedly, unless you know that Δt is an index.
+        """
+        if shim.istype(Δt, 'int'):
+            return Δt
+        else:
+            try:
+                shim.check( Δt * config.get_rel_tolerance(Δt) < self.dt )
+            except AssertionError:
+                raise ValueError("You've tried to convert a time (float) into an index "
+                                 "(int), but the value is too large to ensure the absence "
+                                 "of numerical errors. Try using a higher precision type.")
+            quotient = Δt / self.dt
+            rquotient = shim.round(quotient)
+            try:
+                shim.check( shim.abs(quotient - rquotient) < config.get_abs_tolerance(Δt) / self.dt )
+            except AssertionError:
+                print("Δt: {}, dt: {}"
+                      .format(Δt, self.dt) )
+                raise ValueError("Tried to convert t=" + str(Δt) + " to an index interval "
+                                 "but its not a multiple of dt.")
+            return int( rquotient )
+
     def get_time(self, t):
         """
         If t is an index (i.e. int), return the time corresponding to t_idx.
@@ -377,18 +414,21 @@ class History(HistoryBase):
                 #       + " (rather than a time) and returning unchanged.")
                 return t
             else:
-                if t * config.get_rel_tolerance(t) > self.dt:
+                try:
+                    shim.check( t * config.get_rel_tolerance(t) < self.dt )
+                except AssertionError:
                     raise ValueError("You've tried to convert a time (float) into an index "
                                      "(int), but the value is too large to ensure the absence "
                                      "of numerical errors. Try using a higher precision type.")
                 t_idx = (t - self._tarr[0]) / self.dt
-                if abs(t_idx - round(t_idx)) > config.get_abs_tolerance(t) / self.dt:
+                r_t_idx = round(t_idx)
+                if abs(t_idx - r_t_idx) > config.get_abs_tolerance(t) / self.dt:
                     print("t: {}, t0: {}, t-t0: {}, t_idx: {}, dt: {}"
                           .format(t, self._tarr[0], t - self._tarr[0], t_idx, self.dt) )
                     print("(t0 above is the earliest time, including padding.)")
                     raise ValueError("Tried to obtain the time index of t=" +
                                      str(t) + ", but it does not seem to exist.")
-                return int(round(t_idx))
+                return int(r_t_idx)
         if isinstance(t, slice):
             start = self.t0idx if t.start is None else _get_tidx(t.start)
             stop = self.t0idx + len(self) if t.stop is None else _get_tidx(t.stop)
