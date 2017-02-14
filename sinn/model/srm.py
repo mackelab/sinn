@@ -72,6 +72,7 @@ class Activity(Model):
             # In order to broadcast properly, we need to add to t
             # the dimensions corresponding to the kernel
 
+        # FIXME: This is apparently the same for both populations ??
         retval = self.params.Jr * lib.exp(-(t-self.params.τabs)/self.params.τm)
             # Both Jr and the τ should be indexed as [to idx][from idx], so
             # we just use broadcasting to multiply them
@@ -139,8 +140,15 @@ class Activity(Model):
 
         self.rndstream = random_stream
 
+        self.spike_counts = self.A * (self.A.dt * params.N)
         self.occN = None
         self.normalized_E_bin_spikes = None
+
+        ##########################################
+        # Parameter sanity checks
+        ##########################################
+
+        # TODO
 
         ###########################################
         # Excitatory component h
@@ -170,7 +178,7 @@ class Activity(Model):
                                     self.A.dt,
                                     shape = self.A.shape,
                                     f = lambda t: lib.dot(params.Js, self.A[t]) + self.I[t])
-                                           # NxN  dot  N   +  N
+                                                              # NxN  dot  N   +  N
         self.JsᕽAᐩI._cur_tidx
             # FIXME: Set this internally, maybe by defining +,* ops
 
@@ -312,9 +320,10 @@ class Activity(Model):
     def check_indexing(self, t):
         # On reason this test might fail is if A and a have different padding
         # and indices are used (rather than times)
-        assert(self.a._tarr[self.a.get_t_idx(t)] == self.A._tarr[self.A.get_t_idx(t)])
+        assert(self.a._tarr[self.a.get_t_idx(t)]
+               == self.spike_counts._tarr[self.spike_counts.get_t_idx(t)])
 
-    def a_onestep(self, t, lastA, JsᕽAᐩI, occN, last_normalized_E_bin_spikes):
+    def a_onestep(self, t, last_spike_count, JsᕽAᐩI, occN, last_normalized_E_bin_spikes):
 
         # TODO: Adjust A shape before, so we don't need to add_axes
 
@@ -324,15 +333,15 @@ class Activity(Model):
         #  intermediate value – don't use it except in next line)
         # ( superfluous bin => len(occN) = len(ρ) + 1 )
         new_occN = lib.concatenate(
-                           (occN[1:] - lastA * last_normalized_E_bin_spikes,
-                            shim.add_axes(lastA, 1, 'before')),
+                           (occN[1:] - last_spike_count * last_normalized_E_bin_spikes,
+                            shim.add_axes(last_spike_count, 1, 'before')),
                            axis=0)
         # Combine bins 0 and 1 into bin 1
         new_new_occN = shim.inc_subtensor(new_occN[1], new_occN[0])
 
-        a_t, normalized_E_bin_spikes = self.a_onestep_2nd_half(t, JsᕽAᐩI, new_new_occN)
+        E_spikes, normalized_E_bin_spikes = self.a_onestep_2nd_half(t, JsᕽAᐩI, new_new_occN)
 
-        return (a_t,
+        return (E_spikes,
                 {occN: new_new_occN,
                  last_normalized_E_bin_spikes: normalized_E_bin_spikes})
 
@@ -355,18 +364,21 @@ class Activity(Model):
         # In the writeup we set axis=1, because we sum once for the entire
         # series, so t is another dimension
         E_bin_spikes = self.a.dt * ρ * occN[1:]
-        a_t = lib.sum(E_bin_spikes, axis=0, keepdims=True)
-        normalized_E_bin_spikes = E_bin_spikes / a_t
+        E_spikes = lib.sum(E_bin_spikes, axis=0, keepdims=True)
+        normalized_E_bin_spikes = E_bin_spikes / E_spikes
 
-        return a_t[0], normalized_E_bin_spikes
-            # Index a[0] to remove the dimension we kept
+        return E_spikes[0], normalized_E_bin_spikes
+            # Index E_spikes[0] to remove the dimension we kept
 
     def a_fn(self, t):
         # Check that the indexing in a and A match
         self.check_indexing(t)
         # Compute a(t)
-        return self.a_onestep(t, self.A[self.A.get_t_idx(t) - 1], self.JsᕽAᐩI,
-                              self.occN, self.normalized_E_bin_spikes)
+        spikes, updates = self.a_onestep(t, self.spike_counts[self.spike_counts.get_t_idx(t) - 1], self.JsᕽAᐩI,
+                                         self.occN, self.normalized_E_bin_spikes)
+        res_a = spikes / self.a.dt / self.params.N
+            # a_onestep returns spike counts, so we must convert into activities
+        return res_a, updates
 
     def compute_range_a(self, t_array):
         """
@@ -390,6 +402,8 @@ class Activity(Model):
 
         new_a, new_nEbs = self.a_onestep_2nd_half(
               t_array[0], self.JsᕽAᐩI, self.occN)
+        new_a = new_a / self.a.dt / self.params.N
+            # a_onestep_2nd_half actually returns a spike count: convert to activity
 
         if not config.use_theano:
 
@@ -397,7 +411,7 @@ class Activity(Model):
             self.normalized_E_bin_spikes.set_value(new_nEbs)
 
             def loop(t):
-                res_a, updates = self.a_fn(t)
+                res_a, updates = self.a_fn(t)  # Already converts spike counts to activities
                 self.occN.set_value(updates[self.occN])
                 self.normalized_E_bin_spikes.set_value(updates[self.normalized_E_bin_spikes])
                 return res_a
@@ -409,7 +423,7 @@ class Activity(Model):
                 # on subclasses of ndarray (such as shim.shared variables), which lead to
                 # problems here. If this fails, try upgrading NumPy.
             a_lst.insert(0, new_a)
-            return np.array(a_lst)
+            return a_lst
 
         else:
             # Recall that the A required for a_onestep is the one before t, so we offset by one
@@ -417,15 +431,17 @@ class Activity(Model):
                 # no -1 because we are actually starting at t_array[0] + 1
             stop = self.A.get_t_idx(t_array[-1])
                 # no -1 because stop is an exclusive bound, which cancels the offset
-            (res_a, updates) = theano.scan(self.a_onestep,
-                                           sequences=[t_array[1:],
-                                                      self.A[start:stop]],
-                                           outputs_info=[new_a],
-                                           non_sequences=[self.JsᕽAᐩI, self.occN, new_nEbs],
-                                           name='a scan')
+            (res_spikes, updates) = theano.scan(self.a_onestep,
+                                                sequences=[t_array[1:],
+                                                           self.A[start:stop]],
+                                                outputs_info=[new_a],
+                                                non_sequences=[self.JsᕽAᐩI, self.occN, new_nEbs],
+                                                name='a scan')
                 # NOTE: time index sequence must be specified as a numpy
                 # array, because History expects time indices to be
                 # non-Theano variables
+            res_a = res_spikes / self.a.dt / self.params.N
+                # Convert spike counts to activities
 
             # Reassign the output to the original shared variable
             updates[self.normalized_E_bin_spikes] = updates.pop(new_nEbs)
