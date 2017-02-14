@@ -7,6 +7,7 @@ Author: Alexandre René
 
 import numpy as np
 from collections import deque
+import operator
 
 import sinn.common as com
 import sinn.config as config
@@ -28,14 +29,19 @@ class History(HistoryBase):
     previous to t is also known (by forcing a computation if necessary).
 
     Derived classes can safely expect the following attributes to be defined:
-        + shape                 : Shape at a single time point, or number of elements in the system
-        + t0                    : Time at which history starts
-        + tn                    : Time at which history ends
-        + dt                    : Timestep size
-        + _tarr                 : Ordered array of all time bins
-        + _cur_tidx             : Tracker for the latest time bin for which we know history.
+        + shape            : Shape at a single time point, or number of elements in the system
+        + t0               : Time at which history starts
+        + tn               : Time at which history ends
+        + dt               : Timestep size
+        + _tarr            : Ordered array of all time bins
+        + _cur_tidx        : Tracker for the latest time bin for which we know history.
         + _update_function : Function taking a time and returning the history
-                                  at that time
+                             at that time
+    A History may also define
+        + _compute_range   : Function taking an array of consecutive times and returning
+                             an array-like object of the history at those times.
+                             NOTE: It is important that the times be consecutive (no skipping)
+                             and increasing, as some implementations assume this.
 
     Functions deriving from this class **must** implement the following methods:
 
@@ -436,6 +442,13 @@ class History(HistoryBase):
         else:
             return _get_tidx(t)
 
+    def tarr_to_slice(self, tarr):
+        """Convert a consecutive array of times into a slice"""
+        # TODO: assert that all times are consecutive (no skipping)
+        # TODO: assert that times are increasing
+        # (make these asserts conditional on a 'check_all' flag
+        return slice(self.get_t_idx(tarr[0]), self.get_t_idx(tarr[-1]) + 1)
+
     def make_positive_slice(self, slc):
         def flip(idx):
             assert(shim.istype(idx, 'int'))
@@ -452,6 +465,51 @@ class History(HistoryBase):
     #         super().theano_reset()
     #     except AttributeError:
     #         pass
+
+    #####################################################
+    # Operator definitions
+    #####################################################
+    # TODO: Operations with two Histories (right now I'm assuming scalars or arrays)
+
+    def _apply_op(self, op, b=None):
+        new_series = Series(self.t0, self.tn, self.dt, shape = self.shape)
+        if b is None:
+            new_series.set_update_function(lambda t: op(self[t]))
+            new_series.set_range_update_function(lambda tarr: op(self[self.tarr_to_slice(tarr)]))
+        else:
+            new_series.set_update_function(lambda t: op(self[t], b))
+            new_series.set_range_update_function(lambda tarr: op(self[self.tarr_to_slice(tarr)], b))
+        return new_series
+
+    def __abs__(self):
+        return self._apply_op(operator.abs)
+    def __add__(self, other):
+        return self._apply_op(operator.add, other)
+    def __radd__(self, other):
+        return self._apply_op(lambda a,b: b+a, other)
+    def __sub__(self, other):
+        return self._apply_op(operator.sub, other)
+    def __rsub__(self, other):
+        return self._apply_op(lambda a,b: b-a, other)
+    def __mul__(self, other):
+        return self._apply_op(operator.mul, other)
+    def __rmul__(self, other):
+        return self._apply_op(lambda a,b: b*a, other)
+    def __matmul__(self, other):
+        return self._apply_op(operator.matmul, other)
+    def __rmatmul__(self, other):
+        return self._apply_op(lambda a,b: b@a, other)
+    def __truediv__(self, other):
+        return self._apply_op(operator.truediv, other)
+    def __rtruediv__(self, other):
+        return self._apply_op(lambda a,b: b/a, other)
+    def __floordiv__(self, other):
+        return self._apply_op(operator.floordiv, other)
+    def __rfloordiv__(self, other):
+        return self._apply_op(lambda a,b: b//a, other)
+    def __mod__(self, other):
+        return self._apply_op(operator.mod, other)
+
 
 class Spiketimes(ConvolveMixin, History):
     """A class to store spiketrains.
