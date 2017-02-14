@@ -50,7 +50,7 @@ class Kernel(ConvolveMixin, ParameterMixin):
         name: str
             A unique identifier. May be printed to identify this kernel in output.
         f: callable
-            Function defining the kernel. Signature: f(t) -> float
+            Function defining the kernel. Signature: f(t)/usr/lib/python3.4/site-packages/nbconvert/exporters/pdf.py -> float
         memory_time: float
             Time after which we can truncate the kernel.
         t0: float

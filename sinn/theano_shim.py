@@ -256,26 +256,39 @@ def switch(cond, ift, iff):
 ######################
 # Shared variable constructor
 
-class ShimmedShared:
+class ShimmedShared(np.ndarray):
+    # See https://docs.scipy.org/doc/numpy/user/basics.subclassing.html
+    # for indications on subclassing ndarray
 
-    def __init__(self, value, name=None, strict=False, allow_downcast=None, **kwargs):
-        self.name = name
-        self._value = value
+    def __new__(cls, value, name=None, strict=False, allow_downcast=None, **kwargs):
+        obj = np.asarray(value).view(cls)
+        obj.name = name
+        return obj
 
-    def __getitem__(self, key):
-        return self._value[key]
+    def __array_finalize__(self, obj):
+        if obj is None: return
+        self.name = getattr(obj, 'name', None)
 
+    # We are emulating theano.shared, where different instances
+    # are considred distinct
+    def __hash__(self):
+        return id(self)
+    def __eq__(self, other):
+        return id(self) == id(other)
+
+    # Usual theano.shared interface
     def get_value(self, borrow=False, return_internal_type=False):
-        return self._value
-
+        return self.view(np.ndarray)
+            # On values obtained by get_value, equality testing shold
+            # follow the usual rules for arrays, hence the view(np.ndarray)
     def set_value(self, new_value, borrow=False):
-        self._value = new_value
+        self = new_value
 
 def shared(value, name=None, strict=False, allow_downcast=None, **kwargs):
     if config.use_theano:
         return theano.shared(value, name, strict, allow_downcast, **kwargs)
     else:
-        return ShimmedShared(value, name, strict, allow_downcast, **kwargs)
+        return ShimmedShared(np.asarray(value), name, strict, allow_downcast, **kwargs)
 
 
 theano_updates = {}

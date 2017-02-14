@@ -765,11 +765,15 @@ class Series(ConvolveMixin, History):
             If specified as a slice, the length of the range should match
             value.shape[0].
         value: timeslice
-            The timeslice to store.
+            The timeslice to store. May be a tuple, in which case it has
+            the form `(value, updates)`, where `updates` is a Theano
+            update dictionary.
         '''
         assert(not config.use_theano
                or not isinstance(tidx, theano.gof.Variable))
             # time indices must not be variables
+
+        # Check if value includes an update dictionary.
         if isinstance(value, tuple):
             # `value` is a theano.scan-style return tuple
             assert(len(value) == 2)
@@ -779,6 +783,7 @@ class Series(ConvolveMixin, History):
         else:
             updates = None
 
+        # Adaptations depending on whether tidx is a single bin or a slice
         if shim.istype(tidx, 'int'):
             end = tidx
             shim.check(tidx <= self._cur_tidx + 1)

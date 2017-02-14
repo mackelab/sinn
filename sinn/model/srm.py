@@ -30,6 +30,23 @@ Kernel = kernel.Kernel
 # =============================================================================
 
 class Activity(Model):
+    """
+    State variables
+    ---------------
+    occN:
+        Occupation number of each lag bin
+        At the start of the computation for a(t), occN holds the
+        occupation number for each bin at t-2.
+        It is first updated to t-1, which allows the computation
+        of the _expeBdbQuit:cted_ spike count at t for each bin
+    normalized_E_bin_spikes:
+        Expected number of spikes for each bin.
+        At the start of the computation for a(t), normalized_E_bin_spikes
+        the expected number of spikes at t-1 for each bin,
+        normalized to the total number of spikes (such that
+        sum(normalized_E_bin_spikes) == 1 is always true).
+        The new value for t is calculated at the very end, after a(t).
+    """
 
     # Parameters tuple defined after kernels
 
@@ -121,6 +138,9 @@ class Activity(Model):
         assert(self.A.shape == self.a.shape == self.I.shape)
 
         self.rndstream = random_stream
+
+        self.occN = None
+        self.normalized_E_bin_spikes = None
 
         ###########################################
         # Excitatory component h
@@ -227,6 +247,9 @@ class Activity(Model):
     def set_init_occupation_numbers(self, init_occN='quiescent'):
         """
         […]
+        Also instantiates the normalized_E_bin_spikes variable to
+        zero (this allows assigning to it later)
+
         The number of bins to keep is determined by self.memory_time,
         which is set in the model's initializer.
 
@@ -249,6 +272,8 @@ class Activity(Model):
             where `M` is the number of bins we keep in memory before
             lumping all neurons in the ∞-bin.
         """
+        # TODO: I don't you actually need to keep _occN_arr
+
         # self.memory_time corresponds to the time after which, if a
         # neuron still hasn't fired, it is considered equivalent to one
         # which last fired at -∞. So we use that here to determine the
@@ -279,13 +304,39 @@ class Activity(Model):
             shim.check(lib.sum(self.occN[1:]) == self.params.N)
         self.occN = shim.shared(self._occN_arr)
 
+        # Instantiated the normalized_E_bin_spikes
+        # It has one less element along the 0 axis
+        shape = (self._occN_arr.shape[0] - 1,) + self._occN_arr.shape[1:]
+        self.normalized_E_bin_spikes = shim.shared(np.zeros(shape))
+
     def check_indexing(self, t):
         # On reason this test might fail is if A and a have different padding
         # and indices are used (rather than times)
         assert(self.a._tarr[self.a.get_t_idx(t)] == self.A._tarr[self.A.get_t_idx(t)])
 
-    def a_onestep(self, t, lastA, JsᕽAᐩI, occN):
+    def a_onestep(self, t, lastA, JsᕽAᐩI, occN, last_normalized_E_bin_spikes):
 
+        # TODO: Adjust A shape before, so we don't need to add_axes
+
+        # Update occupation numbers to t-1
+
+        # (occN[0] is a superfluous bin used to store an
+        #  intermediate value – don't use it except in next line)
+        # ( superfluous bin => len(occN) = len(ρ) + 1 )
+        new_occN = lib.concatenate(
+                           (occN[1:] - lastA * last_normalized_E_bin_spikes,
+                            shim.add_axes(lastA, 1, 'before')),
+                           axis=0)
+        # Combine bins 0 and 1 into bin 1
+        new_new_occN = shim.inc_subtensor(new_occN[1], new_occN[0])
+
+        a_t, normalized_E_bin_spikes = self.a_onestep_2nd_half(t, JsᕽAᐩI, new_new_occN)
+
+        return (a_t,
+                {occN: new_new_occN,
+                 last_normalized_E_bin_spikes: normalized_E_bin_spikes})
+
+    def a_onestep_2nd_half(self, t, JsᕽAᐩI, occN):
         # Update θ
         θ = self.η
 
@@ -300,28 +351,22 @@ class Activity(Model):
                                                lib.exp(h - θ)),       # rest
                                              axis=0)
 
-        # Update occupation numbers
-        # (occN[0] is a superfluous bin used to store an
-        #  intermediate value – don't use it except in next line)
-        # ( superfluous bin => len(occN) = len(ρ) + 1 )
-        new_occN = lib.concatenate(
-                           (occN[1:] * (1 - ρ*self.a.dt),
-                            shim.add_axes(lastA, 1, 'before')),
-                           axis=0)
-        # Combine bins 0 and 1 into bin 1
-        new_new_occN = shim.inc_subtensor(new_occN[1], new_occN[0])
-
-        # Compute the new a
+        # Compute the new a(t)
         # In the writeup we set axis=1, because we sum once for the entire
         # series, so t is another dimension
-        return (lib.sum( ρ * new_new_occN[1:] * self.a.dt, axis=0 ),
-                {occN: new_new_occN})
+        E_bin_spikes = self.a.dt * ρ * occN[1:]
+        a_t = lib.sum(E_bin_spikes, axis=0, keepdims=True)
+        normalized_E_bin_spikes = E_bin_spikes / a_t
+
+        return a_t[0], normalized_E_bin_spikes
+            # Index a[0] to remove the dimension we kept
 
     def a_fn(self, t):
         # Check that the indexing in a and A match
         self.check_indexing(t)
         # Compute a(t)
-        return self.a_onestep(t, self.A[self.A.get_t_idx(t) - 1], self.JsᕽAᐩI, self.occN)
+        return self.a_onestep(t, self.A[self.A.get_t_idx(t) - 1], self.JsᕽAᐩI,
+                              self.occN, self.normalized_E_bin_spikes)
 
     def compute_range_a(self, t_array):
         """
@@ -343,26 +388,52 @@ class Activity(Model):
         self.check_indexing(t_array[0])
             # Check that the indexing in a and A match
 
+        new_a, new_nEbs = self.a_onestep_2nd_half(
+              t_array[0], self.JsᕽAᐩI, self.occN)
+
         if not config.use_theano:
+
+            self.a.update(self.a.get_t_idx(t_array[0]), new_a)
+            self.normalized_E_bin_spikes.set_value(new_nEbs)
 
             def loop(t):
                 res_a, updates = self.a_fn(t)
                 self.occN.set_value(updates[self.occN])
+                self.normalized_E_bin_spikes.set_value(updates[self.normalized_E_bin_spikes])
                 return res_a
 
-            return [loop(t) for t in t_array]
+            a_lst = [loop(t) for t in t_array[1:]]
+            # Make sure to include the first a we calculated
+            assert(new_a.shape == a_lst[0].shape)
+                # Until recently (version 1.11?) NumPy was ignoring the keepdims argument
+                # on subclasses of ndarray (such as shim.shared variables), which lead to
+                # problems here. If this fails, try upgrading NumPy.
+            a_lst.insert(0, new_a)
+            return np.array(a_lst)
 
         else:
+            # Recall that the A required for a_onestep is the one before t, so we offset by one
+            start = self.A.get_t_idx(t_array[0])
+                # no -1 because we are actually starting at t_array[0] + 1
+            stop = self.A.get_t_idx(t_array[-1])
+                # no -1 because stop is an exclusive bound, which cancels the offset
             (res_a, updates) = theano.scan(self.a_onestep,
-                                           sequences=[t_array,
+                                           sequences=[t_array[1:],
                                                       self.A[start:stop]],
-                                           outputs_info=[None],
-                                           non_sequences=[self.JsᕽAᐩI, self.occN],
+                                           outputs_info=[new_a],
+                                           non_sequences=[self.JsᕽAᐩI, self.occN, new_nEbs],
                                            name='a scan')
                 # NOTE: time index sequence must be specified as a numpy
                 # array, because History expects time indices to be
                 # non-Theano variables
-            return res_a, updates
+
+            # Reassign the output to the original shared variable
+            updates[self.normalized_E_bin_spikes] = updates.pop(new_nEbs)
+            # Include the originally calculated a in the returned value
+            returned_a = T.concatenate((shim.add_axes(new_a, 1, 'before'), res_a),
+                                       axis = 0)
+
+            return returned_a, updates
 
     def A_fn(self, t):
         return self.rndstream.normal(size=self.A.shape,
