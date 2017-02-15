@@ -93,7 +93,7 @@ class ConvolveMixin:
             history = other
             kernel = self
 
-        # Test that kernel bound lists match and wrap them in list if necessary
+        # Test kernel bounds are specified as slices and wrap them in list if necessary
         try:
             len(kernel_slice)
         except TypeError:
@@ -111,9 +111,11 @@ class ConvolveMixin:
                 #       Then we would probably skip the cache search
 
             def convolve_single_t(t, slc):
+                if slc.stop is not None and slc.start == slc.stop:
+                    return 0
                 try:
                     # Use a cached convolution if it exists
-                    return self._conv_cache.get(kernel,slc)[output_tidx]
+                    return self._conv_cache.get(other,slc)[output_tidx]
                 except KeyError:
                     #######################################
                     # CUSTOMIZATION: Here is the call to the custom convolution function

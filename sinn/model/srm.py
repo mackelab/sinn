@@ -188,6 +188,7 @@ class Activity(Model):
         self.a.set_update_function(self.a_fn)
         self.a.set_range_update_function(self.compute_range_a)
 
+#        import pdb; pdb.set_trace()
         if self.A._cur_tidx >= len(self.A) - 1:
             # A already has all the data; we can calculate h in one go
             # Caching mechanism takes care of actually remembering the result
@@ -196,6 +197,7 @@ class Activity(Model):
             self.A.set_update_function(self.A_fn)
 
 
+#        import pdb; pdb.set_trace()
         ##########################################
         # Model memory time & padding
         #########################################
@@ -353,6 +355,7 @@ class Activity(Model):
 #        h = lib.sum( self.κ.convolve(JsᕽAᐩI, t), axis=1 )
             # Kernels are [to idx][from idx], so to get the total contribution to
             # population i, we sum over axis 1 (the 'from indices')
+#        import pdb; pdb.set_trace()
         h = self.κ.convolve(JsᕽAᐩI, t)
 
         # Update ρ
@@ -367,6 +370,7 @@ class Activity(Model):
         E_spikes = lib.sum(E_bin_spikes, axis=0, keepdims=True)
         normalized_E_bin_spikes = E_bin_spikes / E_spikes
 
+#        import pdb; pdb.set_trace()
         return E_spikes[0], normalized_E_bin_spikes
             # Index E_spikes[0] to remove the dimension we kept
 
@@ -426,7 +430,7 @@ class Activity(Model):
             return a_lst
 
         else:
-            # Recall that the A required for a_onestep is the one before t, so we offset by one
+            # The A required for a_onestep is the one before t, so we offset by one
             start = self.A.get_t_idx(t_array[0])
                 # no -1 because we are actually starting at t_array[0] + 1
             stop = self.A.get_t_idx(t_array[-1])
@@ -446,7 +450,7 @@ class Activity(Model):
             # Reassign the output to the original shared variable
             updates[self.normalized_E_bin_spikes] = updates.pop(new_nEbs)
             # Include the originally calculated a in the returned value
-            returned_a = T.concatenate((shim.add_axes(new_a, 1, 'before'), res_a),
+            returned_a = lib.concatenate((shim.add_axes(new_a, 1, 'before'), res_a),
                                        axis = 0)
 
             return returned_a, updates

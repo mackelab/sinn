@@ -150,6 +150,19 @@ class ExpKernel(Kernel):
             decay_const_val = np.max(shim.get_test_value(params.decay_const))
             memory_time = t0 -decay_const_val * np.log(config.truncation_ratio)
 
+        self.memory_blind_time = np.max(params.t_offset) - t0
+        # self.memory_blind_time = ifelse( (params.t_offset == params.t_offset.flatten()[0]).all(),
+        #                                  (shim.asarray(params.t_offset) - t0).flatten()[0],
+        #                                  params.t_offset - t0 )
+            # When we convolve, the time window of length self.memory_blind_time before t0
+            # is ignored (because the kernel is zero there), and therefore not included
+            # in self.last_conv. So we need to extend the kernel slice by this much when
+            # we reuse the cache data
+            # The ifelse is to treat the case where t_offset is a matrix (i.e. multiple populations).
+            # In this case, we want the blind time to be a scalar if they are all the same (more efficient),
+            # but we leave the result as a matrix if they differ. In the latter case, convolutions
+            # need to be calculated for each population separately and recombined.
+
         ########
         # Initialize base class
         super().__init__(name, shape, memory_time=memory_time, t0=t0, **kwargs)
@@ -159,6 +172,7 @@ class ExpKernel(Kernel):
         self.last_hist = None  # Keep track of the history object used for the last convolution
 
     def eval(self, t, from_idx=slice(None,None)):
+#        import pdb; pdb.set_trace()
         return shim.switch(shim.lt(t, self.params.t_offset),
                            0,
                            self.params.height[:,from_idx]
@@ -178,23 +192,33 @@ class ExpKernel(Kernel):
                 # The second condition catches the case where e.g. last_t is
                 # an index but t is a time (then t > last_t is a bad test).
             result = hist.convolve(self, t, kernel_slice)
+            self.last_conv = result
         elif self.last_conv is not None and self.last_hist is hist:
             if t > self.last_t:
                 Δt = t - self.last_t
                 result = ( lib.exp(-hist.time_interval(Δt)/self.params.decay_const)
                            * self.last_conv
                            + hist.convolve(self, t,
-                                           slice(0, 0 + hist.index_interval(Δt))) )
-                                           # 0 idx corresponds to self.t0
+                                           slice(hist.index_interval(self.memory_blind_time),
+                                                 hist.index_interval(self.memory_blind_time + Δt))) )
+                self.last_conv = result
+                    # We only cache the convolution up to the point at which every
+                    # population "remembers" it.
+                result += hist.convolve(self, t,
+                                        slice(0, hist.index_interval(self.memory_blind_time)))
+                                              # 0 idx corresponds to self.t0
+
             elif t == self.last_t:
                 result = self.last_conv
             else:
                 result = hist.convolve(self, t)
+                self.last_conv = result
         else:
             result = hist.convolve(self, t)
+            self.last_conv = result
 
         self.last_t = t
-        self.last_conv = result
+        #self.last_conv = result
         self.last_hist = hist
 
         return result

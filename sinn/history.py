@@ -498,7 +498,8 @@ class History(HistoryBase):
     def __matmul__(self, other):
         return self._apply_op(operator.matmul, other)
     def __rmatmul__(self, other):
-        return self._apply_op(lambda a,b: b@a, other)
+        return self._apply_op(lambda a,b: operator.matmul(b,a), other)
+            # Using operator.matmul rather than @ prevents import fails on Python <3.5
     def __truediv__(self, other):
         return self._apply_op(operator.truediv, other)
     def __rtruediv__(self, other):
@@ -1143,6 +1144,7 @@ class Series(ConvolveMixin, History):
 
         discretization_name = "discrete" + "_" + str(id(self))  # Unique id for discretized kernel
 
+#        import pdb; pdb.set_trace()
         if hasattr(kernel, discretization_name):
             # TODO: Check that this history (self) hasn't changed
             return getattr(kernel, discretization_name)

@@ -145,6 +145,9 @@ def asarray(x):
         return T.as_tensor_variable(x)
     else:
         return np.asarray(x)
+
+def isscalar(x):
+    return asarray(x).ndim == 0
 #####################
 # Convenience function for max / min
 
@@ -213,7 +216,7 @@ def lt(a, b):
         return T.lt(a, b)
     else:
         return a < b
-def lt(a, b):
+def le(a, b):
     if (config.use_theano and isinstance(condition, theano.gof.Variable)):
         return T.le(a, b)
     else:
