@@ -282,7 +282,7 @@ class ShimmedShared(np.ndarray):
             # On values obtained by get_value, equality testing shold
             # follow the usual rules for arrays, hence the view(np.ndarray)
     def set_value(self, new_value, borrow=False):
-        self = new_value
+        self[:] = new_value
 
 def shared(value, name=None, strict=False, allow_downcast=None, **kwargs):
     if config.use_theano:
