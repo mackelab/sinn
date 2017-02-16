@@ -187,7 +187,6 @@ class Activity(Model):
         self.a.set_update_function(self.a_fn)
         self.a.set_range_update_function(self.compute_range_a)
 
-#        import pdb; pdb.set_trace()
         if self.A._cur_tidx >= len(self.A) - 1:
             # A already has all the data; we can calculate h in one go
             # Caching mechanism takes care of actually remembering the result
@@ -196,7 +195,6 @@ class Activity(Model):
             self.A.set_update_function(self.A_fn)
 
 
-#        import pdb; pdb.set_trace()
         ##########################################
         # Model memory time & padding
         #########################################
@@ -340,7 +338,7 @@ class Activity(Model):
         #  intermediate value – don't use it except in next line)
         # ( superfluous bin => len(occN) = len(ρ) + 1 )
         new_occN = lib.concatenate(
-                           (occN[1:] - last_spike_count * last_normalized_E_bin_spikes,
+                           (occN[1:] - last_normalized_E_bin_spikes, # * last_spike_count,
                             shim.add_axes(last_spike_count, 1, 'before')),
                            axis=0)
         # Combine bins 0 and 1 into bin 1
@@ -360,7 +358,6 @@ class Activity(Model):
 #        h = lib.sum( self.κ.convolve(JsᕽAᐩI, t), axis=1 )
             # Kernels are [to idx][from idx], so to get the total contribution to
             # population i, we sum over axis 1 (the 'from indices')
-#        import pdb; pdb.set_trace()
         h = self.κ.convolve(JsᕽAᐩI, t)
 
         # Update ρ
@@ -371,9 +368,8 @@ class Activity(Model):
         # series, so t is another dimension
         E_bin_spikes = self.a.dt * ρ * occN[1:]
         E_spikes = lib.sum(E_bin_spikes, axis=0, keepdims=True)
-        normalized_E_bin_spikes = E_bin_spikes / E_spikes
+        normalized_E_bin_spikes = E_bin_spikes #/ E_spikes
 
-#        import pdb; pdb.set_trace()
         return E_spikes[0], normalized_E_bin_spikes
             # Index E_spikes[0] to remove the dimension we kept
 
