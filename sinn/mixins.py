@@ -6,9 +6,9 @@ Author: Alexandre René
 """
 import numpy as np
 
+import theano_shim as shim
 import sinn.common as com
 import sinn.config as config
-import sinn.theano_shim as shim
 floatX = config.floatX
 lib = shim.lib
 

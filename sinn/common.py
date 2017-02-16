@@ -7,8 +7,8 @@ Author: Alexandre René
 import numpy as np
 from collections import namedtuple
 
+import theano_shim as shim
 import sinn.config as config
-import sinn.theano_shim as shim
 floatX = config.floatX
 lib = shim.lib
 

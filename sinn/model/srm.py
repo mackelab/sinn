@@ -9,10 +9,10 @@ import numpy as np
 import scipy as sp
 from collections import namedtuple, OrderedDict
 
+import theano_shim as shim
 import sinn
 import sinn.common as com
 import sinn.config as config
-import sinn.theano_shim as shim
 import sinn.history as history
 import sinn.kernel as kernel
 import sinn.model as model

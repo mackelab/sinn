@@ -1,5 +1,7 @@
 import numpy as np
 
+import theano_shim as shim
+
 integration_precision = 1
 truncation_ratio = 0.001
 
@@ -25,6 +27,9 @@ if 'theano' in librairies:
         use_theano = True
 else:
     use_theano = False
+
+# shim.use_theano() would be even clearer
+shim.load(use_theano=use_theano)
 
 #######################
 # Set functions to cast to numerical float

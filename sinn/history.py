@@ -9,9 +9,9 @@ import numpy as np
 from collections import deque
 import operator
 
+import theano_shim as shim
 import sinn.common as com
 import sinn.config as config
-import sinn.theano_shim as shim
 import sinn.mixins as mixins
 floatX = config.floatX
 lib = shim.lib

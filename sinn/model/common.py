@@ -10,8 +10,8 @@ import scipy as sp
 #from scipy.integrate import quad
 #from collections import namedtuple
 
+import theano_shim as shim
 import sinn.config as config
-import sinn.theano_shim as shim
 import sinn.common as com
 floatX = config.floatX
 lib = shim.lib
