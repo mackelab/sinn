@@ -72,7 +72,6 @@ class Activity(Model):
             # In order to broadcast properly, we need to add to t
             # the dimensions corresponding to the kernel
 
-        # FIXME: This is apparently the same for both populations ??
         retval = self.params.Jr * lib.exp(-(t-self.params.τabs)/self.params.τm)
             # Both Jr and the τ should be indexed as [to idx][from idx], so
             # we just use broadcasting to multiply them
@@ -224,7 +223,13 @@ class Activity(Model):
 
         ########################
         # Refractory component η
-        η2 = self.η2_fn(tarr_η)
+
+        # Calculate the kernel
+        η2 = lib.concatenate((shim.add_axes(np.zeros(self.a.shape), 1, 'before'), # ∞-bin
+                              self.η2_fn(tarr_η)))  # rest
+
+        # Add the absolute refractory period, if required.
+        # (it's only required if it's more than a bin wide)
         shim.check(np.isclose(params.τabs % self.A.dt, 0,
                               rtol=config.rel_tolerance,
                               atol=config.abs_tolerance ).all() )
@@ -359,9 +364,7 @@ class Activity(Model):
         h = self.κ.convolve(JsᕽAᐩI, t)
 
         # Update ρ
-        ρ = self.params.c * lib.concatenate( ( shim.add_axes(np.ones(self.a.shape), 1, 'before'), # ∞-bin
-                                               lib.exp(h - θ)),       # rest
-                                             axis=0)
+        ρ = self.params.c * lib.exp(h - θ)
 
         # Compute the new a(t)
         # In the writeup we set axis=1, because we sum once for the entire

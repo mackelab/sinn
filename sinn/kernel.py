@@ -173,6 +173,8 @@ class ExpKernel(Kernel):
 
     def eval(self, t, from_idx=slice(None,None)):
 #        import pdb; pdb.set_trace()
+        if not shim.isscalar(t):
+            t = shim.add_axes(t, self.params.t_offset.ndim, 'right')
         return shim.switch(shim.lt(t, self.params.t_offset),
                            0,
                            self.params.height[:,from_idx]
