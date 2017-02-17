@@ -23,135 +23,23 @@ Model  = model.common.Model
 Kernel = kernel.Kernel
 #Parameter = com.Parameter
 
-# =============================================================================
-#
-# Renewal model for activity (no adaptation)
-#
-# =============================================================================
 
-class Activity(Model):
-    """
-    State variables
-    ---------------
-    occN:
-        Occupation number of each lag bin
-        At the start of the computation for a(t), occN holds the
-        occupation number for each bin at t-2.
-        It is first updated to t-1, which allows the computation
-        of the _expeBdbQuit:cted_ spike count at t for each bin
-    normalized_E_bin_spikes:
-        Expected number of spikes for each bin.
-        At the start of the computation for a(t), normalized_E_bin_spikes
-        the expected number of spikes at t-1 for each bin,
-        normalized to the total number of spikes (such that
-        sum(normalized_E_bin_spikes) == 1 is always true).
-        The new value for t is calculated at the very end, after a(t).
-    """
+class SRMBase(Model):
 
-    # Parameters tuple defined after kernels
-
-    #################
-    # kernel definitions
-
-    Parameter_info = OrderedDict( ( ( 'N'   , np.int ),
-                                    ( 'c'   , config.cast_floatX ),
-                                    ( 'Js'  , config.cast_floatX ),
-                                    ( 'Jr'  , config.cast_floatX ),
-                                   #( 'τa'  , config.cast_floatX ),
-                                    ( 'τs' , config.cast_floatX ),
-                                    ( 'τm' , config.cast_floatX ),
-                                    ( 'τabs', config.cast_floatX ) ) )
-    Parameters = com.define_parameters(Parameter_info)
-
-    def η2_fn(self, t):
-        """The refractory kernel coming after the absolute refractory period"""
-        kernel_dims = shim.asarray(self.params.τabs).ndim
-            # Shape of the η kernel
-        shim.check(kernel_dims == shim.asarray(self.params.τm).ndim)
-        t = shim.add_axes(t, kernel_dims, 'right')
-            # In order to broadcast properly, we need to add to t
-            # the dimensions corresponding to the kernel
-
-        retval = self.params.Jr * lib.exp(-(t-self.params.τabs)/self.params.τm)
-            # Both Jr and the τ should be indexed as [to idx][from idx], so
-            # we just use broadcasting to multiply them
-        if kernel_dims > 1:
-            # If there's more than one kernel dimension, we need to contract the result
-            if kernel_dims > 2:
-                raise NotImplementedError
-            retval = lib.sum(retval, axis=-1)
-
-        return retval
-
-        # TODO: Pull out the dimensions testing and branching into a reusable function `distributed_dot`
-        # TODO: Stress-test this function
-        # Jr_dims = shim.asarray(self.params.Jr).ndim
-        # if kernel_dims == 0:
-        #     shim.check(Jr_dims = 0)
-        #     return self.params.Jr * lib.exp(-(t-self.params.τabs)/self.params.τm)
-
-        # else:
-        #     if kernel_dims == 1:
-        #         if Jr_dims == 1:
-        #             # Just do the element-wise product
-        #             return (shim.add_axes(self.params.Jr, 1, 'before')
-        #                     * lib.exp(-(t-self.params.τabs)/self.params.τm))
-        #         elif Jr_dims == 2:
-        #             # The following effectively distributes the dot product
-        #             # np.dot(Jr, exp(…)) along the time axis
-        #             return lib.tensordot(
-        #                 lib.exp(-(t-self.params.τabs)/self.params.τm),
-        #                 self.params.Jr,
-        #                 (-1, -1))
-        #         else:
-        #             raise ValueError("Incoherent dimensions")
-        #     elif kernel_dims == 2:
-        #         if Jr_dims == 2:
-        #             # The following effectively distributes the dot product
-        #             # np.dot(Jr, exp(…)) along the time axis
-        #             return shim.moveaxis(
-        #                       lib.tensordot(
-        #                           lib.exp(-(t-self.params.τabs)/self.params.τm),
-        #                           self.params.Jr,
-        #                           (-2, -1)),
-        #                       -2, -1)
-        #         else:
-        #             raise NotImplementedError
-        #     else:
-        #         raise NotImplementedError
-
-    def get_M(self, memory_time):
-        """Convert a time into a number of bins."""
-        # TODO: move to History
-        return int(shim.round(self.memory_time / self.A.dt) + 1)
-
-    def __init__(self, params,
-                 activity_history, activity_mean_history, input_history,
-                 random_stream,
-                 memory_time=None, init_occupation_numbers=None):
-
-        super().__init__(params, history)
-
-        self.A = activity_history
-        self.a = activity_mean_history
-        self.I = input_history
-        assert(self.A.shape == self.a.shape == self.I.shape)
-
-        self.rndstream = random_stream
-
-        self.spike_counts = self.A * (self.A.dt * params.N)
-        self.occN = None
-        self.normalized_E_bin_spikes = None
+    def __init__(self, params, memory_time):
 
         ##########################################
         # Parameter sanity checks
         ##########################################
 
-        # TODO
+        shim.check(self.A.dt == self.I.dt)
+        # TODO More checks
 
         ###########################################
         # Excitatory component h
         ###########################################
+
+        super().__init__(params)
 
         κparams = kernel.ExpKernel.Parameters(
             height      = 1,
@@ -171,7 +59,6 @@ class Activity(Model):
 
         # Initialize series objects used in computation
         # (We shamelessly abuse of unicode support for legibility)
-        shim.check(self.A.dt == self.I.dt)
         self.JsᕽAᐩI = history.Series(self.A.t0,
                                     self.A.tn,
                                     self.A.dt,
@@ -183,9 +70,6 @@ class Activity(Model):
 
         self.JsᕽAᐩI.pad(self.κ.memory_time)
         #self.h = history.Series(A.t0, A.tn, A.dt, A.shape)
-
-        self.a.set_update_function(self.a_fn)
-        self.a.set_range_update_function(self.compute_range_a)
 
         if self.A._cur_tidx >= len(self.A) - 1:
             # A already has all the data; we can calculate h in one go
@@ -256,6 +140,104 @@ class Activity(Model):
         # Adaptation component θ
 
         # TODO
+
+    def get_M(self, memory_time):
+        """Convert a time into a number of bins."""
+        # TODO: move to History
+        return int(shim.round(self.memory_time / self.A.dt) + 1)
+
+    def η2_fn(self, t):
+        """The refractory kernel coming after the absolute refractory period"""
+        kernel_dims = shim.asarray(self.params.τabs).ndim
+            # Shape of the η kernel
+        shim.check(kernel_dims == shim.asarray(self.params.τm).ndim)
+        t = shim.add_axes(t, kernel_dims, 'right')
+            # In order to broadcast properly, we need to add to t
+            # the dimensions corresponding to the kernel
+
+        retval = self.params.Jr * lib.exp(-(t-self.params.τabs)/self.params.τm)
+            # Both Jr and the τ should be indexed as [to idx][from idx], so
+            # we just use broadcasting to multiply them
+        if kernel_dims > 1:
+            # If there's more than one kernel dimension, we need to contract the result
+            if kernel_dims > 2:
+                raise NotImplementedError
+            retval = lib.sum(retval, axis=-1)
+
+        return retval
+
+# =============================================================================
+#
+# Renewal model for activity (no adaptation)
+#
+# =============================================================================
+
+class Activity(SRMBase):
+    """
+    State variables
+    ---------------
+    occN:
+        Occupation number of each lag bin
+        At the start of the computation for a(t), occN holds the
+        occupation number for each bin at t-2.
+        It is first updated to t-1, which allows the computation
+        of the _expeBdbQuit:cted_ spike count at t for each bin
+    normalized_E_bin_spikes:
+        NOTE: At present, the occupation number of each bin is not conserved
+        because the rescaling hack used to achieve this did more harm than
+        good. Thus the description below is incorrect: this variable
+        is the actual (non-normalized) expected number of spikes.
+        "Expected number of spikes for each bin.
+         At the start of the computation for a(t), normalized_E_bin_spikes
+         the expected number of spikes at t-1 for each bin,
+         normalized to the total number of spikes (such that
+         sum(normalized_E_bin_spikes) == 1 is always true).
+         The new value for t is calculated at the very end, after a(t)."
+    """
+
+    # Parameters tuple defined after kernels
+
+    #################
+    # kernel definitions
+
+    Parameter_info = OrderedDict( ( ( 'N'   , np.int ),
+                                    ( 'c'   , config.cast_floatX ),
+                                    ( 'Js'  , config.cast_floatX ),
+                                    ( 'Jr'  , config.cast_floatX ),
+                                   #( 'τa'  , config.cast_floatX ),
+                                    ( 'τs' , config.cast_floatX ),
+                                    ( 'τm' , config.cast_floatX ),
+                                    ( 'τabs', config.cast_floatX ) ) )
+    Parameters = com.define_parameters(Parameter_info)
+
+    def __init__(self, params,
+                 activity_history, activity_mean_history, input_history,
+                 random_stream,
+                 memory_time=None, init_occupation_numbers=None):
+
+        self.A = activity_history
+        self.a = activity_mean_history
+        self.I = input_history
+        assert(self.A.shape == self.a.shape == self.I.shape)
+
+        self.rndstream = random_stream
+
+        self.spike_counts = self.A * (self.A.dt * params.N)
+        self.occN = None
+        self.normalized_E_bin_spikes = None
+
+        self.a.set_update_function(self.a_fn)
+        self.a.set_range_update_function(self.compute_range_a)
+        # self.A update function set below
+
+        super().__init__(params, memory_time)
+
+        ##########################################
+        # Parameter sanity checks
+        ##########################################
+
+        # TODO
+
 
     def set_init_occupation_numbers(self, init_occN='quiescent'):
         """
@@ -469,3 +451,63 @@ class Activity(Model):
         #TODO: delete all discretizations of affected kernels
 
         raise NotImplementedError
+
+
+# =============================================================================
+#
+# Spiking model underlying the above activity model
+#
+# =============================================================================
+
+class Spiking(SRMBase):
+
+    Parameter_info = OrderedDict( ( ( 'N'   , np.int ),
+                                    ( 'c'   , config.cast_floatX ),
+                                    ( 'Js'  , config.cast_floatX ),
+                                    ( 'Jr'  , config.cast_floatX ),
+                                   #( 'τa'  , config.cast_floatX ),
+                                    ( 'τs' , config.cast_floatX ),
+                                    ( 'τm' , config.cast_floatX ),
+                                    ( 'τabs', config.cast_floatX ) ) )
+    Parameters = com.define_parameters(Parameter_info)
+
+    def __init__(self, params,
+                 spike_history, input_history,
+                 random_stream,
+                 memory_time=None):
+
+        super().__init__(params, history=spike_history)
+
+        self.spikehist = spike_history
+        self.A = history.Spiketimes(spike_history, shape=params.N.shape)
+        self.I = input_history
+
+        self.spikehist.set_update_function(self.spike_update)
+        self.A.set_update_function(self.A_update)
+
+        self.rndstream = random_stream
+
+    def check_indexing(self, t):
+        # On reason this test might fail is if A and spikehist have different padding
+        # and indices are used (rather than times)
+        assert(self.spikehist._tarr[self.spikehist.get_t_idx(t)]
+               == self.A._tarr[self.B.get_t_idx(t)])
+
+    def a_onestep(self, t):
+        # Update θ
+        θ = self.η
+
+        # Update h
+#        h = lib.sum( self.κ.convolve(JsᕽAᐩI, t), axis=1 )
+            # Kernels are [to idx][from idx], so to get the total contribution to
+            # population i, we sum over axis 1 (the 'from indices')
+        h = self.κ.convolve(self.spikehist, t)
+
+        # Update ρ
+        ρ = self.params.c * lib.exp(h - θ)
+
+        # Compute the new a(t)
+        # In the writeup we set axis=1, because we sum once for the entire
+        # series, so t is another dimension
+        bin_spikes = self.spikehist.dt * ρ
+        E_spikes = lib.sum(E_bin_spikes, axis=0, keepdims=True)

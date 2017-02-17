@@ -12,7 +12,6 @@ import sinn.config as config
 floatX = config.floatX
 lib = shim.lib
 
-
 class HistoryBase:
 
     def __init__(self, t0, tn):

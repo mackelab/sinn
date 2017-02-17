@@ -125,12 +125,20 @@ class History(HistoryBase):
         '''
     """
 
-    def __init__(self, t0, tn, dt, *args, shape=None, f=None, iterative=True):
+    def __init__(self, hist=sinn._NoValue, *args, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
+                 shape=sinn._NoValue, f=sinn._NoValue, iterative=sinn._NoValue):
         """
         Initialize History object.
+        Instead of passing the parameters, another History instance may be passed as
+        first argument. In this case, t0, tn, dt, shape, f and iterative are taken
+        from that instance. These can be overridden by passing also a corresponding keyword
+        argument.
+        Except for a possible history instance, all parameters should be passed as keywords.
 
         Parameters
         ----------
+        hist: History instance
+            Optional. If passed, will used this history's parameters as defaults.
         t0: float
             Time at which the history starts
         tn: float
@@ -160,9 +168,28 @@ class History(HistoryBase):
         -------
         None
         """
+        # Grab defaults from the other instance:
+        if hist is not sinn._NoValue:
+            if t0 is sinn._NoValue:
+                t0 = hist.t0
+            if tn is sinn._NoValue:
+                tn = hist.tn
+            if dt is sinn._NoValue:
+                dt = hist.dt
+            if shape is sinn._NoValue:
+                shape = hist.shape
+            if f is sinn._NoValue:
+                f = hist.f
+            if iterative is sinn._NoValue:
+                iterative = hist.iterative
+        else:
+            assert(sinn._NoValue not in [t0, tn, dt, shape])
+        if iterative is sinn._NoValue:
+            # Default value
+            iterative = True
+
         super().__init__(t0, np.ceil( (tn - t0)/dt ) * dt + t0)
             # Set t0 and tn, ensuring (tn - t0) is a round multiple of dt
-        assert(shape is not None)
         self.shape = shape
             # shape at a single time point, or number of elements
             # in the system
@@ -519,10 +546,16 @@ class Spiketimes(ConvolveMixin, History):
     is used to indicate the number of neurons in each population.
     """
 
-    def __init__(self, t0, tn, dt, pop_sizes, **kwargs):
+    def __init__(self, hist=sinn._NoValue, *args, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
+                 pop_sizes=sinn._NoValue, **kwargs):
         """
+        All parameters except `hist` are keyword parameters
+        `pop_sizes` is always required
+        If `hist` is not specified, `t0`, `tn`, `dt` must all be specified.
         Parameters
         ----------
+        hist: History instance
+            Optional. If passed, will used this history's parameters as defaults.
         t0: float
             Time at which the history starts
         tn: float
@@ -535,6 +568,10 @@ class Spiketimes(ConvolveMixin, History):
             Extra keyword arguments are passed on to History's initializer
         """
         try:
+            assert(pop_sizes is not sinn._NoValue)
+        except AssertionError:
+            raise ValueError("'pop_sizes' is a required parameter.")
+        try:
             len(pop_sizes)
         except TypeError:
             pop_sizes = (pop_sizes,)
@@ -542,11 +579,9 @@ class Spiketimes(ConvolveMixin, History):
         self.pop_sizes = pop_sizes
 
         shape = (np.sum(pop_sizes),)
-#        conv_shape = (len(pop_sizes),)
 
         # kwargs should not have shape, as it's calculated
         # Return an error if it's different from the calculated value
-        kwshape = kwargs.pop('shape', None)
         if kwshape is not None and kwshape != shape:
             raise ValueError("Specifying a shape to Spiketimes is "
                              "unecessary, as it's calculated from pop_sizes")
@@ -559,7 +594,7 @@ class Spiketimes(ConvolveMixin, History):
             self.pop_slices.append(slice(i, i+pop_size))
             i += pop_size
 
-        super().__init__(t0, tn, dt, shape, **kwargs)
+        super().__init__(hist, t0, tn, dt, shape, **kwargs)
 
     def initialize(self, init_data=-np.inf):
         """
@@ -620,19 +655,20 @@ class Spiketimes(ConvolveMixin, History):
         '''
         if shim.istype(key, 'int') or shim.istype(key, 'float'):
             t = self.get_time(key)
-            return [ 1 if t in spikelist else 0
-                     for spikelist in self.spike_times ]
+            return np.from_iter( True if t in spikelist else False
+                                 for spikelist in self.spike_times,
+                                 dtype=bool )
         elif isintance(key, slice):
             if (key.start is None) and (key.stop is None):
                 return self.spike_times
             else:
                 start = -shim.inf if key.start is None else self.get_time(key.start)
                 end = shim.inf if key.end is None else self.get_time(np.inf)
-                end =- self.dt  # exclude upper bound, consistent with slicing conv.
+                end -= self.dt  # exclude upper bound, consistent with slicing conv.
                 # At present, deque's don't implement slicing. When they do, use that.
-                return [ list(itertools.islice(spikelist,
-                                                 np.searchsorted(spikelist, start),
-                                                 np.searchsorted(spikelist, end)))
+                return [ itertools.islice(spikelist,
+                                          int(np.searchsorted(spikelist, start)),
+                                          int(np.searchsorted(spikelist, end)))
                          for spikelist in self.spike_times ]
         else:
             raise ValueError("Key must be either an integer, float or a splice object.")
@@ -722,51 +758,49 @@ class Spiketimes(ConvolveMixin, History):
         #       spikes before that point.
         #       Use `np.find` to get the `start` and `end` index, and sum between them
 
+        # TODO: allow kernel to return a value for each neuron
+
         # TODO: move callable test to ConvolveMixin
         # if callable(kernel):
         #    f = kernel
         # else:
         f = kernel.eval
-        begin = kernel_slice.start
-        end = kernel_slice.stop
 
-        shim.check( kernel.shape[0] == len(self.pop_sizes) )
-        shim.check( len(kernel.shape) == 2 and kernel.shape[0] == kernel.shape[1] )
+        assert( shim.istype(kernel_slice.start, 'float')
+                and shim.istype(kernel_slice.stop, 'float') )
+        if kernel_slice.stop is None:
+            start = t - kernel_slice.memory_time - kernel.t0
+        else:
+            start = t - kernel_slice.stop - kernel.t0
+        if kernel_slice.start is None:
+            stop = t - kernel.t0
+        else:
+            stop = t - kernel_slice.start - kernel.t0
 
-        if begin is None:
-            if end is not None:
-                raise NotImplementedError
+        shim.check( kernel.ndim <= 2 )
+        #shim.check( kernel.shape[0] == len(self.pop_sizes) )
+        #shim.check( len(kernel.shape) == 2 and kernel.shape[0] == kernel.shape[1] )
 
-            # TODO: truncate at memory_time
+        spike_times = self[start:stop]
+        if kernel.ndim == 2 and kernel.shape[0] == kernel.shape[1]:
+            shim.check(kernel.shape[0] == len(self.pop_sizes))
             return np.stack (
                      np.sum( f(t-s, from_pop_idx)
-                             for spike_list in self.spike_times[self.pop_slices[from_pop_idx]]
+                             for spike_list in spike_times[self.pop_slices[from_pop_idx]]
                              for s in spike_list )
                      for from_pop_idx in range(len(self.pop_sizes)) ).T
                 # We don't need to specify an axis here, because the sum is over distinct
                 # arrays f(.,.), and so np.sum sums the arrays but doesn't flatten them.
 
-        #     return  EwiseIter( [
-        #                     EwiseIter( [ np.fromiter( ( sum( f(to_pop_idx, from_pop_idx)(t-s) for s in neuron_spike_times )
-        #                                                 for neuron_spike_times in self.spike_times[from_pop_idx] ),
-        #                                               dtype=config.floatX )
-        #                                 for from_pop_idx in range(len(self.shape)) ] )
-        #                     for to_pop_idx in range(len(self.shape))] )
-        # # TODO: allow kernel to return a value for each neuron
+        elif kernel.ndim == 1 and kernel.shape[0] == len(self.pop_sizes):
+            return lib.concatenate(
+                  [ lib.stack( lib.sum( f(t-s) for s in spike_list )
+                               for spike_list[self.pop_slices[from_pop_idx]] )
+                    for from_pop_idx in range(len(self.pop_sizes)) ] )
+
         else:
+            raise NotImplementedError
 
-            return np.stack(
-                     np.sum( f(t-s, from_pop_idx)
-                             for spike_list in self.spike_times[self.pop_slices[from_pop_idx]]
-                             for s in self[begin:end] )
-                     for from_pop_idx in range(len(self.pop_idcs)) ).T
-
-            # return EwiseIter( [
-            #                EwiseIter( [ np.fromiter( ( sum( f(to_pop_idx, from_pop_idx)(t-s) if begin <= s < end else 0 for s in neuron_spike_times )
-            #                                            for neuron_spike_times in self.spike_times[from_pop_idx] ),
-            #                                          dtype=config.floatX )
-            #                             for from_pop_idx in range(len(self.shape)) ] )
-            #                for to_pop_idx in range(len(self.shape)) ] )
 
 
 
@@ -776,7 +810,7 @@ class Series(ConvolveMixin, History):
     T is the number of bins and shape is this history's `shape` attribute.
 
     Also provides an "infinity bin" – .inf_bin — in which to store the value
-    at t = -∞.
+    at t = -∞. (Not sure if this is useful after all.)
     """
 
     def __init__(self, *args, shape=None, **kwargs):
@@ -1144,7 +1178,6 @@ class Series(ConvolveMixin, History):
 
         discretization_name = "discrete" + "_" + str(id(self))  # Unique id for discretized kernel
 
-#        import pdb; pdb.set_trace()
         if hasattr(kernel, discretization_name):
             # TODO: Check that this history (self) hasn't changed
             return getattr(kernel, discretization_name)

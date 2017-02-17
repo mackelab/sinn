@@ -65,6 +65,7 @@ class Kernel(ConvolveMixin, ParameterMixin):
 
         self.name = name
         self.shape = shape
+        self.ndim = len(shape)
         self.t0 = t0
 
         if f is not None:
@@ -172,7 +173,6 @@ class ExpKernel(Kernel):
         self.last_hist = None  # Keep track of the history object used for the last convolution
 
     def eval(self, t, from_idx=slice(None,None)):
-#        import pdb; pdb.set_trace()
         if not shim.isscalar(t):
             t = shim.add_axes(t, self.params.t_offset.ndim, 'right')
         return shim.switch(shim.lt(t, self.params.t_offset),
