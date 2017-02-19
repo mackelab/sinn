@@ -193,8 +193,8 @@ class ExpKernel(Kernel):
             or shim.asarray(t).dtype != shim.asarray(self.last_t).dtype):
                 # The second condition catches the case where e.g. last_t is
                 # an index but t is a time (then t > last_t is a bad test).
-            result = hist.convolve(self, t, kernel_slice)
-            self.last_conv = result
+            return hist.convolve(self, t, kernel_slice)
+                # Exit before updating last_t and last_conv
         elif self.last_conv is not None and self.last_hist is hist:
             if t > self.last_t:
                 Δt = t - self.last_t

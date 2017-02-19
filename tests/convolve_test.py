@@ -79,7 +79,9 @@ def spiketimes():
     # test convolution: ∫_a^b e^{-s/τ} * spiketimes ds,
     # where spiketimes is a uniformly sampled set of 50 spiketimes between 0 and 4
 
-    dt = 0.001
+    dt = 0.001 # We need dt <= τ/1000 to have at least single digit
+                # precision on binned spiketrains, but of course that slows
+                # down computations substantially.
     τ = 0.1
     np.set_printoptions(precision=8)
 
@@ -104,7 +106,7 @@ def spiketimes():
     def true_conv(t, a=0, b=np.inf):
         """The analytical solution to the convolution"""
         return np.array(
-            [ np.sum(kernel.eval(t-s) for s in spike_list)
+            [ np.sum(kernel.eval(t-s) for s in spike_list if a <= t-s < b)
               for spike_list in spiketime_list ] )
 
     convolve_test(data, data_fn,
@@ -131,21 +133,27 @@ def convolve_test(data, data_fn, kernel, true_conv):
 
     t = 2.0
     tidx = data.get_t_idx(t)
+    dis_tidx = dis_kernel.get_t_idx(t)
 
     sinn_conv = kernel.convolve(data, t)
 
+    #dt = None
     def get_comp(histdata, from_idx):
+        #nonlocal dt
         if isinstance(histdata, history.Spiketimes):
-            tidcs = np.asarray( np.fromiter(histdata[:][from_idx], dtype='float') // data.dt, dtype='int')
-            retval = np.zeros((int((data.tn - data.t0)//data.dt),),
+            #dt = data.dt / 10 # We need the higher resolution to get
+            #                  # a reasonable estimate
+            tidcs = np.asarray( np.fromiter(histdata[:][from_idx], dtype='float') // dis_kernel.dt, dtype='int')
+            retval = np.zeros((int((data.tn - data.t0)//dis_kernel.dt),),
                               dtype=int)
-            retval[tidcs] = 1
+            retval[tidcs] = 1/dis_kernel.dt # Dirac deltas
             return retval
         else:
+            #dt = data.dt
             return histdata[:][:,from_idx]
     np_conv = np.array(
-        [ [ np.convolve(get_comp(data, from_idx),
-                        dis_kernel[:][:,to_idx,from_idx], 'valid')[tidx - conv_len] * data.dt
+        [ [ np.convolve(get_comp(data, from_idx)[dis_tidx - conv_len:dis_tidx],
+                        dis_kernel[:][:,to_idx,from_idx], 'valid') * dis_kernel.dt
             for from_idx in range(kernel.shape[1]) ]
           for to_idx in range(kernel.shape[0]) ] )
 
