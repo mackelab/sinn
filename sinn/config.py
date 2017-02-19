@@ -23,7 +23,7 @@ if 'theano' in librairies:
         print("The theano library was not found.")
         librairies.remove('theano')
         use_theano = False
-    finally:
+    else:
         use_theano = True
 else:
     use_theano = False

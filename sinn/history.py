@@ -7,9 +7,11 @@ Author: Alexandre René
 
 import numpy as np
 from collections import deque
+import itertools
 import operator
 
 import theano_shim as shim
+import sinn
 import sinn.common as com
 import sinn.config as config
 import sinn.mixins as mixins
@@ -43,7 +45,11 @@ class History(HistoryBase):
                              NOTE: It is important that the times be consecutive (no skipping)
                              and increasing, as some implementations assume this.
 
-    Functions deriving from this class **must** implement the following methods:
+    Classes deriving from History **must** provide the following attributes:
+        + _strict_index_rounding : (bool) True => times are only converted
+                                   to indices if they are multiples of dt.
+
+    and implement the following methods:
 
     def __init__(self, *args):
         '''Initialize a Series instance, derived from History.
@@ -125,6 +131,9 @@ class History(HistoryBase):
         '''
     """
 
+    #_strict_index_rounding = None
+        # Derived classes should define this as a class attribute
+
     def __init__(self, hist=sinn._NoValue, *args, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
                  shape=sinn._NoValue, f=sinn._NoValue, iterative=sinn._NoValue):
         """
@@ -198,7 +207,7 @@ class History(HistoryBase):
         self._cur_tidx = -1
             # Tracker for the latest time bin for which we
             # know history.
-        if f is None:
+        if f is sinn._NoValue:
             # Set a default function that will raise an error when called
             def f(*arg):
                 raise RuntimeError("The update function for {} is not set.".format(self))
@@ -447,21 +456,30 @@ class History(HistoryBase):
                 #       + " (rather than a time) and returning unchanged.")
                 return t
             else:
-                try:
-                    shim.check( t * config.get_rel_tolerance(t) < self.dt )
-                except AssertionError:
-                    raise ValueError("You've tried to convert a time (float) into an index "
-                                     "(int), but the value is too large to ensure the absence "
-                                     "of numerical errors. Try using a higher precision type.")
-                t_idx = (t - self._tarr[0]) / self.dt
-                r_t_idx = round(t_idx)
-                if abs(t_idx - r_t_idx) > config.get_abs_tolerance(t) / self.dt:
-                    print("t: {}, t0: {}, t-t0: {}, t_idx: {}, dt: {}"
-                          .format(t, self._tarr[0], t - self._tarr[0], t_idx, self.dt) )
-                    print("(t0 above is the earliest time, including padding.)")
-                    raise ValueError("Tried to obtain the time index of t=" +
-                                     str(t) + ", but it does not seem to exist.")
-                return int(r_t_idx)
+                if self._strict_index_rounding:
+                    # Enforce that times be multiples of dt
+
+                    try:
+                        shim.check( t * config.get_rel_tolerance(t) < self.dt )
+                    except AssertionError:
+                        raise ValueError("You've tried to convert a time (float) into an index "
+                                        "(int), but the value is too large to ensure the absence "
+                                        "of numerical errors. Try using a higher precision type.")
+                    t_idx = (t - self._tarr[0]) / self.dt
+                    r_t_idx = round(t_idx)
+                    if abs(t_idx - r_t_idx) > config.get_abs_tolerance(t) / self.dt:
+                        print("t: {}, t0: {}, t-t0: {}, t_idx: {}, dt: {}"
+                            .format(t, self._tarr[0], t - self._tarr[0], t_idx, self.dt) )
+                        print("(t0 above is the earliest time, including padding.)")
+                        raise ValueError("Tried to obtain the time index of t=" +
+                                        str(t) + ", but it does not seem to exist.")
+                    return int(r_t_idx)
+
+                else:
+                    # Allow t to take any value, and round down to closest
+                    # multiple of dt
+                    return int( (t - self._tarr[0]) // self.dt )
+
         if isinstance(t, slice):
             start = self.t0idx if t.start is None else _get_tidx(t.start)
             stop = self.t0idx + len(self) if t.stop is None else _get_tidx(t.stop)
@@ -492,6 +510,57 @@ class History(HistoryBase):
     #         super().theano_reset()
     #     except AttributeError:
     #         pass
+
+    def discretize_kernel(self, kernel):
+
+        discretization_name = "discrete" + "_" + str(id(self))  # Unique id for discretized kernel
+
+        if hasattr(kernel, discretization_name):
+            # TODO: Check that this history (self) hasn't changed
+            return getattr(kernel, discretization_name)
+
+        else:
+            #TODO: Add compability check of the kernel's shape with this history.
+            #shim.check(kernel.shape == self.shape*2)
+            #    # Ensure the kernel is square and of the right shape for this history
+
+            if config.integration_precision == 1:
+                kernel_func = kernel.eval
+            elif config.integration_precision == 2:
+                # TODO: Avoid recalculating eval at the same places by writing
+                #       a _compute_up_to function and passing that to the series
+                kernel_func = lambda t: (kernel.eval(t) + kernel.eval(t+self.dt)) / 2
+            else:
+                # TODO: higher order integration with trapeze or simpson's rule
+                raise NotImplementedError
+
+            # The kernel may start at a position other than zero, resulting in a shift
+            # of the index corresponding to 't' in the convolution
+            idx_shift = int(round(kernel.t0 / self.dt))
+                # We don't use shim.round because time indices must be Python numbers
+            t0 = idx_shift * self.dt  # Ensure the discretized kernel's t0 is a multiple of dt
+
+            memory_idx_len = int(kernel.memory_time // self.dt) - 1 - idx_shift
+                # It is essential here to use the same forumla as pad_time
+                # We substract one because one bin more or less makes no difference,
+                # and doing so ensures that padding with `memory_time` always
+                # is sufficient (no dumb numerical precision errors adds a bin)
+                # NOTE: kernel.memory_time includes the time between 0 and t0,
+                # and so we need to substract idx_shift to keep only the time after t0.
+
+            #full_idx_len = memory_idx_len + idx_shift
+            #    # `memory_time` is the amount of time before t0
+
+            dis_kernel = Series(t0=t0,
+                                tn=t0 + memory_idx_len*self.dt,
+                                dt=self.dt,
+                                shape=kernel.shape,
+                                f=kernel_func)
+            dis_kernel.idx_shift = idx_shift
+
+            setattr(kernel, discretization_name, dis_kernel)
+
+            return dis_kernel
 
     #####################################################
     # Operator definitions
@@ -546,6 +615,8 @@ class Spiketimes(ConvolveMixin, History):
     is used to indicate the number of neurons in each population.
     """
 
+    _strict_index_rounding = False
+
     def __init__(self, hist=sinn._NoValue, *args, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
                  pop_sizes=sinn._NoValue, **kwargs):
         """
@@ -580,6 +651,7 @@ class Spiketimes(ConvolveMixin, History):
 
         shape = (np.sum(pop_sizes),)
 
+        kwshape = kwargs.pop('shape', None)
         # kwargs should not have shape, as it's calculated
         # Return an error if it's different from the calculated value
         if kwshape is not None and kwshape != shape:
@@ -594,10 +666,16 @@ class Spiketimes(ConvolveMixin, History):
             self.pop_slices.append(slice(i, i+pop_size))
             i += pop_size
 
-        super().__init__(hist, t0, tn, dt, shape, **kwargs)
+        super().__init__(hist, t0=t0, tn=tn, dt=dt, shape=shape, **kwargs)
+
+        self.initialize()
 
     def initialize(self, init_data=-np.inf):
         """
+        This method is called without parameters at the end of the class
+        instantiation, but can be called again to change the initialization
+        of spike times.
+
         Parameters
         ----------
         init_data: float or iterable
@@ -610,7 +688,7 @@ class Spiketimes(ConvolveMixin, History):
             init_data[0]
         except:
             subscriptable = False
-        finally:
+        else:
             subscriptable = True
 
         # deque incurs a 10-15% cost in iterations compared with lists,
@@ -655,20 +733,20 @@ class Spiketimes(ConvolveMixin, History):
         '''
         if shim.istype(key, 'int') or shim.istype(key, 'float'):
             t = self.get_time(key)
-            return np.from_iter( True if t in spikelist else False
-                                 for spikelist in self.spike_times,
+            return np.from_iter( ( True if t in spikelist else False
+                                   for spikelist in self.spike_times ),
                                  dtype=bool )
-        elif isintance(key, slice):
+        elif isinstance(key, slice):
             if (key.start is None) and (key.stop is None):
                 return self.spike_times
             else:
                 start = -shim.inf if key.start is None else self.get_time(key.start)
-                end = shim.inf if key.end is None else self.get_time(np.inf)
-                end -= self.dt  # exclude upper bound, consistent with slicing conv.
+                stop = shim.inf if key.stop is None else self.get_time(key.stop)
+                stop -= self.dt  # exclude upper bound, consistent with slicing conv.
                 # At present, deque's don't implement slicing. When they do, use that.
                 return [ itertools.islice(spikelist,
                                           int(np.searchsorted(spikelist, start)),
-                                          int(np.searchsorted(spikelist, end)))
+                                          int(np.searchsorted(spikelist, stop)))
                          for spikelist in self.spike_times ]
         else:
             raise ValueError("Key must be either an integer, float or a splice object.")
@@ -716,6 +794,37 @@ class Spiketimes(ConvolveMixin, History):
         '''
         self.pad_time(before, after)
         # Since data is stored as spike times, no need to update the data
+
+    def set(self, source=None):
+        """Set the entire series in one go. `source` may be a list of arrays, a
+        function, or even another History instance. It's useful for
+        example if we've already computed history by some other means,
+        or we specified it as a function (common for inputs).
+
+        Accepted types for `source`: lists of iterables, functions (not implemented)
+        These are converted to a list of spike times.
+
+        If no source is specified, the series own update function is used,
+        provided it has been previously defined. Can be used to force
+        computation of the whole series.
+        """
+
+        tarr = self._tarr
+
+        if source is None:
+            # Default is to use series' own compute functions
+            self._compute_up_to(-1)
+
+        elif callable(source):
+            raise NotImplementedError
+
+        else:
+            assert(len(source) == len(self.spike_times))
+            for i, spike_list in enumerate(source):
+                self.spike_times[i] = spike_list
+
+        self._cur_tidx = len(self) - 1
+        return self.spike_times
 
 
     def _convolve_op_single_t(self, kernel, t, kernel_slice):
@@ -766,36 +875,43 @@ class Spiketimes(ConvolveMixin, History):
         # else:
         f = kernel.eval
 
-        assert( shim.istype(kernel_slice.start, 'float')
-                and shim.istype(kernel_slice.stop, 'float') )
         if kernel_slice.stop is None:
-            start = t - kernel_slice.memory_time - kernel.t0
+            start = t - kernel.memory_time - kernel.t0
         else:
-            start = t - kernel_slice.stop - kernel.t0
+            if shim.istype(kernel_slice.stop, 'int'):
+                start = t - kernel_slice.stop*self.dt - kernel.t0
+            else:
+                start = t - kernel_slice.stop
         if kernel_slice.start is None:
             stop = t - kernel.t0
         else:
-            stop = t - kernel_slice.start - kernel.t0
+            if shim.istype(kernel_slice.stop, 'int'):
+                stop = t - kernel_slice.start*self.dt - kernel.t0
+            else:
+                stop = t - kernel_slice.start
 
         shim.check( kernel.ndim <= 2 )
         #shim.check( kernel.shape[0] == len(self.pop_sizes) )
         #shim.check( len(kernel.shape) == 2 and kernel.shape[0] == kernel.shape[1] )
 
+        # For explanations of how summing works, see the IPython
+        # notebook in the docs
         spike_times = self[start:stop]
         if kernel.ndim == 2 and kernel.shape[0] == kernel.shape[1]:
             shim.check(kernel.shape[0] == len(self.pop_sizes))
             return np.stack (
-                     np.sum( f(t-s, from_pop_idx)
+                     np.asarray(np.sum( f(t-s, from_pop_idx)
                              for spike_list in spike_times[self.pop_slices[from_pop_idx]]
-                             for s in spike_list )
+                             for s in spike_list )).reshape(kernel.shape[0:1])
                      for from_pop_idx in range(len(self.pop_sizes)) ).T
-                # We don't need to specify an axis here, because the sum is over distinct
-                # arrays f(.,.), and so np.sum sums the arrays but doesn't flatten them.
+                # np.asarray is required because summing over generator
+                # expressions uses Python sum(), and thus returns a
+                # scalar instead of a NumPy float
 
         elif kernel.ndim == 1 and kernel.shape[0] == len(self.pop_sizes):
             return lib.concatenate(
-                  [ lib.stack( lib.sum( f(t-s) for s in spike_list )
-                               for spike_list[self.pop_slices[from_pop_idx]] )
+                  [ lib.stack( shim.asarray(lib.sum( f(t-s) for s in spike_list )).reshape(kernel.shape[0:1])
+                               for s in spike_list[self.pop_slices[from_pop_idx]] )
                     for from_pop_idx in range(len(self.pop_sizes)) ] )
 
         else:
@@ -813,7 +929,11 @@ class Series(ConvolveMixin, History):
     at t = -∞. (Not sure if this is useful after all.)
     """
 
-    def __init__(self, *args, shape=None, **kwargs):
+    _strict_index_rounding = True
+
+    def __init__(self, hist=sinn._NoValue, *args,
+                 t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
+                 shape=None, **kwargs):
         """
         Initialize a Series instance, derived from History.
 
@@ -830,7 +950,9 @@ class Series(ConvolveMixin, History):
         # else:
         #     kwargs['convolve_shape'] = shape*2
 
-        super().__init__(*args, shape=shape, **kwargs)
+        super().__init__(hist, *args,
+                         t0=t0, tn=tn, dt=dt,
+                         shape=shape, **kwargs)
 
         # Migration note: _data was previously called self.array
         self._data = np.zeros(self._tarr.shape + self.shape, dtype=floatX)
@@ -1009,19 +1131,21 @@ class Series(ConvolveMixin, History):
             raise NotImplementedError("Really, you used more than 2 data dimensions in a series array ? Ok, well let me know and I'll implement that.")
 
     def set(self, source=None):
-        """Set the entire series in one go. `source` may be an array, a function,
-        or even another History instance. It's useful for example if we've already
-        computed history by some other means, or we specified it as a function
-        (common for inputs).
+        """Set the entire series in one go. `source` may be an array, a
+        function, or even another History instance. It's useful for
+        example if we've already computed history by some other means,
+        or we specified it as a function (common for inputs).
 
-        Accepted types for `source`: functions, arrays, single values
-        These are all converted into a time-series with the same time bins as the history.
+        Accepted types for `source`: functions, arrays, single values.
+        These are all converted into a time-series with the same time
+        bins as the history.
 
-        If source has the attribute `shape`, than it is checked to be the same as this history's `shape`
+        If source has the attribute `shape`, than it is checked to be the same
+        as this history's `shape`
 
-        If no source is specified, the series own update function is used, provided
-        it has been previously defined.
-        can be used to force computation of the whole series.
+        If no source is specified, the series own update function is used,
+        provided it has been previously defined. Can be used to force
+        computation of the whole series.
         """
 
         data = None
@@ -1174,50 +1298,4 @@ class Series(ConvolveMixin, History):
                 # Check that there is enough padding after tn
             return retval
 
-    def discretize_kernel(self, kernel):
 
-        discretization_name = "discrete" + "_" + str(id(self))  # Unique id for discretized kernel
-
-        if hasattr(kernel, discretization_name):
-            # TODO: Check that this history (self) hasn't changed
-            return getattr(kernel, discretization_name)
-
-        else:
-            #TODO: Add compability check of the kernel's shape with this history.
-            #shim.check(kernel.shape == self.shape*2)
-            #    # Ensure the kernel is square and of the right shape for this history
-
-            if config.integration_precision == 1:
-                kernel_func = kernel.eval
-            elif config.integration_precision == 2:
-                # TODO: Avoid recalculating eval at the same places by writing
-                #       a _compute_up_to function and passing that to the series
-                kernel_func = lambda t: (kernel.eval(t) + kernel.eval(t+self.dt)) / 2
-            else:
-                # TODO: higher order integration with trapeze or simpson's rule
-                raise NotImplementedError
-
-            # The kernel may start at a position other than zero, resulting in a shift
-            # of the index corresponding to 't' in the convolution
-            idx_shift = int(round(kernel.t0 / self.dt))
-                # We don't use shim.round because time indices must be Python numbers
-            t0 = idx_shift * self.dt  # Ensure the discretized kernel's t0 is a multiple of dt
-
-            memory_idx_len = int(kernel.memory_time // self.dt) - 1 - idx_shift
-                # It is essential here to use the same forumla as pad_time
-                # We substract one because one bin more or less makes no difference,
-                # and doing so ensures that padding with `memory_time` always
-                # is sufficient (no dumb numerical precision errors adds a bin)
-                # NOTE: kernel.memory_time includes the time between 0 and t0,
-                # and so we need to substract idx_shift to keep only the time after t0.
-
-            #full_idx_len = memory_idx_len + idx_shift
-            #    # `memory_time` is the amount of time before t0
-
-            dis_kernel = Series(t0, t0 + memory_idx_len*self.dt,
-                                self.dt, shape=kernel.shape, f=kernel_func)
-            dis_kernel.idx_shift = idx_shift
-
-            setattr(kernel, discretization_name, dis_kernel)
-
-            return dis_kernel
