@@ -14,13 +14,13 @@ import sinn
 import sinn.common as com
 import sinn.config as config
 import sinn.history as history
-import sinn.kernel as kernel
+import sinn.kernel as kernels
 import sinn.model as model
 import sinn.model.common
 
 lib = shim.lib
 Model  = model.common.Model
-Kernel = kernel.Kernel
+Kernel = kernels.Kernel
 #Parameter = com.Parameter
 
 
@@ -41,11 +41,11 @@ class SRMBase(Model):
 
         super().__init__(params)
 
-        κparams = kernel.ExpKernel.Parameters(
+        κparams = kernels.ExpKernel.Parameters(
             height      = 1,
             decay_const = params.τm,
             t_offset    = params.τs )
-        self.κ = kernel.ExpKernel('κ',
+        self.κ = kernels.ExpKernel('κ',
                              params      = κparams,
                              t0          = np.min(params.τs),
                              memory_time = memory_time,
@@ -107,8 +107,8 @@ class SRMBase(Model):
         # Refractory component η
 
         # Calculate the kernel
-        η2 = lib.concatenate((shim.add_axes(np.zeros(self.a.shape), 1, 'before'), # ∞-bin
-                              self.η2_fn(tarr_η)))  # rest
+        ηr = lib.concatenate((shim.add_axes(np.zeros(self.a.shape), 1, 'before'), # ∞-bin
+                              self.ηr_fn(tarr_η)))  # rest
 
         # Add the absolute refractory period, if required.
         # (it's only required if it's more than a bin wide)
@@ -123,16 +123,16 @@ class SRMBase(Model):
             # The time array is flipped, so the start idx of the absolute refractory
             # period is at the end.
         self.η = shim.ifelse(lib.any(shim.gt(abs_refrac_idx_len, 0)),
-                             lib.stack( [ shim.set_subtensor(η2[start_idx:,i], shim.inf)
+                             lib.stack( [ shim.set_subtensor(ηr[start_idx:,i], shim.inf)
                                           for i, start_idx in enumerate(start_idcs) ] ),
-                             η2)
+                             ηr)
         # self.η = shim.ifelse(lib.any(shim.gt(abs_refrac_idx_len, 0)),
         #                      lib.stack(
         #                          [ lib.stack(
-        #                             [ shim.set_subtensor(η2[start_idx:,i,j], shim.inf)
+        #                             [ shim.set_subtensor(ηr[start_idx:,i,j], shim.inf)
         #                                for j, start_idx in enumerate(start_idx_row) ] )
         #                             for i, start_idx_row in enumerate(start_idcs) ] ),
-        #                      η2)
+        #                      ηr)
             # By setting η this way, we ensure that a call to set_subtensor
             # is only made if necessary
 
@@ -146,7 +146,7 @@ class SRMBase(Model):
         # TODO: move to History
         return int(shim.round(self.memory_time / self.A.dt) + 1)
 
-    def η2_fn(self, t):
+    def ηr_fn(self, t):
         """The refractory kernel coming after the absolute refractory period"""
         kernel_dims = shim.asarray(self.params.τabs).ndim
             # Shape of the η kernel
@@ -165,6 +165,7 @@ class SRMBase(Model):
             retval = lib.sum(retval, axis=-1)
 
         return retval
+
 
 # =============================================================================
 #
@@ -476,8 +477,6 @@ class Spiking(SRMBase):
                  random_stream,
                  memory_time=None):
 
-        super().__init__(params, history=spike_history)
-
         self.spikehist = spike_history
         self.A = history.Spiketimes(spike_history, shape=params.N.shape)
         self.I = input_history
@@ -487,27 +486,56 @@ class Spiking(SRMBase):
 
         self.rndstream = random_stream
 
+        super().__init__(params, memory_time)
+
+        ηparams = kernels.ExpKernel.Parameters(
+            height = params.Jr,
+            decay_const = params.τm,
+            t_offset = params.τabs )
+        self.ηr = kernels.ExpKernel('ηr',
+                                    params      = ηparams,
+                                    t0          = np.min(params.τabs),
+                                    memory_time = memory_time,
+                                    shape       = (len(params.N),) )
+        def ηabs_fn(self, t):
+            """The refractory kernel during the absolute refractory period."""
+            return shim.switch( shim.and_(0 <= t, t < params.τabs),
+                                shim.inf,
+                                0 )
+        self.ηabs = kernels.Kernel('ηabs',
+                                   shape       = (len(params.N),),
+                                   f           = ηabs_fn,
+                                   memory_time = lib.max(params.τabs),
+                                   t0          = 0 )
+
     def check_indexing(self, t):
         # On reason this test might fail is if A and spikehist have different padding
         # and indices are used (rather than times)
         assert(self.spikehist._tarr[self.spikehist.get_t_idx(t)]
                == self.A._tarr[self.B.get_t_idx(t)])
 
-    def a_onestep(self, t):
-        # Update θ
-        θ = self.η
+    def spike_update(self, t):
+        # Compute θ
+        θ = ( self.ηabs.convolve(self.spikehist, t)
+              + self.ηr.convolve(self.spikehist, t) )
 
-        # Update h
-#        h = lib.sum( self.κ.convolve(JsᕽAᐩI, t), axis=1 )
-            # Kernels are [to idx][from idx], so to get the total contribution to
-            # population i, we sum over axis 1 (the 'from indices')
+        # Compute h
         h = self.κ.convolve(self.spikehist, t)
+        assert(h.shape == self.spikehist.pop_sizes.shape)
 
-        # Update ρ
-        ρ = self.params.c * lib.exp(h - θ)
+        # Compute ρ
+        ρ = self.params.c * shim.concatenate(
+              [ lib.exp(h[i] - θ[slc])
+                for i, slc in enumerate(self.spikehist.pop_slices) ] )
 
-        # Compute the new a(t)
-        # In the writeup we set axis=1, because we sum once for the entire
-        # series, so t is another dimension
-        bin_spikes = self.spikehist.dt * ρ
-        E_spikes = lib.sum(E_bin_spikes, axis=0, keepdims=True)
+        # Decide which neurons spike
+        bin_spikes = lib.nonzero( self.spikehist.dt * ρ
+                                  < rndstream.uniform(ρ.shape) )
+        shim.check(len(bin_spikes) == 1)
+        return bin_spikes[0]
+
+    def A_update(self, t):
+        spikevec = self.spikehist[t]
+            # The vector must be constructed, so avoid calling multiple times
+        return shim.stack(
+            [ lib.sum(spikevec[slc]) for slc in self.spikehist.pop_slices ] )
