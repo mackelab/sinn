@@ -188,9 +188,9 @@ class History(HistoryBase):
             if shape is sinn._NoValue:
                 shape = hist.shape
             if f is sinn._NoValue:
-                f = hist.f
+                f = hist._update_function
             if iterative is sinn._NoValue:
-                iterative = hist.iterative
+                iterative = hist._iterative
         else:
             assert(sinn._NoValue not in [t0, tn, dt, shape])
         if iterative is sinn._NoValue:
@@ -202,6 +202,7 @@ class History(HistoryBase):
         self.shape = shape
             # shape at a single time point, or number of elements
             # in the system
+        self.ndim = len(shape)
 
         self.dt = np.array(dt, dtype=floatX)
         self._cur_tidx = -1
@@ -327,17 +328,17 @@ class History(HistoryBase):
             A integer tuple `(n, m)` where `n` is the number of bins added
             before, and `m` the number of bins added after
         """
-        # TODO: Only add as much padding as needed
 
-        before_idx_len = int(before // self.dt)
-        after_idx_len = int(after // self.dt)
+        before_idx_len = int(lib.ceil(before / self.dt))
+        after_idx_len = int(lib.ceil(after / self.dt))
         before = before_idx_len * self.dt
         after = after_idx_len * self.dt
 
-        before_array = np.arange(self.t0 - before, self.t0, self.dt)
-        after_array = np.arange(self.tn + self.dt - config.abs_tolerance,
+        before_array = np.arange(self.t0 - before, self._tarr[0], self.dt)
+        after_array = np.arange(self._tarr[-1] + self.dt - config.abs_tolerance,
                                 self.tn + self.dt - config.abs_tolerance + after,
                                 self.dt)
+            # Use of _tarr ensures we don't add more padding than necessary
         self._tarr = np.hstack((before_array, self.get_time_array(), after_array))
         self.t0idx = len(before_array)
         self._cur_tidx += len(before_array)
@@ -456,6 +457,13 @@ class History(HistoryBase):
                 #       + " (rather than a time) and returning unchanged.")
                 return t
             else:
+                try:
+                    shim.check(t >= self._tarr[0])
+                except AssertionError:
+                    raise RuntimeError("You've tried to obtain the time index at t={}, which "
+                                       "is outside this history's range. Please add padding"
+                                       .format(t))
+
                 if self._strict_index_rounding:
                     # Enforce that times be multiples of dt
 
@@ -528,7 +536,7 @@ class History(HistoryBase):
                 kernel_func = kernel.eval
             elif config.integration_precision == 2:
                 # TODO: Avoid recalculating eval at the same places by writing
-                #       a _compute_up_to function and passing that to the series
+                #       a compute_up_to function and passing that to the series
                 kernel_func = lambda t: (kernel.eval(t) + kernel.eval(t+self.dt)) / 2
             else:
                 # TODO: higher order integration with trapeze or simpson's rule
@@ -733,7 +741,7 @@ class Spiketimes(ConvolveMixin, History):
         '''
         if shim.istype(key, 'int') or shim.istype(key, 'float'):
             t = self.get_time(key)
-            return np.from_iter( ( True if t in spikelist else False
+            return np.fromiter( ( True if t in spikelist else False
                                    for spikelist in self.spike_times ),
                                  dtype=bool )
         elif isinstance(key, slice):
@@ -768,8 +776,8 @@ class Spiketimes(ConvolveMixin, History):
         shim.check(newidx <= self._cur_tidx + 1)
 
         time = self.get_time(tidx)
-        for neuron_idx, spike_list in zip(neuron_idcs, self.spike_times):
-            spike_list[neuron_idx].append(time)
+        for neuron_idx in neuron_idcs:
+            self.spike_times[neuron_idx].append(time)
 
         # for neuron_lst, spike_times in zip(value, self.spike_times):
         #     for neuron_idx in neuron_lst:
@@ -813,7 +821,7 @@ class Spiketimes(ConvolveMixin, History):
 
         if source is None:
             # Default is to use series' own compute functions
-            self._compute_up_to(-1)
+            self.compute_up_to(-1)
 
         elif callable(source):
             raise NotImplementedError
@@ -910,8 +918,8 @@ class Spiketimes(ConvolveMixin, History):
 
         elif kernel.ndim == 1 and kernel.shape[0] == len(self.pop_sizes):
             return lib.concatenate(
-                  [ lib.stack( shim.asarray(lib.sum( f(t-s) for s in spike_list )).reshape(kernel.shape[0:1])
-                               for s in spike_list[self.pop_slices[from_pop_idx]] )
+                  [ lib.stack( shim.asarray(lib.sum( f(t-s, from_pop_idx) for s in spike_list ))
+                               for spike_list in self.spike_times[self.pop_slices[from_pop_idx]] )
                     for from_pop_idx in range(len(self.pop_sizes)) ] )
 
         else:
@@ -1154,7 +1162,7 @@ class Series(ConvolveMixin, History):
 
         if source is None:
             # Default is to use series' own compute functions
-            self._compute_up_to(-1)
+            self.compute_up_to(-1)
 
         elif (not hasattr(source, 'shape')
               and (shim.istype(source, 'float')
@@ -1256,13 +1264,14 @@ class Series(ConvolveMixin, History):
                     "possible you specified time as an integer instead of a float ? "
                     "Floats are treated as times, while integers are treated as time indices."
                     .format(tidx))
+            dim_diff = discretized_kernel.ndim - self.ndim
             return self.dt * lib.sum(discretized_kernel[kernel_slice][::-1]
-                                         * shim.add_axes(self[hist_slice], 1, 'before last'),
+                                         * shim.add_axes(self[hist_slice], dim_diff, -self.ndim),
                                      axis=0)
                 # history needs to be augmented by a dimension to match the kernel
                 # Since kernels are [to idx][from idx], the augmentation has to be on
                 # the second-last axis for broadcasting to be correct.
-                # TODO: This will break with multi-dim timeslices
+                # TODO: Untested with multi-dim timeslices (i.e. self.ndim > 1)
 
     def _convolve_op_batch(self, discretized_kernel, kernel_slice):
         """Return the convolution at every lag within t0 and tn."""

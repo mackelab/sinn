@@ -5,7 +5,7 @@ Created on Sat Feb 4 2017
 Author: Alexandre René
 """
 import numpy as np
-from collections import namedtuple
+from collections import namedtuple, deque
 
 import theano_shim as shim
 import sinn.config as config
@@ -151,6 +151,8 @@ class OpCache:
 #
 ##################################
 
+# TODO: Subclass? namedtuple to have the casting done on instantiation (rather than when intialization the class it's attached to)
+
 #Parameter = namedtuple('Parameter', ['name', 'cast_function', 'default'])
 #Parameter.__new__.__defaults__ = [None]
 def define_parameters(param_dict):
@@ -159,11 +161,14 @@ def define_parameters(param_dict):
     """
     keys = param_dict.keys()
     Parameters = namedtuple('Parameters', keys)
-    # Set default values for the parameters. A default value of`None`
+    # Set default values for the parameters. A default value of `None`
     # indicates that the parameter is mandatory.
-    Parameters.__new__.__defaults__ = tuple([param_dict[key][1] for key in keys
-                                             if isinstance(param_dict[key], tuple)
-                                             and len(param_dict[key]) == 2])
+    # Parameters with no default value have their value set to `None`
+    Parameters.__new__.__defaults__ = tuple([ param_dict[key][1]
+                                              if isinstance(param_dict[key], tuple)
+                                                and len(param_dict[key]) >= 2
+                                              else None
+                                              for key in keys ])
         # http://stackoverflow.com/a/18348004
     return Parameters
 
@@ -229,7 +234,9 @@ class ParameterMixin:
 
     Parameter_info = {}
         # Overload this in derived classes
-        # Entries to Parameter dict: 'key': (dtype, default)
+        # Entries to Parameter dict: 'key': (dtype, default, bool)
+        # If the bool flag is True, parameter will guaranteed to be a matrix with at least 2 dimensions
+        # Default is bool = False.
     Parameters = define_parameters(Parameter_info)
         # Overload this in derived classes
 
@@ -246,12 +253,17 @@ class ParameterMixin:
         param_dict = {}
         for key in self.Parameters._fields:
             if isinstance(self.Parameter_info[key], tuple):
-                param_dict[key] = np.asarray(getattr(params,key), dtype=self.Parameter_info[key][0])
+                # TODO: Find a way to cast to dtype without making and then dereferencing an array
+                param_dict[key] = np.asarray(getattr(params, key), dtype=self.Parameter_info[key][0])
+                try:
+                    if self.Parameter_info[key][2]:
+                        # Also wrap scalars in a 2D matrix so they play nice with algorithms
+                        if shim.get_ndims(param_dict[key]) < 2:
+                            param_dict[key] = shim.add_axes(np.asarray(param_dict[key]), 2 - shim.get_ndims(param_dict[key]))
+                except KeyError:
+                    pass
             else:
                 param_dict[key] = np.asarray(getattr(params, key), dtype=self.Parameter_info[key])
-            # Wrap scalars in a 2D matrix so they play nice with algorithms
-            if shim.get_ndims(param_dict[key]) < 2:
-                param_dict[key] = shim.add_axes(param_dict[key], 2 - shim.get_ndims(param_dict[key]))
 
         self.params = self.Parameters(**param_dict)
 

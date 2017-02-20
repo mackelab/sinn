@@ -24,6 +24,11 @@ Kernel = kernels.Kernel
 #Parameter = com.Parameter
 
 
+# TODO: Move casting functions to shim
+
+int_cast = lambda x : shim.asarray(x, 'int')
+float_cast = lambda x : shim.asarray(x, config.floatX)
+
 class SRMBase(Model):
 
     def __init__(self, params, memory_time):
@@ -49,19 +54,17 @@ class SRMBase(Model):
                              params      = κparams,
                              t0          = np.min(params.τs),
                              memory_time = memory_time,
-                             shape       = (1,) + self.A.shape )
+                             shape       = self.A.shape )
             # Here the kernel doesn't actually mix the populations
             # (that's done by Js), so it's the same shape as A
-            # (plus the time dimension for the θ lags)
+            # (We used to add a dimension to self.A)
 
         # TODO:
         # assert(self.κ.compatible_with(Ahist))
 
         # Initialize series objects used in computation
         # (We shamelessly abuse of unicode support for legibility)
-        self.JsᕽAᐩI = history.Series(self.A.t0,
-                                    self.A.tn,
-                                    self.A.dt,
+        self.JsᕽAᐩI = history.Series(self.A,
                                     shape = self.A.shape,
                                     f = lambda t: lib.dot(params.Js, self.A[t]) + self.I[t])
                                                               # NxN  dot  N   +  N
@@ -76,70 +79,15 @@ class SRMBase(Model):
             # Caching mechanism takes care of actually remembering the result
             self.κ.convolve(self.JsᕽAᐩI)
         else:
-            self.A.set_update_function(self.A_fn)
-
+            self.A.set_update_function(self.A_update)
 
         ##########################################
         # Model memory time & padding
         #########################################
-        self.memory_time = self.κ.memory_time
+        self.memory_time = self.κ.memory_time if memory_time is None else lib.max(self.κ.memory_time, memory_time)
         #self.a.pad()
         #self.A.pad()
 
-        ##########################################
-        # Inhibitory component θ
-        #
-        # Indices go as:
-        # η[0]   -> η[(M-1)dt]
-        # ...
-        # η[M-2] -> η[dt]
-        ##########################################
-
-        M = self.get_M(self.memory_time)
-            # num of bins of history to use in computations
-        tarr_η = np.arange(M-1, 0, -1) * self.A.dt
-            # np. b/c there is no need to use a Theano variable here
-
-        if init_occupation_numbers is not None:
-            self.set_init_occupation_numbers(init_occupation_numbers)
-
-        ########################
-        # Refractory component η
-
-        # Calculate the kernel
-        ηr = lib.concatenate((shim.add_axes(np.zeros(self.a.shape), 1, 'before'), # ∞-bin
-                              self.ηr_fn(tarr_η)))  # rest
-
-        # Add the absolute refractory period, if required.
-        # (it's only required if it's more than a bin wide)
-        shim.check(np.isclose(params.τabs % self.A.dt, 0,
-                              rtol=config.rel_tolerance,
-                              atol=config.abs_tolerance ).all() )
-            # If τabs is not a multiple of dt, we will have important numerical errors
-        abs_refrac_idx_len = shim.largest(shim.cast_varint16( shim.round(params.τabs / self.A.dt) ) - 1, 0)
-            # -1 because tarr_η starts at dt
-            # clip at zero because otherwise τabs=0  =>  -1
-        start_idcs = len(tarr_η) - abs_refrac_idx_len
-            # The time array is flipped, so the start idx of the absolute refractory
-            # period is at the end.
-        self.η = shim.ifelse(lib.any(shim.gt(abs_refrac_idx_len, 0)),
-                             lib.stack( [ shim.set_subtensor(ηr[start_idx:,i], shim.inf)
-                                          for i, start_idx in enumerate(start_idcs) ] ),
-                             ηr)
-        # self.η = shim.ifelse(lib.any(shim.gt(abs_refrac_idx_len, 0)),
-        #                      lib.stack(
-        #                          [ lib.stack(
-        #                             [ shim.set_subtensor(ηr[start_idx:,i,j], shim.inf)
-        #                                for j, start_idx in enumerate(start_idx_row) ] )
-        #                             for i, start_idx_row in enumerate(start_idcs) ] ),
-        #                      ηr)
-            # By setting η this way, we ensure that a call to set_subtensor
-            # is only made if necessary
-
-        ########################
-        # Adaptation component θ
-
-        # TODO
 
     def get_M(self, memory_time):
         """Convert a time into a number of bins."""
@@ -201,14 +149,14 @@ class Activity(SRMBase):
     #################
     # kernel definitions
 
-    Parameter_info = OrderedDict( ( ( 'N'   , np.int ),
-                                    ( 'c'   , config.cast_floatX ),
-                                    ( 'Js'  , config.cast_floatX ),
-                                    ( 'Jr'  , config.cast_floatX ),
-                                   #( 'τa'  , config.cast_floatX ),
-                                    ( 'τs' , config.cast_floatX ),
-                                    ( 'τm' , config.cast_floatX ),
-                                    ( 'τabs', config.cast_floatX ) ) )
+    Parameter_info = OrderedDict( ( ( 'N'   , (np.int            , None, False) ),
+                                    ( 'c'   , (config.cast_floatX, None, False) ),
+                                    ( 'Js'  , (config.cast_floatX, None, True) ),
+                                    ( 'Jr'  , (config.cast_floatX, None, True) ),
+                                   #( 'τa'  , (config.cast_floatX, None, True) ),
+                                    ( 'τs'  , (config.cast_floatX, None, True) ),
+                                    ( 'τm'  , (config.cast_floatX, None, True) ),
+                                    ( 'τabs', (config.cast_floatX, None, True) ) ) )
     Parameters = com.define_parameters(Parameter_info)
 
     def __init__(self, params,
@@ -236,6 +184,61 @@ class Activity(SRMBase):
         ##########################################
         # Parameter sanity checks
         ##########################################
+
+        # TODO
+
+        ##########################################
+        # Inhibitory component θ
+        #
+        # Indices go as:
+        # η[0]   -> η[(M-1)dt]
+        # ...
+        # η[M-2] -> η[dt]
+        ##########################################
+
+        M = self.get_M(self.memory_time)
+            # num of bins of history to use in computations
+        tarr_η = np.arange(M-1, 0, -1) * self.A.dt
+            # np. b/c there is no need to use a Theano variable here
+
+        if init_occupation_numbers is not None:
+            self.set_init_occupation_numbers(init_occupation_numbers)
+
+        ########################
+        # Refractory component η
+
+        # Calculate the kernel
+        ηr = lib.concatenate((shim.add_axes(np.zeros(self.a.shape), 1, 'before'), # ∞-bin
+                              self.ηr_fn(tarr_η)))  # rest
+
+        # Add the absolute refractory period, if required.
+        # (it's only required if it's more than a bin wide)
+        shim.check(np.isclose(params.τabs % self.A.dt, 0,
+                              rtol=config.rel_tolerance,
+                              atol=config.abs_tolerance ).all() )
+            # If τabs is not a multiple of dt, we will have important numerical errors
+        abs_refrac_idx_len = shim.largest(shim.cast_varint16( shim.round(params.τabs / self.A.dt) ) - 1, 0)
+            # -1 because tarr_η starts at dt
+            # clip at zero because otherwise τabs=0  =>  -1
+        start_idcs = len(tarr_η) - abs_refrac_idx_len
+            # The time array is flipped, so the start idx of the absolute refractory
+            # period is at the end.
+        self.η = shim.ifelse(lib.any(shim.gt(abs_refrac_idx_len, 0)),
+                             lib.stack( [ shim.set_subtensor(ηr[start_idx:,i], shim.inf)
+                                          for i, start_idx in enumerate(start_idcs) ] ),
+                             ηr)
+        # self.η = shim.ifelse(lib.any(shim.gt(abs_refrac_idx_len, 0)),
+        #                      lib.stack(
+        #                          [ lib.stack(
+        #                             [ shim.set_subtensor(ηr[start_idx:,i,j], shim.inf)
+        #                                for j, start_idx in enumerate(start_idx_row) ] )
+        #                             for i, start_idx_row in enumerate(start_idcs) ] ),
+        #                      ηr)
+            # By setting η this way, we ensure that a call to set_subtensor
+            # is only made if necessary
+
+        ########################
+        # Adaptation component θ
 
         # TODO
 
@@ -341,7 +344,8 @@ class Activity(SRMBase):
 #        h = lib.sum( self.κ.convolve(JsᕽAᐩI, t), axis=1 )
             # Kernels are [to idx][from idx], so to get the total contribution to
             # population i, we sum over axis 1 (the 'from indices')
-        h = self.κ.convolve(JsᕽAᐩI, t)
+        h = shim.add_axes(self.κ.convolve(JsᕽAᐩI, t), 1, 'before')
+            # Add an axis for the θ lags
 
         # Update ρ
         ρ = self.params.c * lib.exp(h - θ)
@@ -437,7 +441,7 @@ class Activity(SRMBase):
 
             return returned_a, updates
 
-    def A_fn(self, t):
+    def A_update(self, t):
         return self.rndstream.normal(size=self.A.shape,
                                      avg=self.a[t],
                                      std=lib.sqrt(self.a[t]/self.params.N/self.A.dt))
@@ -462,14 +466,15 @@ class Activity(SRMBase):
 
 class Spiking(SRMBase):
 
-    Parameter_info = OrderedDict( ( ( 'N'   , np.int ),
-                                    ( 'c'   , config.cast_floatX ),
-                                    ( 'Js'  , config.cast_floatX ),
-                                    ( 'Jr'  , config.cast_floatX ),
-                                   #( 'τa'  , config.cast_floatX ),
-                                    ( 'τs' , config.cast_floatX ),
-                                    ( 'τm' , config.cast_floatX ),
-                                    ( 'τabs', config.cast_floatX ) ) )
+    Parameter_info = OrderedDict( ( ( 'N'   , (np.int            , None, False) ),
+                                    ( 'c'   , (config.cast_floatX, None, False) ),
+                                    ( 'Js'  , (config.cast_floatX, None, True) ),
+                                    ( 'Jr'  , (config.cast_floatX, None, True) ),
+                                   #( 'τa'  , (config.cast_floatX, None, True) ),
+                                    ( 'τs'  , (config.cast_floatX, None, True) ),
+                                    ( 'τm'  , (config.cast_floatX, None, True) ),
+                                    ( 'τabs', (config.cast_floatX, None, True) ) ) )
+
     Parameters = com.define_parameters(Parameter_info)
 
     def __init__(self, params,
@@ -478,11 +483,11 @@ class Spiking(SRMBase):
                  memory_time=None):
 
         self.spikehist = spike_history
-        self.A = history.Spiketimes(spike_history, shape=params.N.shape)
+        self.A = history.Series(spike_history, shape=params.N.shape)
         self.I = input_history
 
         self.spikehist.set_update_function(self.spike_update)
-        self.A.set_update_function(self.A_update)
+        # self.A update function set below
 
         self.rndstream = random_stream
 
@@ -497,16 +502,24 @@ class Spiking(SRMBase):
                                     t0          = np.min(params.τabs),
                                     memory_time = memory_time,
                                     shape       = (len(params.N),) )
-        def ηabs_fn(self, t):
-            """The refractory kernel during the absolute refractory period."""
-            return shim.switch( shim.and_(0 <= t, t < params.τabs),
-                                shim.inf,
-                                0 )
+
         self.ηabs = kernels.Kernel('ηabs',
                                    shape       = (len(params.N),),
-                                   f           = ηabs_fn,
+                                   f           = self.ηabs_fn,
                                    memory_time = lib.max(params.τabs),
                                    t0          = 0 )
+
+        self.memory_time = lib.max((self.memory_time, self.ηr.memory_time + self.ηabs.memory_time))
+
+        self.A.pad(self.memory_time)
+        self.spikehist.pad(self.memory_time)
+            # TODO: Ensure padding isn't added on top of previous padding.
+
+    def ηabs_fn(self, t, from_idx):
+            """The refractory kernel during the absolute refractory period."""
+            return shim.switch( shim.and_(0 <= t, t < self.params.τabs[:,from_idx]),
+                                shim.inf,
+                                0 )
 
     def check_indexing(self, t):
         # On reason this test might fail is if A and spikehist have different padding
@@ -517,25 +530,25 @@ class Spiking(SRMBase):
     def spike_update(self, t):
         # Compute θ
         θ = ( self.ηabs.convolve(self.spikehist, t)
-              + self.ηr.convolve(self.spikehist, t) )
+              + self.ηr.convolve(self.spikehist, t) ).reshape(self.spikehist.shape)
 
         # Compute h
-        h = self.κ.convolve(self.spikehist, t)
+        h = self.κ.convolve(self.JsᕽAᐩI, t)
         assert(h.shape == self.spikehist.pop_sizes.shape)
 
         # Compute ρ
-        ρ = self.params.c * shim.concatenate(
-              [ lib.exp(h[i] - θ[slc])
+        ρ = lib.concatenate(
+              [ self.params.c[i] * lib.exp(h[i] - θ[slc])
                 for i, slc in enumerate(self.spikehist.pop_slices) ] )
 
         # Decide which neurons spike
         bin_spikes = lib.nonzero( self.spikehist.dt * ρ
-                                  < rndstream.uniform(ρ.shape) )
+                                  < self.rndstream.uniform(ρ.shape) )
         shim.check(len(bin_spikes) == 1)
         return bin_spikes[0]
 
     def A_update(self, t):
         spikevec = self.spikehist[t]
             # The vector must be constructed, so avoid calling multiple times
-        return shim.stack(
+        return lib.stack(
             [ lib.sum(spikevec[slc]) for slc in self.spikehist.pop_slices ] )

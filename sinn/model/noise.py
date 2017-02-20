@@ -20,9 +20,9 @@ class GaussianWhiteNoise(Model):
     Values will limited to the range ±clip_limit;
     """
 
-    Parameter_info = OrderedDict( ( ( 'std',        (config.cast_floatX, 1.0) ),
-                                    ( 'shape',      (np.int, (1,)) ),
-                                    ( 'clip_limit', (np.int, 87)   ) ) )
+    Parameter_info = OrderedDict( ( ( 'std',        (config.cast_floatX, 1.0, False) ),
+                                    ( 'shape',      (np.int, (1,), False) ),
+                                    ( 'clip_limit', (np.int, 87,   False)   ) ) )
         # exp(88) is the largest value scipy can store in a 32-bit float
     Parameters = com.define_parameters(Parameter_info)
         # TODO: Move to Model constructor
@@ -40,9 +40,9 @@ class GaussianWhiteNoise(Model):
 
 
 class Step(Model):
-    Parameter_info = OrderedDict( ( ( 'height', config.cast_floatX ),
-                                    ( 'begin',  config.cast_floatX ),
-                                    ( 'end',    config.cast_floatX ) ) )
+    Parameter_info = OrderedDict( ( ( 'height', (config.cast_floatX, None, False) ),
+                                    ( 'begin',  (config.cast_floatX, None, False) ),
+                                    ( 'end',    (config.cast_floatX, None, False) ) ) )
     Parameters = com.define_parameters(Parameter_info)
 
     def eval(self, t):

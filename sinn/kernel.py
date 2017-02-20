@@ -61,6 +61,9 @@ class Kernel(ConvolveMixin, ParameterMixin):
         # else:
         #     kwargs['convolve_shape'] = shape
 
+        if 'params' not in kwargs:
+            # ParameterMixin requires 'params'
+            kwargs['params'] = com.define_parameters({})
         super().__init__(**kwargs)
 
         self.name = name
@@ -69,7 +72,13 @@ class Kernel(ConvolveMixin, ParameterMixin):
         self.t0 = t0
 
         if f is not None:
-            self.eval = f
+            self._eval_f = f
+            #try:
+            #    shim.check(f(0).ndim >= 2)
+            #except AssertionError:
+            #    raise ValueError("The result of kernel functions should be "
+            #                     "2-dimensional (1 or both of which may be flat.")
+
         if hasattr(self, 'eval'):
             # Sanity test on the eval method
             try:
@@ -80,6 +89,12 @@ class Kernel(ConvolveMixin, ParameterMixin):
         # TODO: add set_eval method, and make memory_time optional here
         assert(memory_time is not None)
         self.memory_time = memory_time
+
+    def eval(self, t, from_idx=slice(None,None)):
+        if not shim.isscalar(t):
+            t = shim.add_axes(t, self.params[0].ndim-1, 'right')
+                # FIXME: This way of fixing t dimensions is not robust
+        return self._eval_f(t, from_idx)
 
     def _convolve_op_single_t(self, hist, t, kernel_slice):
         return hist._convolve_op_single_t(self, t, kernel_slice)
@@ -112,9 +127,9 @@ class ExpKernel(Kernel):
     """An exponential kernel, of the form κ(s) = c exp(-(s-t0)/τ).
     """
 
-    Parameter_info = OrderedDict( ( ( 'height'     , (config.cast_floatX,) ),
-                                    ( 'decay_const', (config.cast_floatX,) ),
-                                    ( 't_offset'   , (config.cast_floatX,) ) ) )
+    Parameter_info = OrderedDict( ( ( 'height'     , (config.cast_floatX, None, True) ),
+                                    ( 'decay_const', (config.cast_floatX, None, True) ),
+                                    ( 't_offset'   , (config.cast_floatX, None, True) ) ) )
     Parameters = com.define_parameters(Parameter_info)
 
     def __init__(self, name, shape, memory_time=None, t0=0, **kwargs):
@@ -140,11 +155,11 @@ class ExpKernel(Kernel):
 
 #        self.height = height
 #        self.decay_const = decay_const
+        params = kwargs['params']
 
         # Truncating after memory_time should not discard more than a fraction
         # config.truncation_ratio of the total area under the kernel.
         # (Divide ∫_t^∞ by ∫_0^∞ to get this formula.)
-        params = kwargs['params']
         if memory_time is None:
             assert(0 < config.truncation_ratio < 1)
             # We want a numerical value, so we use the test value associated to the variables
@@ -174,12 +189,14 @@ class ExpKernel(Kernel):
 
     def eval(self, t, from_idx=slice(None,None)):
         if not shim.isscalar(t):
-            t = shim.add_axes(t, self.params.t_offset.ndim, 'right')
-        return shim.switch(shim.lt(t, self.params.t_offset),
+            t = shim.add_axes(t, self.params.t_offset.ndim-1, 'right')
+            # FIXME: This way of fixing t dimension isn't robust
+        return shim.switch(shim.lt(t, self.params.t_offset[:,from_idx]),
                            0,
                            self.params.height[:,from_idx]
-                             * lib.exp(-(t-self.params.t_offset)
+                             * lib.exp(-(t-self.params.t_offset[:,from_idx])
                                        / self.params.decay_const[:,from_idx]) )
+            # We can use indexing because ParameterMixin ensures parameters are at least 2D
 
     def _convolve_op_single_t(self, hist, t, kernel_slice):
 
