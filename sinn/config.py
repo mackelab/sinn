@@ -1,6 +1,9 @@
+import logging
 import numpy as np
 
 import theano_shim as shim
+
+logLevel = logging.DEBUG # CRITICAL, INFO, WARNING, DEBUG, ERROR, FATAL
 
 integration_precision = 1
 truncation_ratio = 0.001

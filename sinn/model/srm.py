@@ -64,7 +64,7 @@ class SRMBase(Model):
 
         # Initialize series objects used in computation
         # (We shamelessly abuse of unicode support for legibility)
-        self.JsᕽAᐩI = history.Series(self.A,
+        self.JsᕽAᐩI = history.Series(self.A, "JsᕽAᐩI",
                                     shape = self.A.shape,
                                     f = lambda t: lib.dot(params.Js, self.A[t]) + self.I[t])
                                                               # NxN  dot  N   +  N
@@ -483,7 +483,7 @@ class Spiking(SRMBase):
                  memory_time=None):
 
         self.spikehist = spike_history
-        self.A = history.Series(spike_history, shape=params.N.shape)
+        self.A = history.Series(spike_history, "A", shape=params.N.shape)
         self.I = input_history
 
         self.spikehist.set_update_function(self.spike_update)

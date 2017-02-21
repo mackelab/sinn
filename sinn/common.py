@@ -4,6 +4,7 @@ Created on Sat Feb 4 2017
 
 Author: Alexandre René
 """
+import logging
 import numpy as np
 from collections import namedtuple, deque
 
@@ -11,6 +12,20 @@ import theano_shim as shim
 import sinn.config as config
 floatX = config.floatX
 lib = shim.lib
+
+# Configure logger
+# See e.g. https://docs.python.org/3/howto/logging-cookbook.html
+logger = logging.getLogger('sinn')
+logger.setLevel(config.logLevel)
+_fh = logging.FileHandler("sinn.log")
+_fh.setLevel(logging.DEBUG)
+_ch = logging.StreamHandler()
+_ch.setLevel(logging.ERROR)
+_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+_fh.setFormatter(_formatter)
+_ch.setFormatter(_formatter)
+logger.addHandler(_fh)
+logger.addHandler(_ch)
 
 class HistoryBase:
 

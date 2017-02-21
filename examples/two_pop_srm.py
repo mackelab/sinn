@@ -38,13 +38,13 @@ noise_params = noise.GaussianWhiteNoise.Parameters(
     shape = (2,)
     )
 
-input_hist = history.Series(**hist_params, shape=model_params.N.shape)
+input_hist = history.Series(name='I', shape=model_params.N.shape, **hist_params)
 input_model = noise.GaussianWhiteNoise(noise_params, input_hist, rndstream)
 
 
 # Full spiking model
 
-spike_hist = history.Spiketimes(**hist_params, pop_sizes=model_params.N)
+spike_hist = history.Spiketimes(name='spikehist', pop_sizes=model_params.N, **hist_params)
 #Ahist = history.Spiketimes(**hist_params, shape=(len(model_params.N),))
 
 spiking_model = srm.Spiking(model_params, spike_hist, input_hist, rndstream)
@@ -69,3 +69,6 @@ def do_it():
     # Plot the result
     plt.plot(Ahist.get_time_array(), Ahist.get_trace())
 
+
+if __name__ == "__main__":
+    do_it()

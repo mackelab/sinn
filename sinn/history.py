@@ -9,6 +9,8 @@ import numpy as np
 from collections import deque
 import itertools
 import operator
+import logging
+logger = logging.getLogger("sinn.history")
 
 import theano_shim as shim
 import sinn
@@ -31,6 +33,7 @@ class History(HistoryBase):
     previous to t is also known (by forcing a computation if necessary).
 
     Derived classes can safely expect the following attributes to be defined:
+        + name             : Unique identifying string
         + shape            : Shape at a single time point, or number of elements in the system
         + t0               : Time at which history starts
         + tn               : Time at which history ends
@@ -133,8 +136,9 @@ class History(HistoryBase):
 
     #_strict_index_rounding = None
         # Derived classes should define this as a class attribute
+    instance_counter = 0
 
-    def __init__(self, hist=sinn._NoValue, *args, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
+    def __init__(self, hist=sinn._NoValue, name=None, *args, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
                  shape=sinn._NoValue, f=sinn._NoValue, iterative=sinn._NoValue):
         """
         Initialize History object.
@@ -177,6 +181,9 @@ class History(HistoryBase):
         -------
         None
         """
+        self.instance_counter += 1
+        if name is None:
+            name = "history{}".format(self.instance_counter)
         # Grab defaults from the other instance:
         if hist is not sinn._NoValue:
             if t0 is sinn._NoValue:
@@ -199,6 +206,7 @@ class History(HistoryBase):
 
         super().__init__(t0, np.ceil( (tn - t0)/dt ) * dt + t0)
             # Set t0 and tn, ensuring (tn - t0) is a round multiple of dt
+        self.name = name
         self.shape = shape
             # shape at a single time point, or number of elements
             # in the system
@@ -356,16 +364,28 @@ class History(HistoryBase):
         if self._compute_range is not None:
             # A specialized function for computing multiple time points
             # has been defined – use it.
+            logger.info("Computing {} up to {}. Using custom batch operation."
+                        .format(self.name, self._tarr[tidx]))
             self.update(slice(start, stop),
                         self._compute_range(self._tarr[slice(start, stop)]))
 
         elif not self._iterative:
             # Computation doesn't depend on history – just compute the whole thing in
             # one go
+            logger.info("Computing {} up to {}. History is not iterative, "
+                        "so computing all times simultaneously."
+                        .format(self.name, self._tarr[tidx]))
             self.update(slice(start,stop),
                         self._update_function(self._tarr[time_slice]))
         else:
+            logger.info("Iteratively computing {} up to {}."
+                        .format(self.name, self._tarr[tidx]))
+            old_percent = 0
             for i in lib.arange(start, stop):
+                percent = (i*100)//stop
+                if percent > old_percent:
+                    logger.info("{}% done".format(percent))
+                    old_percent = percent
                 self.update(i, self._update_function(self._tarr[i]))
 
     def get_time_array(self, include_padding=False):
@@ -625,7 +645,7 @@ class Spiketimes(ConvolveMixin, History):
 
     _strict_index_rounding = False
 
-    def __init__(self, hist=sinn._NoValue, *args, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
+    def __init__(self, hist=sinn._NoValue, name=None, *args, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
                  pop_sizes=sinn._NoValue, **kwargs):
         """
         All parameters except `hist` are keyword parameters
@@ -646,6 +666,8 @@ class Spiketimes(ConvolveMixin, History):
         **kwargs:
             Extra keyword arguments are passed on to History's initializer
         """
+        if name is None:
+            name = "spiketimes{}".format(self.instance_counter + 1)
         try:
             assert(pop_sizes is not sinn._NoValue)
         except AssertionError:
@@ -674,7 +696,7 @@ class Spiketimes(ConvolveMixin, History):
             self.pop_slices.append(slice(i, i+pop_size))
             i += pop_size
 
-        super().__init__(hist, t0=t0, tn=tn, dt=dt, shape=shape, **kwargs)
+        super().__init__(hist, name, t0=t0, tn=tn, dt=dt, shape=shape, **kwargs)
 
         self.initialize()
 
@@ -939,7 +961,7 @@ class Series(ConvolveMixin, History):
 
     _strict_index_rounding = True
 
-    def __init__(self, hist=sinn._NoValue, *args,
+    def __init__(self, hist=sinn._NoValue, name=None, *args,
                  t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
                  shape=None, **kwargs):
         """
@@ -950,6 +972,8 @@ class Series(ConvolveMixin, History):
         *args, **kwargs:
             Arguments required by History and ConvolveMixin
         """
+        if name is None:
+            name = "series{}".format(self.instance_counter + 1)
         if shape is None:
             raise ValueError("'shape' is a required keyword "
                              "for Series intializer.")
@@ -958,7 +982,7 @@ class Series(ConvolveMixin, History):
         # else:
         #     kwargs['convolve_shape'] = shape*2
 
-        super().__init__(hist, *args,
+        super().__init__(hist, name, *args,
                          t0=t0, tn=tn, dt=dt,
                          shape=shape, **kwargs)
 
