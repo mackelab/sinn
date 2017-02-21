@@ -228,9 +228,10 @@ class History(HistoryBase):
                                self.tn + self.dt - config.abs_tolerance,
                                self.dt)
         # 'self.tn+self.dt' ensures the upper bound is inclusive,
-        # config.precision avoids numerical rounding errors
+        # -config.abs_tolerance avoids numerical rounding errors including an extra bin
 
         self.t0idx = 0       # the index associated to t0
+        self.tn = self._tarr[-1] # remove risk of rounding errors
         self._unpadded_length = len(self._tarr)  # Save this, because _tarr might change with padding
 
     def __len__(self):
@@ -313,18 +314,25 @@ class History(HistoryBase):
     def pad_time(self, before, after=0):
         """Extend the time array before and after the history. If called
         with one argument, array is only padded before. If necessary,
-        padding amounts are reduced to make them exact multiples of dt.
+        padding amounts are increased to make them exact multiples of dt.
 
-        FUTURE WARNING: In the future, will check if the history is
-        already padded and only ensure that there is at least as much
-        padding time as `before` or `after`.
-
+        Padding is not cumulative, so
+        ```
+        history.pad_time(a)
+        history.pad_time(b)
+        ```
+        is equivalent to
+        ```
+        history.pad_time(max(a,b))
+        ```
         Parameters
         ----------
-        before: float
+        before: float | int
             Amount of time to add the time array before t0. It may be
-            reduced by an amount at most dt, in order to make it a multiple
+            increased by an amount at most dt, in order to make it a multiple
             of dt.
+            If specified as an integer, taken to be the number of time bins
+            to add. How much this amounts to in time depends on dt.
         after: float
             Optional - default value is 0. Amount of time to add the time
             array after tn. It may be reduced by an amount at most dt, in
@@ -336,9 +344,14 @@ class History(HistoryBase):
             A integer tuple `(n, m)` where `n` is the number of bins added
             before, and `m` the number of bins added after
         """
-
-        before_idx_len = int(lib.ceil(before / self.dt))
-        after_idx_len = int(lib.ceil(after / self.dt))
+        if isinstance(before, int):
+            before_idx_len = before
+        else:
+            before_idx_len = int(lib.ceil(before / self.dt))
+        if isinstance(after, int):
+            after_idx_len = after
+        else:
+            after_idx_len = int(lib.ceil(after / self.dt))
         before = before_idx_len * self.dt
         after = after_idx_len * self.dt
 
@@ -817,8 +830,8 @@ class Spiketimes(ConvolveMixin, History):
         """
         Parameters
         ----------
-        before: float
-            Amount of time to add to before t0. If non-zero, All indices
+        before: float | int
+            Amount of time to add to before t0. If non-zero, all indices
             to this data will be invalidated.
         after: float (default 0)
             Amount of time to add after tn.
@@ -1072,14 +1085,15 @@ class Series(ConvolveMixin, History):
     def pad(self, before, after=0, **kwargs):
         '''Extend the time array before and after the history. If called
         with one argument, array is only padded before. If necessary,
-        padding amounts are reduced to make them exact multiples of dt.
+        padding amounts are increased to make them exact multiples of dt.
+        See `History.pad_time` for more details.
         """
         Parameters
         ----------
-        before: float
+        before: float | int
             Amount of time to add to before t0. If non-zero, All indices
             to this data will be invalidated.
-        after: float (default 0)
+        after: float (default 0) | int
             Amount of time to add after tn.
         **kwargs:
             Extra keyword arguments are forwarded to `numpy.pad`.
@@ -1176,6 +1190,9 @@ class Series(ConvolveMixin, History):
         If source has the attribute `shape`, than it is checked to be the same
         as this history's `shape`
 
+        Note that this sets the whole data array, including padding. So if
+        source is an array, it should match the padded length exactly.
+
         If no source is specified, the series own update function is used,
         provided it has been previously defined. Can be used to force
         computation of the whole series.
@@ -1188,6 +1205,9 @@ class Series(ConvolveMixin, History):
         if source is None:
             # Default is to use series' own compute functions
             self.compute_up_to(-1)
+
+        elif isinstance(source, History):
+            raise NotImplemented
 
         elif (not hasattr(source, 'shape')
               and (shim.istype(source, 'float')

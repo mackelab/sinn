@@ -10,8 +10,6 @@ import numpy as np
 import scipy as sp
 from collections import namedtuple, OrderedDict
 
-import matplotlib.pyplot as plt
-
 import theano_shim as shim
 import sinn
 import sinn.config as config
@@ -24,7 +22,7 @@ logger = logging.getLogger('sinn.two_pop_srm')
 
 def init_spiking_model():
     model_params = srm.Spiking.Parameters(
-        N = np.array((50, 10)),
+        N = np.array((500, 100)),
         c = (4, 2),
         Js = ((3, -6), (6, 1)),
         Jr = (3, 3),
@@ -33,8 +31,8 @@ def init_spiking_model():
         τs = (0.002, 0.002)
         )
     hist_params = {'t0': 0,
-                'tn': 2,
-                'dt': 0.001}  # Make this smaller
+                   'tn': 40,
+                   'dt': 0.001}  # Make this smaller
 
     # Noisy input
 
@@ -97,8 +95,13 @@ def do_it():
                     "install matplotlib or one of its backends.")
 
 def plot_activity(A_history):
+    import matplotlib.pyplot as plt
+    import sinn.analyze as anlz
+
+    Asmooth = anlz.smooth(A_history, 20)
+
     # Plot the result
-    plt.plot(A_history.get_time_array(), A_history.get_trace())
+    anlz.plot(Asmooth)
 
 
 if __name__ == "__main__":
