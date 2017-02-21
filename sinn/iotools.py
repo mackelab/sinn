@@ -11,14 +11,14 @@ Created on Mon Jul 18 10:25:35 2016
 #       If data contains the property, assign it, otherwise assign a default value.
 #       Return a namedtuple
 
-import pickle
+import dill
 import os
 import os.path
 
 ##########################
 # Public API
 
-def save_data(filename, data):
+def save(filename, data):
     try:
         relpath = _get_savedir() + filename
         f, realrelpath = _get_free_file(relpath)
@@ -28,15 +28,15 @@ def save_data(filename, data):
         realrelpath = None
 
     else:
-        pickle.dump(data, f)
+        dill.dump(data, f)
         f.close()
 
     return realrelpath
 
 
-def load_data(filename):
+def load(filename):
     with open(_get_savedir() + filename, 'rb') as f:
-        return pickle.load(f)
+        return dill.load(f)
 
 
 ###########################

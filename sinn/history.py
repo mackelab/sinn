@@ -384,9 +384,10 @@ class History(HistoryBase):
             for i in lib.arange(start, stop):
                 percent = (i*100)//stop
                 if percent > old_percent:
-                    logger.info("{}% done".format(percent))
+                    logger.info("{}%".format(percent))
                     old_percent = percent
                 self.update(i, self._update_function(self._tarr[i]))
+        logger.info("Done computing {}.".format(self.name))
 
     def get_time_array(self, include_padding=False):
         """Return the time array.
@@ -1219,13 +1220,14 @@ class Series(ConvolveMixin, History):
                     raise Exception("\nExternal input should be specified as either a NumPy array or a function"
                                   ) from e  #.with_traceback(e.__traceback__)
 
-        shim.check(data is not None)
-        shim.check(data.shape == self._data.shape)
-        shim.check(data.shape[0] == len(tarr))
+            shim.check(data is not None)
+            shim.check(data.shape == self._data.shape)
+            shim.check(data.shape[0] == len(tarr))
 
-        self._data = data
+            self._data = data
+
         self._cur_tidx = len(tarr) - 1
-        return data
+        return self._data
 
     def theano_reset(self, new_data):
         """Refresh data to allow a new call returning theano variables.

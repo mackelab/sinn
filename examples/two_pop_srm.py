@@ -5,9 +5,12 @@ Created Wed Jan 25 2017
 author: Alexandre René
 """
 
+import logging
 import numpy as np
 import scipy as sp
 from collections import namedtuple, OrderedDict
+
+import matplotlib.pyplot as plt
 
 import theano_shim as shim
 import sinn
@@ -17,57 +20,85 @@ import sinn.model.srm as srm
 import sinn.model.noise as noise
 import sinn.iotools as io
 
-model_params = srm.Spiking.Parameters(
-    N = np.array((50, 10)),
-    c = (4, 2),
-    Js = ((3, -6), (6, 1)),
-    Jr = (3, 3),
-    τabs = (0.002, 0.002),
-    τm = (0.01, 0.01),
-    τs = (0.002, 0.002)
-    )
-hist_params = {'t0': 0,
-               'tn': 2,
-               'dt': 0.001}  # Make this smaller
+logger = logging.getLogger('sinn.two_pop_srm')
 
-# Noisy input
+def init_spiking_model():
+    model_params = srm.Spiking.Parameters(
+        N = np.array((50, 10)),
+        c = (4, 2),
+        Js = ((3, -6), (6, 1)),
+        Jr = (3, 3),
+        τabs = (0.002, 0.002),
+        τm = (0.01, 0.01),
+        τs = (0.002, 0.002)
+        )
+    hist_params = {'t0': 0,
+                'tn': 2,
+                'dt': 0.001}  # Make this smaller
 
-rndstream = shim.RandomStreams(seed=314)
-noise_params = noise.GaussianWhiteNoise.Parameters(
-    std = (2, 2),
-    shape = (2,)
-    )
+    # Noisy input
 
-input_hist = history.Series(name='I', shape=model_params.N.shape, **hist_params)
-input_model = noise.GaussianWhiteNoise(noise_params, input_hist, rndstream)
+    rndstream = shim.RandomStreams(seed=314)
+    noise_params = noise.GaussianWhiteNoise.Parameters(
+        std = (2, 2),
+        shape = (2,)
+        )
 
-
-# Full spiking model
-
-spike_hist = history.Spiketimes(name='spikehist', pop_sizes=model_params.N, **hist_params)
-#Ahist = history.Spiketimes(**hist_params, shape=(len(model_params.N),))
-
-spiking_model = srm.Spiking(model_params, spike_hist, input_hist, rndstream)
-Ahist = spiking_model.A
+    input_hist = history.Series(name='I', shape=model_params.N.shape, **hist_params)
+    input_model = noise.GaussianWhiteNoise(noise_params, input_hist, rndstream)
 
 
-# Activity model
+    # Full spiking model
 
-# ahist = history.Series(**hist_params, shape=params.N.shape)
-# Ahist = history.Series(**hist_params, shape=params.N.shape)
+    spike_hist = history.Spiketimes(name='spikehist', pop_sizes=model_params.N, **hist_params)
+    #Ahist = history.Spiketimes(**hist_params, shape=(len(model_params.N),))
 
-# activity_model = srm.Activity(model_params, ahist, Ahist, input_hist, rndstream)
+    spiking_model = srm.Spiking(model_params, spike_hist, input_hist, rndstream)
+    #Ahist = spiking_model.A
+
+
+    # Activity model
+
+    # ahist = history.Series(**hist_params, shape=params.N.shape)
+    # Ahist = history.Series(**hist_params, shape=params.N.shape)
+
+    # activity_model = srm.Activity(model_params, ahist, Ahist, input_hist, rndstream)
+
+    return spiking_model
 
 def do_it():
-    # Compute the model
-    spike_hist.set()
-    Ahist.set()
+    compute_data = True
+    filename = "2-pop-srm-example.dat"
+    try:
+        # Try to load precomputed data
+        spiking_model = io.load(filename)
+    except EOFError:
+        logger.warning("File {} is corrupted or empty. A new "
+                       "one is being computed, but you should "
+                       "delete this one.".format(filename))
+    except FileNotFoundError:
+        pass
+    else:
+        compute_data = False
 
-    # Save it
-    io.save("2-pop-srm-example.dat", spiking_model)
+    if compute_data:
+        # Data don't exist, so compute them
+        spiking_model = init_spiking_model()
+        spiking_model.spikehist.compute_up_to(-1)
+        spiking_model.A.set()  # Ensure all time points are computed
 
+        # Save the new data
+        io.save("2-pop-srm-example.dat", spiking_model)
+
+    try:
+        plot_activity(spiking_model.A)
+    except:
+        logger.warn("Unable to plot output. You may need to "
+                    "install matplotlib or one of its backends.")
+
+def plot_activity(A_history):
     # Plot the result
-    plt.plot(Ahist.get_time_array(), Ahist.get_trace())
+    plt.plot(A_history.get_time_array(), A_history.get_trace())
 
 
 if __name__ == "__main__":

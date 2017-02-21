@@ -20,5 +20,5 @@ setup(
 
       packages=['sinn'],
 
-      install_requires=['numpy', 'scipy']
+      install_requires=['numpy', 'scipy', 'dill']
      )

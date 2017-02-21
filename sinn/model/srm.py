@@ -543,7 +543,7 @@ class Spiking(SRMBase):
 
         # Decide which neurons spike
         bin_spikes = lib.nonzero( self.spikehist.dt * ρ
-                                  < self.rndstream.uniform(ρ.shape) )
+                                  > self.rndstream.uniform(ρ.shape) )
         shim.check(len(bin_spikes) == 1)
         return bin_spikes[0]
 
