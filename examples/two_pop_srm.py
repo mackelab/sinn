@@ -13,9 +13,9 @@ from collections import namedtuple, OrderedDict
 import theano_shim as shim
 import sinn
 import sinn.config as config
-import sinn.history as history
-import sinn.model.srm as srm
-import sinn.model.noise as noise
+import sinn.histories as histories
+import sinn.models.srm as srm
+import sinn.models.noise as noise
 import sinn.iotools as io
 
 logger = logging.getLogger('sinn.two_pop_srm')
@@ -32,7 +32,7 @@ def init_spiking_model():
         )
     hist_params = {'t0': 0,
                    'tn': 40,
-                   'dt': 0.00001} # 100th the smallest time constant
+                   'dt': 0.0001} # ideally 1000th the smallest time constant
 
     # Noisy input
 
@@ -42,14 +42,14 @@ def init_spiking_model():
         shape = (2,)
         )
 
-    input_hist = history.Series(name='I', shape=model_params.N.shape, **hist_params)
+    input_hist = histories.Series(name='I', shape=model_params.N.shape, **hist_params)
     input_model = noise.GaussianWhiteNoise(noise_params, input_hist, rndstream)
 
 
     # Full spiking model
 
-    spike_hist = history.Spiketimes(name='spikehist', pop_sizes=model_params.N, **hist_params)
-    #Ahist = history.Spiketimes(**hist_params, shape=(len(model_params.N),))
+    spike_hist = histories.Spiketimes(name='spikehist', pop_sizes=model_params.N, **hist_params)
+    #Ahist = histories.Spiketimes(**hist_params, shape=(len(model_params.N),))
 
     spiking_model = srm.Spiking(model_params, spike_hist, input_hist, rndstream)
     #Ahist = spiking_model.A
@@ -57,8 +57,8 @@ def init_spiking_model():
 
     # Activity model
 
-    # ahist = history.Series(**hist_params, shape=params.N.shape)
-    # Ahist = history.Series(**hist_params, shape=params.N.shape)
+    # ahist = histories.Series(**hist_params, shape=params.N.shape)
+    # Ahist = histories.Series(**hist_params, shape=params.N.shape)
 
     # activity_model = srm.Activity(model_params, ahist, Ahist, input_hist, rndstream)
 

@@ -10,7 +10,6 @@ from collections import OrderedDict
 
 import theano_shim as shim
 import sinn.common as com
-import sinn.model as model
 import sinn.config as config
 import sinn.mixins as mixins
 floatX = config.floatX

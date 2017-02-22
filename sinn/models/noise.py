@@ -12,8 +12,8 @@ from collections import namedtuple, OrderedDict
 import theano_shim as shim
 import sinn.config as config
 import sinn.common as com
-import sinn.model.common
-Model = sinn.model.common.Model
+import sinn.models.common
+Model = sinn.models.common.Model
 
 class GaussianWhiteNoise(Model):
     """

@@ -13,13 +13,13 @@ import theano_shim as shim
 import sinn
 import sinn.common as com
 import sinn.config as config
-import sinn.history as history
-import sinn.kernel as kernels
-import sinn.model as model
-import sinn.model.common
+import sinn.histories as histories
+import sinn.kernels as kernels
+import sinn.models as models
+import sinn.models.common
 
 lib = shim.lib
-Model  = model.common.Model
+Model  = models.common.Model
 Kernel = kernels.Kernel
 #Parameter = com.Parameter
 
@@ -64,7 +64,7 @@ class SRMBase(Model):
 
         # Initialize series objects used in computation
         # (We shamelessly abuse of unicode support for legibility)
-        self.JsᕽAᐩI = history.Series(self.A, "JsᕽAᐩI",
+        self.JsᕽAᐩI = histories.Series(self.A, "JsᕽAᐩI",
                                     shape = self.A.shape,
                                     f = lambda t: lib.dot(params.Js, self.A[t]) + self.I[t])
                                                               # NxN  dot  N   +  N
@@ -72,7 +72,7 @@ class SRMBase(Model):
             # FIXME: Set this internally, maybe by defining +,* ops
 
         self.JsᕽAᐩI.pad(self.κ.memory_time)
-        #self.h = history.Series(A.t0, A.tn, A.dt, A.shape)
+        #self.h = histories.Series(A.t0, A.tn, A.dt, A.shape)
 
         if self.A._cur_tidx >= len(self.A) - 1:
             # A already has all the data; we can calculate h in one go
@@ -498,7 +498,7 @@ class Spiking(SRMBase):
                  memory_time=None):
 
         self.spikehist = spike_history
-        self.A = history.Series(spike_history, "A", shape=params.N.shape)
+        self.A = histories.Series(spike_history, "A", shape=params.N.shape)
         self.I = input_history
 
         self.spikehist.set_update_function(self.spike_update)

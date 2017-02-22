@@ -1,5 +1,8 @@
 *.ipynb_*
 __pycache__
+*.log
+*.back
+*.bak
 *.pdf
 *.egg*
 *.pyc

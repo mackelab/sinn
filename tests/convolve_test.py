@@ -12,9 +12,9 @@ import timeit
 
 import theano_shim as shim
 import sinn.config as config
-import sinn.history as history
-import sinn.kernel as kernels
-import sinn.model.common as com
+import sinn.histories as histories
+import sinn.kernels as kernels
+import sinn.models.common as com
 
 def series():
 
@@ -25,7 +25,7 @@ def series():
 
     def data_fn(t):
         return np.sin(t)
-    data = history.Series(t0=0, tn=4, dt=dt, shape=(1,), f=data_fn)
+    data = histories.Series(t0=0, tn=4, dt=dt, shape=(1,), f=data_fn)
 
     params = kernels.ExpKernel.Parameters(
         height = 1,
@@ -49,7 +49,7 @@ def series():
     print("\n2 populations (2x2 kernel)\n")
     def data_fn2(t):
         return np.array((np.sin(t), 2*np.sin(t)))
-    data2 = history.Series(t0=0, tn=4, dt=dt, shape=(2,), f=data_fn2)
+    data2 = histories.Series(t0=0, tn=4, dt=dt, shape=(2,), f=data_fn2)
     params2 = kernels.ExpKernel.Parameters(
         height = ((1,   0.3),
                   (0.7, 1.3)),
@@ -93,7 +93,7 @@ def spiketimes():
         return np.array([ True if t - (spike_list[np.searchsorted(spike_list, t)-1]) < dt else False
               for spike_list in spiketime_list ])
 
-    data = history.Spiketimes(t0=0, tn=4, dt=dt, pop_sizes=(1,))
+    data = histories.Spiketimes(t0=0, tn=4, dt=dt, pop_sizes=(1,))
     data.set(spiketime_list)
 
     params = kernels.ExpKernel.Parameters(
@@ -119,7 +119,7 @@ def convolve_test(data, data_fn, kernel, true_conv):
 
     config.integration_precision = 1
     dis_kernel = data.discretize_kernel(kernel)
-    dis_kernel_test = history.Series(t0=0, tn=kernel.memory_time,
+    dis_kernel_test = histories.Series(t0=0, tn=kernel.memory_time,
                                      dt=data.dt, shape=kernel.shape, f=kernel.eval)
 
     print("\nMaximum difference between discretization method and manual discretization")
@@ -140,7 +140,7 @@ def convolve_test(data, data_fn, kernel, true_conv):
     #dt = None
     def get_comp(histdata, from_idx):
         #nonlocal dt
-        if isinstance(histdata, history.Spiketimes):
+        if isinstance(histdata, histories.Spiketimes):
             #dt = data.dt / 10 # We need the higher resolution to get
             #                  # a reasonable estimate
             tidcs = np.asarray( np.fromiter(histdata[:][from_idx], dtype='float') // dis_kernel.dt, dtype='int')
@@ -267,13 +267,13 @@ def get_timers():
 
     setup = """
 import numpy as np
-import sinn.history as history
-import sinn.model.common as com
+import sinn.histories as histories
+import sinn.models.common as com
 τ = 0.1
 dt = 0.0001
 def data_fn(t):
     return np.sin(t)
-data = history.Series(t0=0, tn=4, dt=dt, shape=(), f=data_fn)
+data = histories.Series(t0=0, tn=4, dt=dt, shape=(), f=data_fn)
 kernel = kernels.ExpKernel('κ', 1, τ, 0)
 """
 
@@ -282,7 +282,7 @@ kernel = kernels.ExpKernel('κ', 1, τ, 0)
 
     def data_fn(t):
         return np.sin(t)
-    data = history.Series(t0=0, tn=4, dt=dt, shape=(), f=data_fn)
+    data = histories.Series(t0=0, tn=4, dt=dt, shape=(), f=data_fn)
 
 
     def convolve_string(t):

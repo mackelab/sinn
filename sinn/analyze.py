@@ -13,7 +13,7 @@ import scipy as sp
 import matplotlib.pyplot as plt
 
 import theano_shim as shim
-import sinn.history as histories
+import sinn.histories as histories
 
 # ==================================
 # Data manipulation
@@ -25,7 +25,7 @@ def smooth(series, amount=None, method='mean', **kwargs):
 
     Parameters
     ----------
-    series: History.Series instance
+    series: Histories.Series instance
         The data we want to smooth.
     amount: int | float
         A numerical parameter controlling the degree of smoothing.
