@@ -149,7 +149,7 @@ class Activity(SRMBase):
     #################
     # kernel definitions
 
-    Parameter_info = OrderedDict( ( ( 'N'   , (np.int            , None, False) ),
+    Parameter_info = OrderedDict( ( ( 'N'   , (np.int            , None, True) ),
                                     ( 'c'   , (config.cast_floatX, None, False) ),
                                     ( 'Js'  , (config.cast_floatX, None, True) ),
                                     ( 'Jr'  , (config.cast_floatX, None, True) ),
@@ -457,6 +457,21 @@ class Activity(SRMBase):
 
         raise NotImplementedError
 
+    def loglikelihood(self, burnin, data_len):
+        burnin_idx = self.a.get_idx_len(burnin)
+        data_len_idx = self.a.get_idx_len(data_len)
+        astart = self.a.t0idx + burnin_idx
+        Astart = self.A.t0idx + burnin_idx
+        astop = self.a.t0idx + data_len_idx + 1
+        Astop = self.A.t0idx + data_len_idx + 1
+
+        return - ( lib.sum(lib.log(self.a[astart:astop]))
+                   + self.a.params.dt
+                     * lib.sum( self.a.params.N
+                                * lib.sum( ( self.A[Astart:Astop]
+                                               - self.a[astart:astop])**2
+                                           / self.a[astart:astop],
+                                          axis=0, keepdims=True) ) )
 
 # =============================================================================
 #
