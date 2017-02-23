@@ -30,7 +30,7 @@ def init_spiking_model():
         τs = (0.002, 0.002)
         )
     hist_params = {'t0': 0,
-                   'tn': 2,
+                   'tn': 0.1,
                    'dt': 0.0001} # ideally 1000th the smallest time constant
 
     # Noisy input

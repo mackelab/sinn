@@ -4,7 +4,9 @@ Created on Sat Feb 4 2017
 
 Author: Alexandre René
 """
+import sys
 import logging
+import logging.handlers
 import numpy as np
 from collections import namedtuple, deque
 
@@ -18,7 +20,9 @@ lib = shim.lib
 # See e.g. https://docs.python.org/3/howto/logging-cookbook.html
 logger = logging.getLogger('sinn')
 logger.setLevel(config.logLevel)
-_fh = logging.FileHandler(__file__ + "sinn.log", mode='w')
+_fh = logging.handlers.RotatingFileHandler(
+      sys.argv[0] + ".sinn.log", mode='w', maxBytes=5e7, backupCount=5)
+    # ~50MB log files, keep at most 5
 _fh.setLevel(logging.DEBUG)
 _ch = logging.StreamHandler()
 _ch.setLevel(logging.WARNING)
