@@ -12,7 +12,6 @@ from collections import namedtuple, OrderedDict
 
 import theano_shim as shim
 import sinn
-import sinn.config as config
 import sinn.histories as histories
 import sinn.models.srm as srm
 import sinn.models.noise as noise
@@ -31,7 +30,7 @@ def init_spiking_model():
         τs = (0.002, 0.002)
         )
     hist_params = {'t0': 0,
-                   'tn': 40,
+                   'tn': 2,
                    'dt': 0.0001} # ideally 1000th the smallest time constant
 
     # Noisy input

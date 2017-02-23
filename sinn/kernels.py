@@ -7,11 +7,15 @@ Author: Alexandre René
 """
 import numpy as np
 from collections import OrderedDict
+import logging
+logger = logging.getLogger("sinn.kernels")
 
 import theano_shim as shim
 import sinn.common as com
 import sinn.config as config
 import sinn.mixins as mixins
+import sinn.diskcache as diskcache
+
 floatX = config.floatX
 lib = shim.lib
 ConvolveMixin = mixins.ConvolveMixin
@@ -20,6 +24,20 @@ ParameterMixin = com.ParameterMixin
 
 #TODO: Discretized kernels as a mixin class
 
+def cachekernel(cls):
+    class DecoratedKernel(cls):
+        def __init__(self, name, params, shape, memory_time=None, t0=0, *args, **kwargs):
+            try:
+                retrieved_kernel = diskcache.load(hash(cls._serialize(params, shape, memory_time, t0)))
+            except KeyError:
+                super().__init__(name, params, shape, memory_time, t0, *args, **kwargs)
+            else:
+                self.__dict__.update(retrieved_kernel.__dict__)
+                self.name = name # Name is not necessarily the same
+    return DecoratedKernel
+
+# No cache decorator for generic kernels: f might be changed after the initialization,
+# and any kernel with f=None might hit the same cache.
 class Kernel(ConvolveMixin, ParameterMixin):
     """Generic Kernel class. All kernels should derive from this.
     Kernels associated to histories with shape (M,) should have shape (M,M),
@@ -37,12 +55,13 @@ class Kernel(ConvolveMixin, ParameterMixin):
         This will typically work best with broadcasting.
         1xM : independent of 'to' pop.
         Mx1 : independent of 'from' pop.
-    M: DEPRECATED
-        Throw away the row dimension and treat the result as a 1D array.
+    M:
+        Throw away the row dimension and treat the result as a 1D array. Should be
+        equivalent to defining a diagonal array.
     Refer to the `shape_output` method to see exactly how the output is reshaped.
     """
 
-    def __init__(self, name, shape, f=None, memory_time=None, t0=0, **kwargs):
+    def __init__(self, name, params=None, shape=None, f=None, memory_time=None, t0=0, **kwargs):
         """
         Parameters
         ----------
@@ -60,12 +79,14 @@ class Kernel(ConvolveMixin, ParameterMixin):
         # else:
         #     kwargs['convolve_shape'] = shape
 
-        if 'params' not in kwargs:
+        if params is None:
             # ParameterMixin requires 'params'
-            kwargs['params'] = com.define_parameters({})
-        super().__init__(**kwargs)
+            params = com.define_parameters({})
+
+        super().__init__(params=params, **kwargs)
 
         self.name = name
+        assert(shape is not None)
         self.shape = shape
         self.ndim = len(shape)
         self.t0 = t0
@@ -121,7 +142,39 @@ class Kernel(ConvolveMixin, ParameterMixin):
                                          (1,)*output.ndim + output.shape),
                                 output.reshape(self.shape) ) )
 
+    # ====================================
+    # Caching interface
 
+    @classmethod
+    def _serialize(cls, params, shape, memory_time, t0):
+        # Very quick 'n dirty serializer, but unlikely to be a performance hit
+        return str(cls) + str(params) + str(shape) + str(memory_time) + str(t0)
+
+    def __hash__(self):
+        return hash(self._serialize(self.params, self.shape, self.memory_time, self.t0))
+
+    # def __new__(cls, name, params=None, shape=None, f=None, memory_time=None, t0=0, **kwargs):
+    #     if cls != Kernel:
+    #         # Don't cache generic kernels, because f might be changed after the initialization,
+    #         # and any kernel with f=None might hit the same cache.
+    #         try:
+    #             retrieved_kernel = diskcache.load(hash(cls._serialize(params, shape, memory_time, t0)))
+    #         except KeyError:
+    #             return super().__new__(cls, name, shape, f, memory_time, t0, **kwargs)
+    #         else:
+    #             retrieved_kernel.name = name # Name is not necessarily the same
+    #             return retrieved_kernel
+
+    def update_params(self, new_params):
+        # Remove all attached discretized kernels, since those are no longer valid
+        for attr in dir(self):
+            if attr[:9] == "discrete_":
+                delattr(self, attr)
+
+        self.__init__(self.name, new_params, self.shape, self.memory_time, self.t0)
+
+
+@cachekernel
 class ExpKernel(Kernel):
     """An exponential kernel, of the form κ(s) = c exp(-(s-t0)/τ).
     """
@@ -131,7 +184,7 @@ class ExpKernel(Kernel):
                                     ( 't_offset'   , (config.cast_floatX, None, True) ) ) )
     Parameters = com.define_parameters(Parameter_info)
 
-    def __init__(self, name, shape, memory_time=None, t0=0, **kwargs):
+    def __init__(self, name, params, shape, memory_time=None, t0=0, **kwargs):
         """
         Parameters
         ----------
@@ -151,10 +204,6 @@ class ExpKernel(Kernel):
             and κ(t) = 0 for t< t0.
             Must *not* be a Theano variable.
         """
-
-#        self.height = height
-#        self.decay_const = decay_const
-        params = kwargs['params']
 
         # Truncating after memory_time should not discard more than a fraction
         # config.truncation_ratio of the total area under the kernel.
@@ -180,7 +229,7 @@ class ExpKernel(Kernel):
 
         ########
         # Initialize base class
-        super().__init__(name, shape, memory_time=memory_time, t0=t0, **kwargs)
+        super().__init__(name, params, shape, memory_time=memory_time, t0=t0, **kwargs)
 
         self.last_t = None     # Keep track of the last convolution time
         self.last_conv = None  # Keep track of the last convolution result

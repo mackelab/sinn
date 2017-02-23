@@ -45,6 +45,9 @@ class SRMBase(Model):
         ###########################################
 
         super().__init__(params)
+        self.cache(self.A)   # In practice, this might not be useful:
+        self.cache(self.I)   # all convolutions are done with JsᕽAᐩI
+            # Memoizing infrastructure only built after super().__init__
 
         κparams = kernels.ExpKernel.Parameters(
             height      = 1,
@@ -55,6 +58,7 @@ class SRMBase(Model):
                              t0          = np.min(params.τs),
                              memory_time = memory_time,
                              shape       = self.A.shape )
+        self.cache(self.κ)
             # Here the kernel doesn't actually mix the populations
             # (that's done by Js), so it's the same shape as A
             # (We used to add a dimension to self.A)
@@ -68,6 +72,7 @@ class SRMBase(Model):
                                     shape = self.A.shape,
                                     f = lambda t: lib.dot(params.Js, self.A[t]) + self.I[t])
                                                               # NxN  dot  N   +  N
+        self.cache(self.JsᕽAᐩI)
         self.JsᕽAᐩI._cur_tidx
             # FIXME: Set this internally, maybe by defining +,* ops
 

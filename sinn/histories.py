@@ -289,6 +289,14 @@ class History(HistoryBase):
 
         return self.retrieve(key)
 
+    def reset(self):
+        """
+        Invalidate the history data, forcing it to be recomputed the next time its queried.
+        Functionally equivalent to clearing the data.
+        """
+        self._cur_tidx = self.t0idx - 1
+
+
     def set_update_function(self, func):
         """
         Parameters
@@ -751,6 +759,11 @@ class Spiketimes(ConvolveMixin, History):
         else:
             self.spike_times = [ deque([init_data])
                                  for neuron_idx in range(np.sum(self.pop_sizes)) ]
+
+    def reset(self, init_data=-np.inf):
+        """Spiketrains can't just be invalidated, they really have to be cleared."""
+        self.initialize(init_data)
+        super().reset()
 
     def retrieve(self, key):
         '''A function taking either an index or a splice and returning respectively

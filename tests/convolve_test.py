@@ -16,6 +16,10 @@ import sinn.histories as histories
 import sinn.kernels as kernels
 import sinn.models.common as com
 
+import sinn.diskcache
+
+sinn.diskcache.set_file("test_cache.db")
+
 def series():
 
     # test convolution: ∫_a^b e^{-s/τ} * sin(t - s) ds
@@ -32,7 +36,7 @@ def series():
         decay_const = τ,
         t_offset = 0
         )
-    kernel = kernels.ExpKernel('κ', (1,1), params=params)
+    kernel = kernels.ExpKernel('κ', params=params, shape=(1,1))
 
     def true_conv(t, a=0, b=np.inf):
         """The analytical solution to the convolution"""
@@ -58,7 +62,7 @@ def series():
         t_offset = ((0, 0),
                     (0, 0))
         )
-    kernel2 = kernels.ExpKernel('κ', (2,2), params=params2)
+    kernel2 = kernels.ExpKernel('κ', params=params2, shape=(2,2))
 
 
     def true_conv2(t, a=0, b=np.inf):
@@ -101,7 +105,7 @@ def spiketimes():
         decay_const = τ,
         t_offset = 0
         )
-    kernel = kernels.ExpKernel('κ', (1,1), params=params)
+    kernel = kernels.ExpKernel('κ', params=params, shape=(1,1))
 
     def true_conv(t, a=0, b=np.inf):
         """The analytical solution to the convolution"""
@@ -133,7 +137,7 @@ def convolve_test(data, data_fn, kernel, true_conv):
 
     t = 2.0
     tidx = data.get_t_idx(t)
-    dis_tidx = dis_kernel.get_t_idx(t)
+    dis_tidx = data.get_t_idx(t)
 
     sinn_conv = kernel.convolve(data, t)
 
@@ -153,13 +157,13 @@ def convolve_test(data, data_fn, kernel, true_conv):
             return histdata[:][:,from_idx]
     np_conv = np.array(
         [ [ np.convolve(get_comp(data, from_idx)[dis_tidx - conv_len:dis_tidx],
-                        dis_kernel[:][:,to_idx,from_idx], 'valid') * dis_kernel.dt
+                        dis_kernel[:][:,to_idx,from_idx], 'valid')[0] * dis_kernel.dt
             for from_idx in range(kernel.shape[1]) ]
           for to_idx in range(kernel.shape[0]) ] )
 
-    print("single t, sinn (ExpKernel):                ", sinn_conv)
-    print("single t, manual numpy over discretized κ: ", np_conv)
-    print("single t, true:                            ", true_conv(t))
+    print("single t, sinn (ExpKernel):                \n", sinn_conv)
+    print("single t, manual numpy over discretized κ: \n", np_conv)
+    print("single t, true:                            \n", true_conv(t))
 
     print("\nSlice test")
     tslice = slice(tidx, tidx + 5)
@@ -188,15 +192,15 @@ def convolve_test(data, data_fn, kernel, true_conv):
     print("no slice, with special exponential optimization:  \n", res, "\nCalculation took {}ms\n".format((t2-t1)*1000))
 
     print("\nPartial kernel\n")
-    print("library convolution (history): ", data.convolve(kernel, t, slice(0.1, 0.3)))
-    print("library convolution (kernel): ", kernel.convolve(data, t, slice(0.1, 0.3)))
-    print("true value:          ", true_conv(t, 0.1, 0.3))
+    print("library convolution (history): \n", data.convolve(kernel, t, slice(0.1, 0.3)))
+    print("library convolution (kernel): \n", kernel.convolve(data, t, slice(0.1, 0.3)))
+    print("true value:          \n", true_conv(t, 0.1, 0.3))
 
 
     print("\nCached convolutions\n")
     kernel.convolve(data)
-    print("(kernel): ", kernel.convolve(data, t))
-    print("true:     ", true_conv(t))
+    print("(kernel): \n", kernel.convolve(data, t))
+    print("true:     \n", true_conv(t))
 
     return
 

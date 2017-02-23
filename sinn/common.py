@@ -10,6 +10,7 @@ from collections import namedtuple, deque
 
 import theano_shim as shim
 import sinn.config as config
+import sinn.diskcache as diskcache
 floatX = config.floatX
 lib = shim.lib
 
@@ -17,7 +18,7 @@ lib = shim.lib
 # See e.g. https://docs.python.org/3/howto/logging-cookbook.html
 logger = logging.getLogger('sinn')
 logger.setLevel(config.logLevel)
-_fh = logging.FileHandler("sinn.log")
+_fh = logging.FileHandler(__file__ + "sinn.log", mode='w')
 _fh.setLevel(logging.DEBUG)
 _ch = logging.StreamHandler()
 _ch.setLevel(logging.WARNING)
@@ -39,6 +40,23 @@ class HistoryBase:
 
     def get_t_idx(self, t):
         raise NotImplementedError
+
+class _OpTupleCache:
+    """OpCache is essentially a collection of _OpTupleCache's, one for each
+    source-other pair (hence 'tuple')."""
+    # TODO Move more of the functionality into this class
+
+    @staticmethod
+    def get_hash_val(other, op):
+        return hash(hash(other) + hash(op))
+
+    def __init__(self, other, op):
+        self.index_list = {}
+        self.data = None
+        self._hash_val = self.get_hash_val(other, op)
+
+    def __hash__(self):
+        return self._hash_val
 
 class OpCache:
 
@@ -76,8 +94,8 @@ class OpCache:
 
     def get(self, other, arg):
         """Will raise KeyError if operation not cached."""
-        cache_idx = self.cache[id(other)]['index list'][self.sanitize(arg)]
-        return self.cache[id(other)]['data'][cache_idx]
+        cache_idx = self.cache[hash(other)].index_list[self.sanitize(arg)]
+        return self.cache[hash(other)].data[cache_idx]
 
     def ensureget(self, other, args):
         """Will compute and cache the operation if it isn't already."""
@@ -88,77 +106,76 @@ class OpCache:
         # Storing None indicates that the operation with that argument
         # needs to be calculated
         data_keys = [None]*len(arg_keys)
-        if id(other) in self.cache:
-            # Retrieve the indices of the already cached convolutions
+        if hash(other) in self.cache:
+            # Retrieve the indices of the already cached operations
             for i, key in enumerate(arg_keys):
                 try:
-                    data_keys[i] = self.cache[id(other)]['index list'][key]
+                    data_keys[i] = self.cache[hash(other)].index_list[key]
                 except KeyError:
                     pass
         else:
-            # Create a new empty cache
-
-            # Which of the two members of the convolution – self or other –
-            # is a History determines the shape of the result
-            if isinstance(self.source, HistoryBase):
-                hist = self.source
+            # Check to see if this operation is in the disk cache
+            try:
+                self.cache[hash(other)] = diskcache.load(
+                    _OpTupleCache.get_hash_val(other, self.op))
+            except KeyError:
+                # It's not: create a new empty cache
+                self.cache[hash(other)] = _OpTupleCache(other, self.op)
+                self.old_cache[hash(other)] = None
             else:
-                assert( isinstance(other, HistoryBase) )
-                hist = other
-            #entry_shape = (len(hist),) + self.op_shape
-            self.cache[id(other)] = {
-                'data':       None,#shim.shared(np.zeros((0,) + entry_shape)),
-                'index list': {}
-            }
-            self.old_cache[id(other)] = None
-
+                # We were able to load the op cache from file
+                # Now retrieve the indices of the already cached operations
+                for i, key in enumerate(arg_keys):
+                    try:
+                        data_keys[i] = self.cache[hash(other)].index_list[key]
+                    except KeyError:
+                        pass
 
         if None in data_keys:
-            # There are new convolutions we need to compute
+            # There are operations with new arguments we need to compute
             new_data = lib.stack( [
                 #lib.convolve(self[:], dis_kernel[slc], mode='valid')
                 ###########################################
-                # CUSTOMIZATION: Here is the call to the custom convolution function
-                #                      self._convolve_op_batch(kernel, slc)
+                # CUSTOMIZATION: Here is the call to the custom operation we are caching
                 self.op(other, arg)
                 ###########################################
                 for arg, cache_idx in zip(args, data_keys)
                 if cache_idx is None ] )
-            if self.cache[id(other)]['data'] is None:
+            if self.cache[hash(other)].data is None:
                 # First time we cache data – create a new structure
-                self.cache[id(other)]['data'] = shim.shared(new_data)
+                self.cache[hash(other)].data = shim.shared(new_data)
                 for i, akey in enumerate(arg_keys):
                     data_keys[i] = i
-                    self.cache[id(other)]['index list'][akey] = i
+                    self.cache[hash(other)].index_list[akey] = i
             else:
                 # Update the existing cache
 
                 # Add the indices they will have in the newly augmented cache
-                k = self.cache[id(other)]['data'].get_value().shape[0]
+                k = self.cache[hash(other)].data.get_value().shape[0]
                 for i, (dkey, akey) in enumerate(zip(data_keys, arg_keys)):
                     if dkey is None:
                         data_keys[i] = k
-                        self.cache[id(other)]['index list'][akey] = k
+                        self.cache[hash(other)]['index list'][akey] = k
                         k += 1
 
                 # Create the new data cache
                 if config.use_theano:
                     assert(self.old_cache is None)
                     # Keep the old cache in memory, otherwise updates mechanism will break
-                    self.old_cache[id(other)] = self.cache[id(other)]['data']
-                    self.cache[id(other)]['data'] = lib.concatenate(
-                                (self.old_cache[id(other)], new_data) )
+                    self.old_cache[hash(other)] = self.cache[hash(other)].data
+                    self.cache[hash(other)].data = lib.concatenate(
+                                (self.old_cache[hash(other)], new_data) )
                     # This is a shared variable, so add to the updates list
-                    shim.theano_updates[self.old_cache[id(other)]['data']] = \
-                                self.cache[id(other)]['data']
+                    shim.theano_updates[self.old_cache[hash(other)].data] = \
+                                self.cache[hash(other)].data
                 else:
                     # Since we aren't using Theano, we don't need to create old_cache
                     # and can allow reuse of cache memory
-                    self.cache[id(other)]['data'].set_value(
+                    self.cache[hash(other)].data.set_value(
                         lib.concatenate(
-                            (self.cache[id(other)]['data'].get_value(), new_data), axis = 0 )
+                            (self.cache[hash(other)].data.get_value(), new_data), axis = 0 )
                     )
-        return self.cache[id(other)]['data'][data_keys]
+        return self.cache[hash(other)].data[data_keys]
 
 #################################
 #
@@ -255,13 +272,16 @@ class ParameterMixin:
     Parameters = define_parameters(Parameter_info)
         # Overload this in derived classes
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, params, **kwargs):
 
-        try:
-            params = kwargs.pop('params')
-        except KeyError:
-            raise TypeError("Unsufficient arguments: ParameterMixin "
-                            "requires a `params` argument.")
+        # try:
+        #     params = kwargs.pop('params')
+        # except KeyError:
+        #     raise TypeError("Unsufficient arguments: ParameterMixin "
+        #                     "requires a `params` argument.")
+        self.set_parameters(params)
+
+    def set_parameters(self, params):
         assert(self.parameters_are_valid(params))
 
         # Cast the parameters to ensure they're of prescribed type
@@ -281,6 +301,7 @@ class ParameterMixin:
                 param_dict[key] = np.asarray(getattr(params, key), dtype=self.Parameter_info[key])
 
         self.params = self.Parameters(**param_dict)
+
 
     def parameters_are_valid(self, params):
         """Returns `true` if all of the model's parameters can be set from `params`"""

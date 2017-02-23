@@ -23,9 +23,6 @@ class ConvolveMixin:
         """
         Parameters
         ----------
-        convolve_shape: DEPRECATED int tuple (keyword only)
-            Shape the result of a convolution takes. Should
-            match the output of _conv_op_single_t.
         *args, **kwargs:
             Passed to base initializer
         """

@@ -8,6 +8,8 @@ logLevel = logging.DEBUG # CRITICAL, INFO, WARNING, DEBUG, ERROR, FATAL
 integration_precision = 1
 truncation_ratio = 0.001
 
+disk_cache_file = ""
+
 # List of optional librairies we want to load.
 # Some code may e.g. choose to use theano objects if it is available
 # They may be added later with
