@@ -8,6 +8,7 @@ Author: Alexandre René
 import numpy as np
 from collections import OrderedDict
 import logging
+import functools
 logger = logging.getLogger("sinn.kernels")
 
 import theano_shim as shim
@@ -24,17 +25,29 @@ ParameterMixin = com.ParameterMixin
 
 #TODO: Discretized kernels as a mixin class
 
-def cachekernel(cls):
-    class DecoratedKernel(cls):
-        def __init__(self, name, params, shape, memory_time=None, t0=0, *args, **kwargs):
-            try:
-                retrieved_kernel = diskcache.load(hash(cls._serialize(params, shape, memory_time, t0)))
-            except KeyError:
-                super().__init__(name, params, shape, memory_time, t0, *args, **kwargs)
-            else:
-                self.__dict__.update(retrieved_kernel.__dict__)
-                self.name = name # Name is not necessarily the same
-    return DecoratedKernel
+# Don't hide CachedKernel within the decorator's scope, otherwise it can't be pickled
+def checkcache(init):
+    @functools.wraps(init)
+    def cachedinit(self, name, *args, **kwargs):
+        try:
+            retrieved_kernel = diskcache.load(hash(self._serialize(*args, **kwargs)))
+        except KeyError:
+            init(self, name, *args, **kwargs)
+        else:
+            self.__dict__update(retrieved_kernel.__dict__)
+            self.name = name
+    return cachedinit
+# class CachedKernel(cls):
+#     def __init__(self, name, params, shape, memory_time=None, t0=0, *args, **kwargs):
+#         try:
+#             retrieved_kernel = diskcache.load(hash(cls._serialize(params, shape, memory_time, t0)))
+#         except KeyError:
+#             super().__init__(name, params, shape, memory_time, t0, *args, **kwargs)
+#         else:
+#             self.__dict__.update(retrieved_kernel.__dict__)
+#             self.name = name # Name is not necessarily the same
+# def cachekernel(cls):
+#     return CachedKernel(cls)
 
 # No cache decorator for generic kernels: f might be changed after the initialization,
 # and any kernel with f=None might hit the same cache.
@@ -174,7 +187,6 @@ class Kernel(ConvolveMixin, ParameterMixin):
         self.__init__(self.name, new_params, self.shape, self.memory_time, self.t0)
 
 
-@cachekernel
 class ExpKernel(Kernel):
     """An exponential kernel, of the form κ(s) = c exp(-(s-t0)/τ).
     """
@@ -184,6 +196,7 @@ class ExpKernel(Kernel):
                                     ( 't_offset'   , (config.cast_floatX, None, True) ) ) )
     Parameters = com.define_parameters(Parameter_info)
 
+    @checkcache
     def __init__(self, name, params, shape, memory_time=None, t0=0, **kwargs):
         """
         Parameters
