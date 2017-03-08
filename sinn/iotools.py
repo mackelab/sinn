@@ -11,9 +11,11 @@ Created on Mon Jul 18 10:25:35 2016
 #       If data contains the property, assign it, otherwise assign a default value.
 #       Return a namedtuple
 
-import dill
 import os
 import os.path
+import logging
+import dill
+logger = logging.getLogger('sinn.iotools')
 
 ##########################
 # Public API
@@ -36,7 +38,13 @@ def save(filename, data):
 
 def load(filename):
     with open(_get_savedir() + filename, 'rb') as f:
-        return dill.load(f)
+        try:
+            return dill.load(f)
+        except EOFError:
+            logger.warning("File {} is corrupted or empty. A new "
+                           "one is being computed, but you should "
+                           "delete this one.".format(filename))
+
 
 
 ###########################

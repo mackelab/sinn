@@ -4,6 +4,7 @@ Created on Sat Feb 4 2017
 
 Author: Alexandre René
 """
+import os
 import sys
 import logging
 import logging.handlers
@@ -11,32 +12,33 @@ import numpy as np
 from collections import namedtuple, deque
 
 import theano_shim as shim
-import sinn.config as config
+import sinn
+#import sinn.config as config
 import sinn.diskcache as diskcache
-floatX = config.floatX
+floatX = sinn.config.floatX
 lib = shim.lib
 
 # Configure logger
 # See e.g. https://docs.python.org/3/howto/logging-cookbook.html
 logger = logging.getLogger('sinn')
-logger.setLevel(config.logLevel)
+logger.setLevel(sinn.config.logLevel)
 _fh = logging.handlers.RotatingFileHandler(
-      sys.argv[0] + ".sinn.log", mode='w', maxBytes=5e7, backupCount=5)
+      os.path.basename(sys.argv[0]) + "_" + str(os.getpid()) + ".sinn.log", mode='w', maxBytes=5e7, backupCount=5)
     # ~50MB log files, keep at most 5
 _fh.setLevel(logging.DEBUG)
 _ch = logging.StreamHandler()
 _ch.setLevel(logging.WARNING)
-_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-_fh.setFormatter(_formatter)
-_ch.setFormatter(_formatter)
+_logging_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+_fh.setFormatter(_logging_formatter)
+_ch.setFormatter(_logging_formatter)
 logger.addHandler(_fh)
 logger.addHandler(_ch)
 
 class HistoryBase:
 
     def __init__(self, t0, tn):
-        self.t0 = config.cast_floatX(t0)
-        self.tn = config.cast_floatX(tn)
+        self.t0 = sinn.config.cast_floatX(t0)
+        self.tn = sinn.config.cast_floatX(tn)
         self._tarr = None # Implement in child classes
 
     def get_time(self, t):
@@ -82,6 +84,12 @@ class OpCache:
         self.source = source
         self.op = op
         #self.op_shape = op_shape
+
+    def clear(self):
+        # Delete the whole cache. This can be necessary if e.g. a history
+        # is changed
+        self.cache = {}
+        self.old_cache = {}
 
     def theano_reset(self):
         for key in self.old_cache:
@@ -163,7 +171,7 @@ class OpCache:
                         k += 1
 
                 # Create the new data cache
-                if config.use_theano:
+                if sinn.config.use_theano:
                     assert(self.old_cache is None)
                     # Keep the old cache in memory, otherwise updates mechanism will break
                     self.old_cache[hash(other)] = self.cache[hash(other)].data
@@ -263,7 +271,7 @@ def get_parameter_subset(model, src_params):
     for name in src_params._fields:
         if name in model.Parameters._fields:
             paramdict[name] = getattr(src_params, name)
-    return class_instance.Parameters(**paramdict)
+    return model.Parameters(**paramdict)
 
 
 class ParameterMixin:

@@ -274,6 +274,10 @@ class History(HistoryBase):
                                    stop,
                                    len(self._tarr) + start)
 
+            shim.check(start < self.t0idx + len(self))
+            stop = shim.smallest(self.t0idx + len(self), stop)
+                # allow to select beyond the end, to be consistent
+                # with slicing conventions
             end = shim.largest(start, stop - 1)
                 # `stop` is the first point beyond the array
 
@@ -289,13 +293,19 @@ class History(HistoryBase):
 
         return self.retrieve(key)
 
-    def reset(self):
+    def clear(self):
         """
         Invalidate the history data, forcing it to be recomputed the next time its queried.
         Functionally equivalent to clearing the data.
+
+        *Note* If this history is part of a model, you should use that
+        model's `clear_history` method instead.
         """
         self._cur_tidx = self.t0idx - 1
-
+        try:
+            super().clear()
+        except AttributeError:
+            pass
 
     def set_update_function(self, func):
         """
@@ -618,7 +628,7 @@ class History(HistoryBase):
     # TODO: Operations with two Histories (right now I'm assuming scalars or arrays)
 
     def _apply_op(self, op, b=None):
-        new_series = Series(self.t0, self.tn, self.dt, shape = self.shape)
+        new_series = Series(self)
         if b is None:
             new_series.set_update_function(lambda t: op(self[t]))
             new_series.set_range_update_function(lambda tarr: op(self[self.tarr_to_slice(tarr)]))
@@ -990,7 +1000,7 @@ class Series(ConvolveMixin, History):
 
     def __init__(self, hist=sinn._NoValue, name=None, *args,
                  t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
-                 shape=None, **kwargs):
+                 shape=sinn._NoValue, **kwargs):
         """
         Initialize a Series instance, derived from History.
 
@@ -1001,9 +1011,9 @@ class Series(ConvolveMixin, History):
         """
         if name is None:
             name = "series{}".format(self.instance_counter + 1)
-        if shape is None:
-            raise ValueError("'shape' is a required keyword "
-                             "for Series intializer.")
+        # if shape is None:
+        #     raise ValueError("'shape' is a required keyword "
+        #                      "for Series intializer.")
         # if 'convolve_shape' in kwargs:
         #     assert(kwargs['convolve_shape'] == shape)
         # else:

@@ -71,7 +71,7 @@ def save(obj):
     Object should be hashable, and this hash is used to retrieve it later
     (so it should be possible to determine the hash without the object).
     """
-    if cache_filename == "":
+    if sinn.config.disk_cache_file == "":
         # There is no disk cache
         return
     logger.info("Saving {} to disk cache.".format(str(obj)))

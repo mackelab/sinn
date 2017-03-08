@@ -20,6 +20,7 @@ import sinn.models.common
 
 lib = shim.lib
 Model  = models.common.Model
+ModelKernelMixin = models.common.ModelKernelMixin
 Kernel = kernels.Kernel
 #Parameter = com.Parameter
 
@@ -29,15 +30,34 @@ Kernel = kernels.Kernel
 int_cast = lambda x : shim.asarray(x, 'int')
 float_cast = lambda x : shim.asarray(x, config.floatX)
 
+# I don't know why this class can't be within SRMBase,
+# but dill can't deal with it otherwise.
+class K(ModelKernelMixin, kernels.ExpKernel):
+    @staticmethod
+    def get_kernel_params(model_params):
+        κparams = kernels.ExpKernel.Parameters(
+            height      = 1,
+            decay_const = model_params.τm,
+            t_offset    = model_params.τs )
+        return κparams
+    def update_params(self, model_params):
+        assert(self.t0 == lib.min(model_params.τs))
+        return super().update_params(model_params)
+
 class SRMBase(Model):
+
 
     def __init__(self, params, memory_time):
 
         ##########################################
         # Parameter sanity checks
         ##########################################
-
-        shim.check(self.A.dt == self.I.dt)
+        try:
+            shim.check(self.A.dt == self.I.dt)
+        except AssertionError:
+            raise ValueError("The time step of the activity history ({}) "
+                             "does not match that of the input ({})"
+                             .format(self.A.dt, self.I.dt))
         # TODO More checks
 
         ###########################################
@@ -49,15 +69,11 @@ class SRMBase(Model):
         self.cache(self.I)   # all convolutions are done with JsᕽAᐩI
             # Memoizing infrastructure only built after super().__init__
 
-        κparams = kernels.ExpKernel.Parameters(
-            height      = 1,
-            decay_const = params.τm,
-            t_offset    = params.τs )
-        self.κ = kernels.ExpKernel('κ',
-                             params      = κparams,
-                             t0          = np.min(params.τs),
-                             memory_time = memory_time,
-                             shape       = self.A.shape )
+        self.κ = K('κ',
+                           params      = params,
+                           t0          = np.min(params.τs),
+                           memory_time = memory_time,
+                           shape       = self.A.shape )
         self.cache(self.κ)
             # Here the kernel doesn't actually mix the populations
             # (that's done by Js), so it's the same shape as A
@@ -93,22 +109,55 @@ class SRMBase(Model):
         #self.a.pad()
         #self.A.pad()
 
+    def update_params(self, new_params):
+        self.clear_history(self.a)
+        super().update_params(new_params)
 
     def get_M(self, memory_time):
         """Convert a time into a number of bins."""
         # TODO: move to History
         return int(shim.round(self.memory_time / self.A.dt) + 1)
 
-    def ηr_fn(self, t):
+    def η_fn(self, t):
         """The refractory kernel coming after the absolute refractory period"""
+        if shim.isscalar(t):
+            tarr = [t]
+        else:
+            tarr = t
         kernel_dims = shim.asarray(self.params.τabs).ndim
             # Shape of the η kernel
         shim.check(kernel_dims == shim.asarray(self.params.τm).ndim)
-        t = shim.add_axes(t, kernel_dims, 'right')
-            # In order to broadcast properly, we need to add to t
+        tarr = shim.add_axes(tarr, kernel_dims, 'right')
+            # In order to broadcast properly, we need to add to tarr
             # the dimensions corresponding to the kernel
 
-        retval = self.params.Jr * lib.exp(-(t-self.params.τabs)/self.params.τm)
+        # Add the absolute refractory period, if required.
+        # (it's only required if it's more than a bin wide)
+        shim.check(np.isclose(self.params.τabs % self.A.dt, 0,
+                              rtol=config.rel_tolerance,
+                              atol=config.abs_tolerance ).all() )
+            # If τabs is not a multiple of dt, we will have important numerical errors
+        # abs_refrac_idx_len = shim.largest(shim.cast_varint16( shim.round(self.params.τabs / self.A.dt) ) - 1, 0)
+            # -1 because tarr_η starts at dt
+            # clip at zero because otherwise τabs=0  =>  -1
+        # start_idcs = len(t) - abs_refrac_idx_len
+            # The time array is flipped, so the start idx of the absolute refractory
+            # period is at the end.
+        # self.η = shim.ifelse(lib.any(shim.gt(abs_refrac_idx_len, 0)),
+        #                      lib.stack( [ shim.set_subtensor(ηr[start_idx:,i], shim.inf)
+        #                                   for i, start_idx in enumerate(start_idcs) ] ),
+        #                      ηr)
+
+        # MOST RECENTLY COMMENTED OUT
+        # retval = lib.stack(
+        #     [ shim.switch(t >= self.params.τabs,
+        #                   self.params.Jr * lib.exp(-(t-self.params.τabs)/self.params.τm),
+        #                   shim.inf)
+        #       for t in tarr.flatten() ] )
+        retval = shim.switch(tarr >= self.params.τabs,
+                          self.params.Jr * lib.exp(-(tarr-self.params.τabs)/self.params.τm),
+                          shim.inf)
+
             # Both Jr and the τ should be indexed as [to idx][from idx], so
             # we just use broadcasting to multiply them
         if kernel_dims > 1:
@@ -164,9 +213,17 @@ class Activity(SRMBase):
                                     ( 'τabs', (config.cast_floatX, None, True) ) ) )
     Parameters = com.define_parameters(Parameter_info)
 
+    def update_params(model_params):
+        # TODO Make these kernels DiscreteKernel's, and add to list to update
+        # TODO Common initialize function ?
+        η_finite_t = self.η_fn(tarr_η)
+        self.η = lib.concatenate((np.zeros((1,) + η_finite_t.shape[1:]), # ∞-bin
+                                  η_finite_t))  # rest
+        super().update_params(model_params)
+
     def __init__(self, params,
                  activity_history, activity_mean_history, input_history,
-                 random_stream,
+                 random_stream=None,
                  memory_time=None, init_occupation_numbers=None):
 
         self.A = activity_history
@@ -174,6 +231,13 @@ class Activity(SRMBase):
         self.I = input_history
         assert(self.A.shape == self.a.shape == self.I.shape)
 
+        if ( self.A._cur_tidx < len(self.A) - 1
+             and random_stream is None ) :
+            raise ValueError("Cannot generate activity A without a random number generator.")
+        elif ( self.A._cur_tidx >= len(self.A)
+               and random_stream is not None ) :
+            logger.warning("Your random number generator will be unused, "
+                           "since your data is already generated.")
         self.rndstream = random_stream
 
         self.spike_counts = self.A * (self.A.dt * params.N)
@@ -213,26 +277,11 @@ class Activity(SRMBase):
         # Refractory component η
 
         # Calculate the kernel
-        ηr = lib.concatenate((shim.add_axes(np.zeros(self.a.shape), 1, 'before'), # ∞-bin
-                              self.ηr_fn(tarr_η)))  # rest
+        η_finite_t = self.η_fn(tarr_η)
+        self.η = lib.concatenate((np.zeros((1,) + η_finite_t.shape[1:]), # ∞-bin
+                                  η_finite_t))  # rest
 
-        # Add the absolute refractory period, if required.
-        # (it's only required if it's more than a bin wide)
-        shim.check(np.isclose(params.τabs % self.A.dt, 0,
-                              rtol=config.rel_tolerance,
-                              atol=config.abs_tolerance ).all() )
-            # If τabs is not a multiple of dt, we will have important numerical errors
-        abs_refrac_idx_len = shim.largest(shim.cast_varint16( shim.round(params.τabs / self.A.dt) ) - 1, 0)
-            # -1 because tarr_η starts at dt
-            # clip at zero because otherwise τabs=0  =>  -1
-        start_idcs = len(tarr_η) - abs_refrac_idx_len
-            # The time array is flipped, so the start idx of the absolute refractory
-            # period is at the end.
-        self.η = shim.ifelse(lib.any(shim.gt(abs_refrac_idx_len, 0)),
-                             lib.stack( [ shim.set_subtensor(ηr[start_idx:,i], shim.inf)
-                                          for i, start_idx in enumerate(start_idcs) ] ),
-                             ηr)
-        # self.η = shim.ifelse(lib.any(shim.gt(abs_refrac_idx_len, 0)),
+       # self.η = shim.ifelse(lib.any(shim.gt(abs_refrac_idx_len, 0)),
         #                      lib.stack(
         #                          [ lib.stack(
         #                             [ shim.set_subtensor(ηr[start_idx:,i,j], shim.inf)
@@ -276,7 +325,6 @@ class Activity(SRMBase):
             where `M` is the number of bins we keep in memory before
             lumping all neurons in the ∞-bin.
         """
-        # TODO: I don't you actually need to keep _occN_arr
 
         # self.memory_time corresponds to the time after which, if a
         # neuron still hasn't fired, it is considered equivalent to one
@@ -284,12 +332,11 @@ class Activity(SRMBase):
         # number of bins.
         M = self.get_M(self.memory_time)
 
-        self._occN_arr = np.zeros((M+1,) + self.A.shape, dtype=config.floatX)
+        self._init_occN = np.zeros((M+1,) + self.A.shape, dtype=config.floatX)
             # M+1 because the extra bin occN[0] is used for
             # an intermediate calculation
-            # Although we never use it, _occN_arr underlies occN,
-            # and thus must remain in memory for the entire lifetime
-            # of this class.
+            # _init_occN is stored so the model can be reinitialized
+            # multiple times
             #
             # occN structure:
             # occN[0] -> undefined
@@ -298,23 +345,30 @@ class Activity(SRMBase):
             # ...
             # occN[M] -> occN[t0 - dt]
         if init_occN in ['quiescent', None]:
-            self._occN_arr[:] = 0
-            self._occN_arr[1] = self.params.N
+            self._init_occN[:] = 0
+            self._init_occN[1] = self.params.N
         elif init_occN == 'constant':
-            self._occN_arr[0] = 0
-            self._occN_arr[1:] = self.params.N / M
+            self._init_occN[0] = 0
+            self._init_occN[1:] = self.params.N / M
         else:
-            self._occN_arr[1:] = init_occN
+            self._init_occN[1:] = init_occN
             shim.check(lib.sum(self.occN[1:]) == self.params.N)
-        self.occN = shim.shared(self._occN_arr)
 
-        # Instantiated the normalized_E_bin_spikes
+    def initialize(self):
+        """
+        Run this at start of a new calculation.
+        Should not take any arguments to be compatible with functions
+        that expect this interface.
+        """
+        self.occN = shim.shared(self._init_occN)
+
+        # Instantiate the normalized_E_bin_spikes
         # It has one less element along the 0 axis
-        shape = (self._occN_arr.shape[0] - 1,) + self._occN_arr.shape[1:]
+        shape = (self._init_occN.shape[0] - 1,) + self._init_occN.shape[1:]
         self.normalized_E_bin_spikes = shim.shared(np.zeros(shape))
 
     def check_indexing(self, t):
-        # On reason this test might fail is if A and a have different padding
+        # One reason this test might fail is if A and a have different padding
         # and indices are used (rather than times)
         assert(self.a._tarr[self.a.get_t_idx(t)]
                == self.spike_counts._tarr[self.spike_counts.get_t_idx(t)])
@@ -394,6 +448,10 @@ class Activity(SRMBase):
             # must absolutely be done iteratively
         self.check_indexing(t_array[0])
             # Check that the indexing in a and A match
+        if self.occN is None:
+            raise RuntimeError("You must initialize occupation numbers "
+                               "before computing activity.\n"
+                               "(`set_init_occupation_numbers` & `initialize`)")
 
         new_a, new_nEbs = self.a_onestep_2nd_half(
               t_array[0], self.JsᕽAᐩI, self.occN)
@@ -453,26 +511,17 @@ class Activity(SRMBase):
 
     def update_params(self, new_params):
         """Change parameter values, and refresh the affected kernels."""
+        super().update_params(new_params)
 
-        #TODO: change params
-
-        #TODO: recompute affected kernels
-
-        #TODO: delete all discretizations of affected kernels
-
-        raise NotImplementedError
-
-    def loglikelihood(self, burnin, data_len):
-        burnin_idx = self.a.get_idx_len(burnin)
-        data_len_idx = self.a.get_idx_len(data_len)
-        astart = self.a.t0idx + burnin_idx
-        Astart = self.A.t0idx + burnin_idx
-        astop = self.a.t0idx + data_len_idx + 1
-        Astop = self.A.t0idx + data_len_idx + 1
+    def loglikelihood(self, data_begin, data_end):
+        astart = self.a.get_t_idx(data_begin)
+        Astart = self.A.get_t_idx(data_begin)
+        astop = self.a.get_t_idx(data_end) + 1
+        Astop = self.A.get_t_idx(data_end) + 1
 
         return - ( lib.sum(lib.log(self.a[astart:astop]))
-                   + self.a.params.dt
-                     * lib.sum( self.a.params.N
+                   + self.a.dt
+                     * lib.sum( self.params.N
                                 * lib.sum( ( self.A[Astart:Astop]
                                                - self.a[astart:astop])**2
                                            / self.a[astart:astop],
@@ -497,6 +546,30 @@ class Spiking(SRMBase):
 
     Parameters = com.define_parameters(Parameter_info)
 
+    #################
+    # Model kernels
+
+    class Hr(ModelKernelMixin, kernels.ExpKernel):
+        @staticmethod
+        def get_kernel_params(model_params):
+            ηparams = kernels.ExpKernel.Parameters(
+                height = model_params.Jr,
+                decay_const = model_params.τm,
+                t_offset = model_params.τabs )
+            return ηparams
+        def update_params(self, model_params):
+            assert(self.t0 == lib.min(model_params.τabs))
+                # Should not change t0
+            return super().update_params(model_params)
+
+    class Habs(ModelKernelMixin, kernels.Kernel):
+        @staticmethod
+        def get_kernel_params(model_params):
+            return None # No parameters
+        def update_params(self, model_params):
+            assert(lib.max(self.memory_time) == lib.max(self.params.τabs))
+            # No params => nothing to do
+
     def __init__(self, params,
                  spike_history, input_history,
                  random_stream,
@@ -504,7 +577,9 @@ class Spiking(SRMBase):
 
         self.spikehist = spike_history
         self.A = histories.Series(spike_history, "A", shape=params.N.shape)
+        self.cache(self.A)
         self.I = input_history
+        self.cache(self.I)
 
         self.spikehist.set_update_function(self.spike_update)
         # self.A update function set below
@@ -513,27 +588,29 @@ class Spiking(SRMBase):
 
         super().__init__(params, memory_time)
 
-        ηparams = kernels.ExpKernel.Parameters(
-            height = params.Jr,
-            decay_const = params.τm,
-            t_offset = params.τabs )
-        self.ηr = kernels.ExpKernel('ηr',
-                                    params      = ηparams,
-                                    t0          = np.min(params.τabs),
-                                    memory_time = memory_time,
-                                    shape       = (len(params.N),) )
+        self.ηr = Spiking.Hr('ηr',
+                          params      = params,
+                          t0          = np.min(params.τabs),
+                          memory_time = memory_time,
+                          shape       = (len(params.N),) )
+        self.cache(self.ηr)
 
-        self.ηabs = kernels.Kernel('ηabs',
-                                   shape       = (len(params.N),),
-                                   f           = self.ηabs_fn,
-                                   memory_time = lib.max(params.τabs),
-                                   t0          = 0 )
+        self.ηabs = Spiking.Habs('ηabs',
+                              shape       = (len(params.N),),
+                              f           = self.ηabs_fn,
+                              memory_time = lib.max(params.τabs),
+                              t0          = 0 )
+        self.cache(self.ηabs)
 
         self.memory_time = lib.max((self.memory_time, self.ηr.memory_time + self.ηabs.memory_time))
 
         self.A.pad(self.memory_time)
         self.spikehist.pad(self.memory_time)
             # TODO: Ensure padding isn't added on top of previous padding.
+
+    def update_params(self, new_params):
+        self.clear_history(self.A)
+        super().update_params(new_params)
 
     def ηabs_fn(self, t, from_idx):
             """The refractory kernel during the absolute refractory period."""

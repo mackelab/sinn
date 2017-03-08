@@ -1,0 +1,4 @@
+# Use in conjunction with mackelab_default.mplstyle
+# plt.style.use(['mackelab_default.mplstyle', 'mackelab_publish.mplstyle']
+
+font.size: 6

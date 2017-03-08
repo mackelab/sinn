@@ -9,12 +9,15 @@ import numpy as np
 import scipy as sp
 #from scipy.integrate import quad
 #from collections import namedtuple
+import logging
+logger = logging.getLogger("sinn.models.common")
 
 import theano_shim as shim
 import sinn.config as config
 import sinn.common as com
 import sinn.histories
 import sinn.kernels
+import sinn.diskcache as diskcache
 floatX = config.floatX
 lib = shim.lib
 
@@ -95,21 +98,88 @@ class Model(com.ParameterMixin):
     def update_params(self, new_params):
         kernels_to_update = []
         for kernel in self.kernel_list:
-            if sinn.get_parameter_subset(kernel, new_params) != kernel.params:
+            if kernel.get_parameter_subset(new_params) != kernel.params:
+                # Grab the subset of the new parameters relevant to this kernel,
+                # and compare to the kernel's current parameters. If any of
+                # them differ, add the kernel to the list of kernels to update.
                 kernels_to_update.append(kernel)
 
+        # Loop over the list of kernels whose parameters have changed to do
+        # two things:
+        # - Remove any cached binary op that involves this kernel.
+        #   (And write it to disk for later retrievel if these parameters
+        #    are reused.)
+        # - Update the kernel itself to the new parameters.
         for obj in self.history_list + self.kernel_list:
             if obj not in kernels_to_update:
                 for op in obj.cached_ops:
                     for kernel in kernels_to_update:
                         if hash(kernel) in op.cache:
-                            diskcache.save(op[hash(kernel)])
+                            diskcache.save(op.cache[hash(kernel)])
                             # TODO subclass op[other] and define __hash__
                             logger.info("Removing cache for binary op {} ({},{}) from heap."
                                         .format(str(op), obj.name, kernel.name))
-                            del op[hash(kernel)]
+                            del op.cache[hash(kernel)]
 
                         diskcache.save(kernel)
                         logger.info("Updating kernel {}.".format(kernel.name))
                         kernel.update_params(new_params)
 
+    def clear_history(self, history):
+        # Clear the history, and remove any cached operations related to it
+        # In contrast to `update_params`, we don't write these operations to
+        # disk, because histories are data structures: there's no way of knowing
+        # if they're equivalent to some already computed case other than comparing
+        # the entire data.
+        logger.info("Clearing history " + history.name)
+        history.clear()
+        if history in self.history_list:
+            for obj in self.history_list + self.kernel_list:
+                for op in obj.cached_ops:
+                    if hash(history) in op.cache:
+                        del op.cache[hash(history)]
+        else:
+            for obj in self.history_list + self.kernel_list:
+                for op in obj.cached_ops:
+                    if hash(history) in op.cache:
+                        logger.error("Uncached history {} is member of cached "
+                                     "op {}. This may indicate a memory leak."
+                                     .format(history.name, str(op)))
+
+
+class ModelKernelMixin:
+    """
+    Kernels within models should include this mixin.
+    Adds interoperability with model parameters
+    """
+    def __init__(self, name, params, shape=None, f=None, memory_time=None, t0=None, **kwargs):
+        super().__init__(name,
+                         params = self.get_kernel_params(params),
+                         shape  = shape,
+                         f      = f,
+                         memory_time=memory_time,
+                         t0     = t0,
+                         **kwargs)
+
+    def update_params(self, params):
+        super().update_params(self.get_parameter_subset(model_params))
+
+    def get_parameter_subset(self, params):
+        """Given a set of model parameters, return the set which applies
+        to this kernel. These will in general not be a strict subset of
+        `model_params`, but derived from them using `get_kernel_params`.
+        As a special case, if each of the kernel's parameters can
+        be found in `params`, then it is assumed that they have already
+        been converted, and `get_kernel_params` is not called again.
+        """
+        if all( field in params._fields for field in self.params._fields ):
+            # params already converted for kernel
+            return sinn.get_parameter_subset(self, params)
+        else:
+            # These are model parameters. Convert them for the kernel
+            return self.get_kernel_params(params)
+
+    @staticmethod
+    def get_kernel_params(model_params):
+        # This has to be implemented for each kernel
+        raise NotImplementedError

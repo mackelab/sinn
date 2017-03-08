@@ -12,12 +12,30 @@ import sinn.config as config
 floatX = config.floatX
 lib = shim.lib
 
+class CachedOperation:
+    """All op mixins which contain an OpCache object should inherit
+    from this class."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if not hasattr(self, 'cached_ops'):
+            self.cached_ops = []
+
+    def clear(self):
+        # All cached binary ops are now invalid, so delete them
+        for op in self.cached_ops:
+            op.clear()
+
+        try:
+            super().clear()
+        except AttributeError:
+            pass
+
 # TODO: Only require convolve_shape for descendents of HistoryBase
 
 # This class cannot be in the same module as HistoryBase,
 # in order for tests with isinstance to work.
 # (Not sure if this is really true)
-class ConvolveMixin:
+class ConvolveMixin(CachedOperation):
 
     def __init__(self, *args, **kwargs):
         """
@@ -26,6 +44,8 @@ class ConvolveMixin:
         *args, **kwargs:
             Passed to base initializer
         """
+
+        super().__init__(*args, **kwargs)
 
         # try:
         #     convolve_shape = kwargs.pop('convolve_shape')
@@ -37,7 +57,9 @@ class ConvolveMixin:
             # Store convolutions so they don't have to be recalculated.
             # The dictionary is keyed by the id of the kernels with which
             # convolutions were computed.
-        super().__init__(*args, **kwargs)
+        self.cached_ops.append(self._conv_cache)
+            # Add this cache to the objects's list of cached ops.
+            # This allows it to be pruned later, if one of the op's members changes
 
     def theano_reset(self):
         self._conv_cache.theano_reset()

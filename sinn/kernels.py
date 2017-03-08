@@ -87,11 +87,11 @@ class Kernel(ConvolveMixin, ParameterMixin):
         t0: float
             The time corresponding to f(0). Kernel is zero before this time.
         """
-        # if 'convolve_shape' in kwargs:
-        #     assert( kwargs['convolve_shape'] == shape )
-        # else:
-        #     kwargs['convolve_shape'] = shape
 
+        self.initialize(name, params=params, shape=shape,
+                        f=f, memory_time=memory_time, t0=t0, **kwargs)
+
+    def initialize(self, name, params=None, shape=None, f=None, memory_time=None, t0=0, **kwargs):
         if params is None:
             # ParameterMixin requires 'params'
             params = com.define_parameters({})
@@ -122,6 +122,12 @@ class Kernel(ConvolveMixin, ParameterMixin):
         # TODO: add set_eval method, and make memory_time optional here
         assert(memory_time is not None)
         self.memory_time = memory_time
+
+    def get_parameter_subset(self, params):
+        """Given a set of parameters, return the subset which applies
+        to this kernel.
+        """
+        return sinn.get_parameter_subset(self, params)
 
     def eval(self, t, from_idx=slice(None,None)):
         if not shim.isscalar(t):
@@ -159,8 +165,12 @@ class Kernel(ConvolveMixin, ParameterMixin):
     # Caching interface
 
     @classmethod
-    def _serialize(cls, params, shape, memory_time, t0):
-        # Very quick 'n dirty serializer, but unlikely to be a performance hit
+    def _serialize(cls, params, shape, memory_time, t0, **kwargs):
+        """Quick 'n dirty serializer"""
+        # **kwargs are not treated, so they should be left to their
+        # default value of None
+        for key, val in kwargs.items():
+            assert(val is None)
         return str(cls) + str(params) + str(shape) + str(memory_time) + str(t0)
 
     def __hash__(self):
@@ -180,11 +190,14 @@ class Kernel(ConvolveMixin, ParameterMixin):
 
     def update_params(self, new_params):
         # Remove all attached discretized kernels, since those are no longer valid
+        attr_to_del = []
         for attr in dir(self):
             if attr[:9] == "discrete_":
-                delattr(self, attr)
+                attr_to_del.append(attr)
+        for attr in attr_to_del:
+            delattr(self, attr)
 
-        self.__init__(self.name, new_params, self.shape, self.memory_time, self.t0)
+        self.initialize(self.name, new_params, self.shape, self.memory_time, self.t0)
 
 
 class ExpKernel(Kernel):
@@ -197,7 +210,7 @@ class ExpKernel(Kernel):
     Parameters = com.define_parameters(Parameter_info)
 
     @checkcache
-    def __init__(self, name, params, shape, memory_time=None, t0=0, **kwargs):
+    def initialize(self, name, params, shape, memory_time=None, t0=0, **kwargs):
         """
         Parameters
         ----------
@@ -242,7 +255,7 @@ class ExpKernel(Kernel):
 
         ########
         # Initialize base class
-        super().__init__(name, params, shape, memory_time=memory_time, t0=t0, **kwargs)
+        super().initialize(name, params, shape, memory_time=memory_time, t0=t0, **kwargs)
 
         self.last_t = None     # Keep track of the last convolution time
         self.last_conv = None  # Keep track of the last convolution result
