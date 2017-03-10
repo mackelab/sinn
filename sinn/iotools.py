@@ -21,6 +21,7 @@ logger = logging.getLogger('sinn.iotools')
 # Public API
 
 def save(filename, data):
+    os.makedirs(_get_savedir(), exist_ok=True)
     try:
         relpath = _get_savedir() + filename
         f, realrelpath = _get_free_file(relpath)

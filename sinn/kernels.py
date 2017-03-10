@@ -74,7 +74,7 @@ class Kernel(ConvolveMixin, ParameterMixin):
     Refer to the `shape_output` method to see exactly how the output is reshaped.
     """
 
-    def __init__(self, name, params=None, shape=None, f=None, memory_time=None, t0=0, **kwargs):
+    def __init__(self, name, params=None, shape=None, memory_time=None, t0=0, **kwargs):
         """
         Parameters
         ----------
@@ -89,7 +89,7 @@ class Kernel(ConvolveMixin, ParameterMixin):
         """
 
         self.initialize(name, params=params, shape=shape,
-                        f=f, memory_time=memory_time, t0=t0, **kwargs)
+                        memory_time=memory_time, t0=t0, **kwargs)
 
     def initialize(self, name, params=None, shape=None, f=None, memory_time=None, t0=0, **kwargs):
         if params is None:

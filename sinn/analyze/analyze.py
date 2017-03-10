@@ -21,13 +21,13 @@ except ImportError:
 
 import theano_shim as shim
 import sinn.histories as histories
-import sinn.analyze.common as anlzcom
+import sinn.analyze as anlz
 import sinn.analyze.heatmap as heatmap
 import sinn.analyze.plot_styles.color_schemes as color_schemes
 
 # ==================================
 # Data types
-ParameterAxis = anlzcom.ParameterAxis
+ParameterAxis = anlz.ParameterAxis
 
 # ==================================
 # Data manipulation
@@ -122,7 +122,8 @@ def plot(history):
     """
 
     if isinstance(history, histories.Series):
-        ax = plt.plot(history.get_time_array(), history.get_trace())
+        ax = plt.gca()
+        plt.plot(history.get_time_array(), history.get_trace())
         return ax
 
     elif isinstance(history, heatmap.HeatMap):

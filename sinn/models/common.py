@@ -73,13 +73,36 @@ class Model(com.ParameterMixin):
 
         if history is not None:
             self.history = history
-            self.cache(history)
+            self.add_history(history)
             if hasattr(self, 'eval'):
                 history.set_update_function(self.eval)
 
         super().__init__(params=params)
 
-    #TODO: Provide default gradient (through theano.grad) if likelihood is provided
+    # Simple consistency check functions
+    @staticmethod
+    def same_shape(*args):
+        assert(all(arg1.shape == arg2.shape for arg1, arg2 in zip(args[:-1], args[1:])))
+    @staticmethod
+    def same_dt(*args):
+        assert(all(arg1.dt == arg2.dt for arg1, arg2 in zip(args[:-1], args[1:])))
+    @staticmethod
+    def output_rng(outputs, rngs):
+        try:
+            len(outputs)
+        except TypeError:
+            outputs = [outputs]
+        try:
+            len(rngs)
+        except TypeError:
+            rngs = [rngs]
+        if ( any( outhist._cur_tidx < len(outhist) - 1 for outhist in outputs )
+             and any( rng is None for rng in rngs) ) :
+            raise ValueError("Cannot generate {} without the required random number generator(s).".format(str([outhist.name for outhist in outputs])))
+        elif ( all( outhist._cur_tidx < len(outhist) - 1 for outhist in outputs )
+             and all( rng is None for rng in rngs) ) :
+            logger.warning("Your random number generator(s) will be unused, "
+                           "since your data is already generated.")
 
     def cache(self, obj):
         """
@@ -90,10 +113,21 @@ class Model(com.ParameterMixin):
         """
 
         if isinstance(obj, sinn.kernels.Kernel):
+            logger.warning("Deprecated. Use add_kernel instead.")
             self.kernel_list.append(obj)
         else:
             assert(isinstance(obj, sinn.histories.History))
+            logger.warning("Histories aren't written to disk. Use add_history instead")
             self.history_list.append(obj)
+
+    def add_history(self, hist):
+        assert(isinstance(hist, sinn.histories.History))
+        if hist not in self.history_list:
+            self.history_list.append(hist)
+    def add_kernel(self, kernel):
+        assert(isinstance(kernel, sinn.kernels.Kernel))
+        if kernel not in self.kernel_list:
+            self.kernel_list.append(kernel)
 
     def update_params(self, new_params):
         kernels_to_update = []

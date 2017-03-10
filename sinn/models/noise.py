@@ -13,6 +13,8 @@ import theano_shim as shim
 import sinn.config as config
 import sinn.common as com
 import sinn.models.common
+
+lib = shim.lib
 Model = sinn.models.common.Model
 
 class GaussianWhiteNoise(Model):
@@ -32,9 +34,9 @@ class GaussianWhiteNoise(Model):
         super().__init__(params, history)
 
     def eval(self, t):
-        return np.clip(self.rndstream.normal(avg  = 0,
-                                             std  = self.params.std/np.sqrt(self.history.dt),
-                                             size = self.params.shape),
+        return lib.clip(self.rndstream.normal(avg  = 0,
+                                              std  = self.params.std/np.sqrt(self.history.dt),
+                                              size = self.params.shape),
                        -self.params.clip_limit,
                        self.params.clip_limit)
 

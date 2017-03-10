@@ -27,9 +27,6 @@ Kernel = kernels.Kernel
 
 # TODO: Move casting functions to shim
 
-int_cast = lambda x : shim.asarray(x, 'int')
-float_cast = lambda x : shim.asarray(x, config.floatX)
-
 # I don't know why this class can't be within SRMBase,
 # but dill can't deal with it otherwise.
 class K(ModelKernelMixin, kernels.ExpKernel):
