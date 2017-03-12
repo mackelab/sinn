@@ -5,24 +5,31 @@ Created Sat Feb 25 2017
 author: Alexandre René
 """
 
+from copy import copy
 import numpy as np
 import matplotlib.colors as colors
 
-import sinn.analyze.common as anlzcom
+from . import common as com
 
 class HeatMap:
 
-    ParameterAxis = anlzcom.ParameterAxis
+    ParameterAxis = com.ParameterAxis
 
     def __init__(self, function_label, data, param_axes, norm='linear'):
         self.color_label = function_label
         self.data = data
-        self.param_axes = param_axes
+        self.axes = param_axes
         self.floor = -np.inf
         self.ceil = np.inf
         self.set_norm(norm)
         self.cmap = 'viridis'
 
+    def raw(self):
+        # The raw format is meant for data longevity, and so should
+        # seldom, if ever, be changed
+        raw = dict([(ax.name, ax.stops) for ax in self.axes])
+        raw['data'] = self.data
+        return raw
 
     def max(self):
         return self.data.max()
@@ -52,3 +59,74 @@ class HeatMap:
         else:
             raise RuntimeError("What are we doing here ?")
 
+    def slice(ax_slices):
+        assert(len(ax_slices) == len(self.axes))
+        new_map = copy(self)
+        for i, slc in enumerate(ax_slices):
+            new_map.axes[i].stops = self.axes[i].stops[slc]
+
+        if len(ax_slices) == 1:
+            new_map.data = self.data[ax_slices[0]]
+        elif len(ax_slices) == 2:
+            new_map.data = self.data[ax_slices[0], ax_slices[1]]
+        elif len(ax_slices) == 3:
+            new_map.data = self.data[ax_slices[0], ax_slices[1], ax_slices[2]]
+        else:
+            raise NotImplementedError
+
+    #####################################################
+    # Operator definitions
+    #####################################################
+    # TODO: Operations with two heat maps ?
+
+    def apply_op(self, new_label, op, b=None):
+        if b is None:
+            return HeatMap(new_label, op(self.data),
+                           self.param_axes, self.norm)
+        else:
+            return HeatMap(new_label, op(self.data, b),
+                           self.param_axes, self.norm)
+
+    def __abs__(self):
+        return self.apply_op('abs({})'.format(self.function_label),
+                              operator.abs)
+    def __add__(self, other):
+        return self.apply_op(self.function_label + '+' + str(other),
+                              operator.add, other)
+    def __radd__(self, other):
+        return self.apply_op(str(other) + '+' + self.function_label,
+                              lambda a,b: b+a, other)
+    def __sub__(self, other):
+        return self.apply_op(self.function_label + '-' + str(other),
+                              operator.sub, other)
+    def __rsub__(self, other):
+        return self.apply_op(str(other) + '-' + self.function_label,
+                              lambda a,b: b-a, other)
+    def __mul__(self, other):
+        return self.apply_op(self.function_label + '*' + str(other),
+                              operator.mul, other)
+    def __rmul__(self, other):
+        return self.apply_op(str(other) + '*' + self.function_label,
+                              lambda a,b: b*a, other)
+    def __matmul__(self, other):
+        return self.apply_op(self.function_label + '@' + str(other),
+                              operator.matmul, other)
+    def __rmatmul__(self, other):
+        return self.apply_op(str(other) + '@' + self.function_label,
+                              lambda a,b: operator.matmul(b,a), other)
+            # Using operator.matmul rather than @ prevents import fails on Python <3.5
+    def __truediv__(self, other):
+        return self.apply_op(self.function_label + '/' + str(other),
+                              operator.truediv, other)
+    def __rtruediv__(self, other):
+        return self.apply_op(str(other) + '/' + self.function_label,
+                              lambda a,b: b/a, other)
+    def __floordiv__(self, other):
+        return self.apply_op(self.function_label + '//' + str(other),
+                              operator.floordiv, other)
+    def __rfloordiv__(self, other):
+        return self.apply_op(str(other) + '//' + self.function_label,
+                              lambda a,b: b//a, other)
+    def __mod__(self, other):
+        return self.apply_op(self.function_label + '%' + str(other),
+                              operator.mod, other)

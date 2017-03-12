@@ -14,6 +14,7 @@ Created on Mon Jul 18 10:25:35 2016
 import os
 import os.path
 import logging
+import numpy as np
 import dill
 logger = logging.getLogger('sinn.iotools')
 
@@ -27,12 +28,23 @@ def save(filename, data):
         f, realrelpath = _get_free_file(relpath)
 
     except IOError:
-        print("Could not create the filename")
+        logger.error("Could not create the filename")
         realrelpath = None
 
     else:
         dill.dump(data, f)
         f.close()
+
+        if hasattr(data, 'raw'):
+            # Also save a more future-proof raw datafile
+            relfilename, relext = os.path.splitext(realrelpath)
+            try:
+                f, rawrelpath = _get_free_file(relfilename + "_raw" + relext)
+            except IOError:
+                logger.error("Could not create the filename")
+            else:
+                np.savez(f, **data.raw())
+                f.close()
 
     return realrelpath
 
@@ -45,6 +57,7 @@ def load(filename):
             logger.warning("File {} is corrupted or empty. A new "
                            "one is being computed, but you should "
                            "delete this one.".format(filename))
+            raise FileNotFoundError
 
 
 

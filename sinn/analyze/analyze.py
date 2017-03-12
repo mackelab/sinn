@@ -7,6 +7,8 @@ Created Tue Feb 21 2017
 author: Alexandre René
 """
 
+__all__ = ['smooth', 'subsample', 'plot', 'get_axes', 'get_axis_labels']
+
 import logging
 from collections import namedtuple
 import numpy as np
@@ -21,13 +23,13 @@ except ImportError:
 
 import theano_shim as shim
 import sinn.histories as histories
-import sinn.analyze as anlz
-import sinn.analyze.heatmap as heatmap
-import sinn.analyze.plot_styles.color_schemes as color_schemes
+from . import common as com
+from . import heatmap
+from .plot_styles import color_schemes as color_schemes
 
 # ==================================
 # Data types
-ParameterAxis = anlz.ParameterAxis
+ParameterAxis = com.ParameterAxis
 
 # ==================================
 # Data manipulation
@@ -127,7 +129,7 @@ def plot(history):
         return ax
 
     elif isinstance(history, heatmap.HeatMap):
-        ax1_grid, ax2_grid = np.meshgrid(_centers_to_edges(history.param_axes[0]), _centers_to_edges(history.param_axes[1]), indexing='ij')
+        ax1_grid, ax2_grid = np.meshgrid(_centers_to_edges(history.axes[0]), _centers_to_edges(history.axes[1]), indexing='ij')
         zmin = max(history.floor, history.min())
         zmax = min(history.ceil, history.max())
         quadmesh = plt.pcolormesh(ax1_grid, ax2_grid,
@@ -136,15 +138,18 @@ def plot(history):
                                   norm = history.get_norm(),
                                   vmin=zmin, vmax=zmax)
         ax = plt.gca()
-        plt.xlabel(history.param_axes[0].name)
-        plt.ylabel(history.param_axes[1].name)
+        plt.xlabel(history.axes[0].name)
+        plt.ylabel(history.axes[1].name)
+        ax.set_xscale(history.axes[0].scale)
+        ax.set_yscale(history.axes[1].scale)
 
         cb = plt.colorbar()
         cb.set_label(history.color_label)
 
         color_scheme = color_schemes.map[history.cmap]
-        ax.tick_params(axis='x', which='both', colors=color_scheme.white)
-        ax.tick_params(axis='y', which='both', colors=color_scheme.white)
+        ax.tick_params(axis='both', which='both', color=color_scheme.white,
+                       top='on', right='on', bottom='on', left='on',
+                       direction='in')
         cb.ax.tick_params(axis='y', which='both', left='off', right='off')
 
         for side in ['top', 'right', 'bottom', 'left']:

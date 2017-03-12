@@ -8,6 +8,7 @@ author: Alexandre René
 import numpy as np
 import scipy as sp
 from collections import namedtuple, OrderedDict
+import logging
 
 import theano_shim as shim
 import sinn
@@ -16,10 +17,23 @@ import sinn.histories as histories
 import sinn.kernels as kernels
 import sinn.models as models
 
+logger = logging.getLogger("sinn.models.glm")
+
 lib = shim.lib
-Model  = models.Model
+Model = models.Model
 ModelKernelMixin = models.ModelKernelMixin
 Kernel = kernels.Kernel
+
+# This seems to be a bug in dill, that K can't be a member of the model class
+class ExpK(ModelKernelMixin, kernels.ExpKernel):
+    @staticmethod
+    def get_kernel_params(model_params):
+        return kernels.ExpKernel.Parameters(
+            height = 1,
+            decay_const = model_params.τ,
+            t_offset = 0)
+
+
 
 class GLM_exp_kernel(Model):
 
@@ -34,14 +48,11 @@ class GLM_exp_kernel(Model):
                                     ( 'c', config.cast_floatX ),
                                     ( 'J', (config.cast_floatX, None, True) ),
                                     ( 'τ', (config.cast_floatX, None, True) )) )
-    Parameters = sinn.define_parameters
-
-    class K(ModelKernelMixin, kernels.ExpKernel):
-        pass
+    Parameters = sinn.define_parameters(Parameter_info)
 
     def __init__(self, params, activity_history, input_history,
                  random_stream=None, memory_time=None):
-        self.A = activity_history,
+        self.A = activity_history
         self.I = input_history
         self.rndstream = random_stream
         # This runs consistency tests on the parameters
@@ -50,15 +61,15 @@ class GLM_exp_kernel(Model):
         Model.output_rng(self.A, self.rndstream)
 
         super().__init__(params)
+        # NOTE: Do not use `params` beyond here. Always use self.params.
 
         self.ρ = histories.Series(self.A, "ρ") # track hazard function
 
         # Compute Js*A+I before convolving, so we only convolve once
         # (We shamelessly abuse of unicode support for legibility)
         self.JᕽAᐩI = histories.Series(self.A, "JsᕽAᐩI",
-                                     shape = self.A.shape,
-                                     f = lambda t: lib.dot(params.J, self.A[t]) + self.I[t])
-                                                              # NxN  dot  N   +  N
+                                      shape = self.A.shape,
+                                      f = self.JᕽAᐩI_fn)
 
         self.add_history(self.A)
         self.add_history(self.I)
@@ -68,35 +79,76 @@ class GLM_exp_kernel(Model):
         self.A.set_update_function(self.A_fn)
         self.ρ.set_update_function(self.ρ_fn)
 
-        κshape = np.max(params.J.shape)
-        κparams = kernels.ExpKernel.Parameters(
-            height = params.J,
-            decay_const = params.τ,
-            t_offset = 0)
-        self.κ = kernels.ExpKernel('κ', params, κshape)
-        self.add_kernel(κ)
+        κshape = self.params.N.shape
+        self.κ = ExpK('κ', self.params, κshape)
+        self.add_kernel(self.κ)
 
-    def ρ_fn(t):
-        return self.params.c * lib.exp(self.κ.convolve(self.params.J.dot(self.A), t))
-    def var_fn(t):
-        return self.params.self.ρ[t] * (1 - self.ρ[t])
+        self.JᕽAᐩI.pad(self.κ.memory_time)
 
-    def A_fn(t):
-        return shim.binomial(size = self.A.shape,
-                             n = self.params.N,
-                             p = self.ρ[t] * self.A.dt) / self.params.N / self.A.dt
+    def JᕽAᐩI_fn(self, t):
+        return lib.dot(self.params.J, self.A[t]) + self.I[t]
+                              # NxN  dot  N   +  N
 
-    def loglikelihood():
-        # We approximate the pdf at each bin by a Gaussian
-        # (Poisson would probably be better, but it's less convenient)
+    def ρ_fn(self, t):
+        return self.params.c * lib.exp(self.κ.convolve(self.JᕽAᐩI, t))
 
-        A_arr = self.A.get_trace()
+    def A_fn(self, t):
+        p_arr = sinn.clip_probabilities(self.ρ[t] * self.A.dt)
+        return self.rndstream.binomial(size = self.A.shape,
+                                       n = self.params.N,
+                                       p = self.ρ[t] * self.A.dt) / self.params.N / self.A.dt
+
+    def update_params(self, new_params):
+        if np.all(new_params.J == self.params.J):
+            self.JᕽAᐩI.lock = True
+        else:
+            self.JᕽAᐩI.lock = False
+        super().update_params(new_params)
+
+    def loglikelihood(self, start=None, stop=None):
+
+        # We deliberately use times here (instead of indices) for start/
+        # stop so that they remain consistent across different histories
+        if start is None:
+            start = self.A.t0
+        else:
+            start = self.A.get_time(start)
+        if stop is None:
+            stop = self.A.tn
+        else:
+            stop = self.A.get_time(stop)
+
+        A_arr = self.A[start:stop]
 
         # Binomial mean: Np = Nρdt.  E(A) = E(B)/N/dt = ρ
-        ρ_arr = self.ρ.get_trace()
+        ρ_arr = self.ρ[start:stop]
+        # if self.A.lock and self.I.lock:
+        #    self.JᕽAᐩI.lock = True
+        # TODO: lock JᕽAᐩI in a less hacky way
+
+        #------------------
+        # True log-likelihood
+
+        # Number of spikes
+        k_arr = (A_arr * self.A.dt * self.params.N).astype('int16')
+        # Spiking probabilities
+        p_arr = sinn.clip_probabilities(ρ_arr * self.A.dt)
+
+        # loglikelihood: -log k! - log (N-k)! + k log p + (N-k) log (1-p) + cst
+        # We use the Stirling approximation for the second log
+        l = lib.sum( -lib.log(sp.misc.factorial(k_arr, exact=True))
+                     -(self.params.N-k_arr)*lib.log(self.params.N - k_arr)
+                     + self.params.N-k_arr
+                     + k_arr*lib.log(p_arr) + k_arr*lib.log(1-p_arr) )
+            # with exact=True, factorial is computed only once for whole array
+
+        return l
+
+        #-----------------
+        # Gaussian approximation to the log-likelihood
 
         # Binomial variance: Np(1-p)  V(A) = V(B)/(Ndt)² = ρ(1/dt - ρ)/N
-        v_arr = ρarr * (1/self.A.dt - ρarr) / self.params.N
+        v_arr = ρ_arr * (1/self.A.dt - ρ_arr) / self.params.N
 
         # Log-likelihood: Σ -log σ + (x-μ)²/2σ² + cst
         l = lib.sum( -lib.log(lib.sqrt(v_arr)) + (A_arr - ρ_arr)**2 / 2 / v_arr )

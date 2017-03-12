@@ -116,9 +116,12 @@ class Kernel(ConvolveMixin, ParameterMixin):
             # Sanity test on the eval method
             try:
                 self.shape_output(self.eval(0))
-            except ValueError:
+            except (AssertionError, ValueError):
                 raise ValueError("The parameters to the kernel's evaluation "
-                                 "function seem to have incompatible shapes.")
+                                 "function seem to have incompatible shapes. "
+                                 "The kernel's output has shape {}, but "
+                                 "you've set it to be reshaped to {}."
+                                 .format(self.eval(0).shape, self.shape))
         # TODO: add set_eval method, and make memory_time optional here
         assert(memory_time is not None)
         self.memory_time = memory_time
@@ -190,13 +193,17 @@ class Kernel(ConvolveMixin, ParameterMixin):
 
     def update_params(self, new_params):
         # Remove all attached discretized kernels, since those are no longer valid
+        logger.info("Updating kernel " + self.name + ":")
         attr_to_del = []
         for attr in dir(self):
             if attr[:9] == "discrete_":
                 attr_to_del.append(attr)
         for attr in attr_to_del:
+            logger.info("Removing stale kernel " + attr)
             delattr(self, attr)
 
+        logger.info("Reinitializing kernel {} with new parameters {}."
+                    .format(self.name, str(new_params)))
         self.initialize(self.name, new_params, self.shape, self.memory_time, self.t0)
 
 
@@ -238,7 +245,7 @@ class ExpKernel(Kernel):
             assert(0 < config.truncation_ratio < 1)
             # We want a numerical value, so we use the test value associated to the variables
             decay_const_val = np.max(shim.get_test_value(params.decay_const))
-            memory_time = t0 -decay_const_val * np.log(config.truncation_ratio)
+            memory_time = t0 - decay_const_val * np.log(config.truncation_ratio)
 
         self.memory_blind_time = np.max(params.t_offset) - t0
         # self.memory_blind_time = ifelse( (params.t_offset == params.t_offset.flatten()[0]).all(),
@@ -280,12 +287,14 @@ class ExpKernel(Kernel):
         # We are careful here to avoid converting t to time if not required,
         # so that kernel slicing can work on indices
 
-        if (kernel_slice != slice(None, None)
-            or shim.asarray(t).dtype != shim.asarray(self.last_t).dtype):
-                # The second condition catches the case where e.g. last_t is
-                # an index but t is a time (then t > last_t is a bad test).
+        if (kernel_slice != slice(None, None)):
             return hist.convolve(self, t, kernel_slice)
                 # Exit before updating last_t and last_conv
+        elif shim.asarray(t).dtype != shim.asarray(self.last_t).dtype:
+            # This condition catches the case where e.g. last_t is
+            # an index but t is a time (then t > last_t is a bad test).
+            result = hist.convolve(self, t, kernel_slice)
+            self.last_conv = result
         elif self.last_conv is not None and self.last_hist is hist:
             if t > self.last_t:
                 Δt = t - self.last_t

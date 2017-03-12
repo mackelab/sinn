@@ -88,10 +88,19 @@ class Model(com.ParameterMixin):
         assert(all(arg1.dt == arg2.dt for arg1, arg2 in zip(args[:-1], args[1:])))
     @staticmethod
     def output_rng(outputs, rngs):
-        try:
-            len(outputs)
-        except TypeError:
+        """
+        Parameters
+        ----------
+        outputs: History
+            Can also be a list of Histories
+        rngs: random stream, or list of random streams
+            The random stream(s) required to generate the histories in
+            `outputs`
+        """
+        if isinstance(outputs, sinn.histories.History):
             outputs = [outputs]
+        else:
+            assert(all(isinstance(output, sinn.histories.History) for output in outputs))
         try:
             len(rngs)
         except TypeError:
@@ -130,9 +139,18 @@ class Model(com.ParameterMixin):
             self.kernel_list.append(kernel)
 
     def update_params(self, new_params):
+        """
+        The `lock` attribute of histories is used to determine whether
+        they need to be recomputed.
+        """
+        logger.info("Updating model with new parameters {}".format(new_params))
+        assert(type(self.params) == type(new_params))
+        self.params = new_params
+        logger.info("Model params are now {}. Updating kernels...".format(self.params))
         kernels_to_update = []
         for kernel in self.kernel_list:
-            if kernel.get_parameter_subset(new_params) != kernel.params:
+            if not sinn.params_are_equal(
+                    kernel.get_parameter_subset(new_params), kernel.params):
                 # Grab the subset of the new parameters relevant to this kernel,
                 # and compare to the kernel's current parameters. If any of
                 # them differ, add the kernel to the list of kernels to update.
@@ -158,6 +176,10 @@ class Model(com.ParameterMixin):
                         diskcache.save(kernel)
                         logger.info("Updating kernel {}.".format(kernel.name))
                         kernel.update_params(new_params)
+
+        for hist in self.history_list:
+            if not hist.lock:
+                self.clear_history(hist)
 
     def clear_history(self, history):
         # Clear the history, and remove any cached operations related to it
@@ -186,7 +208,7 @@ class ModelKernelMixin:
     Kernels within models should include this mixin.
     Adds interoperability with model parameters
     """
-    def __init__(self, name, params, shape=None, f=None, memory_time=None, t0=None, **kwargs):
+    def __init__(self, name, params, shape=None, f=None, memory_time=None, t0=0, **kwargs):
         super().__init__(name,
                          params = self.get_kernel_params(params),
                          shape  = shape,
@@ -196,7 +218,7 @@ class ModelKernelMixin:
                          **kwargs)
 
     def update_params(self, params):
-        super().update_params(self.get_parameter_subset(model_params))
+        super().update_params(self.get_parameter_subset(params))
 
     def get_parameter_subset(self, params):
         """Given a set of model parameters, return the set which applies
@@ -211,9 +233,9 @@ class ModelKernelMixin:
             return sinn.get_parameter_subset(self, params)
         else:
             # These are model parameters. Convert them for the kernel
-            return self.get_kernel_params(params)
+            return self.cast_parameters(self.get_kernel_params(params))
 
     @staticmethod
     def get_kernel_params(model_params):
-        # This has to be implemented for each kernel
-        raise NotImplementedError
+        raise NotImplementedError("Each of your model's kernels must "
+                                  "implement the method `get_kernel_params`.")

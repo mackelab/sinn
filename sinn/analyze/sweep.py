@@ -7,14 +7,15 @@ author: Alexandre René
 import logging
 import os
 from collections import namedtuple
+from copy import copy
 import numpy as np
 logger = logging.getLogger('sinn.sweep')
 
 import sinn
 import sinn.iotools as io
-from sinn.analyze.heatmap import HeatMap
+from .heatmap import HeatMap
 
-AxisStops = namedtuple('AxisStops', ['stops', 'linearize_fn', 'inverse_linearize_fn'])
+AxisStops = namedtuple('AxisStops', ['stops', 'scale', 'linearize_fn', 'inverse_linearize_fn'])
 
 def linspace(low, high, fineness):
     """Simple wrapper around numpy.linspace with a more easily tunable
@@ -28,6 +29,7 @@ def linspace(low, high, fineness):
         return x
     return AxisStops(np.linspace(low, high, int((high-low)*fineness),
                                   dtype=sinn.config.floatX),
+                     'linear',
                      noop, noop)
 
 
@@ -49,13 +51,14 @@ def logspace(low, high, fineness):
                                      #5*fineness per decade
                                  base=10,
                                  dtype=sinn.config.floatX),
+                     'log',
                      np.log10, pow10)
 
 
 class ParameterSweep:
 
     def __init__(self, model):
-        self.model = model
+        self._model = model
         self.params_to_sweep = []
         self.imports = []
         self.function = None
@@ -77,7 +80,10 @@ class ParameterSweep:
         self.workdir = os.abspath(dirname)
 
     def add_param(self, name, axis_stops, idx=None):
-        self.params_to_sweep.append(HeatMap.ParameterAxis(name, axis_stops.stops, idx, axis_stops.linearize_fn, axis_stops.inverse_linearize_fn))
+        if name not in self._model.Parameters._fields:
+            raise ValueError("ParameterSweep: {} is not a model parameter."
+                             .format(name))
+        self.params_to_sweep.append(HeatMap.ParameterAxis(name, axis_stops.stops, idx, axis_stops.scale, axis_stops.linearize_fn, axis_stops.inverse_linearize_fn))
         self.shape += (len(axis_stops.stops),)
 
     def set_function(self, function, label):
@@ -95,7 +101,7 @@ class ParameterSweep:
     def do_sweep(self, output_filename, ippclient=None):
 
         # variables that will be defined in the engine processes
-        model = self.model
+        model = self._model
         params_to_sweep = self.params_to_sweep
 
         # Create a logger interface
@@ -116,16 +122,15 @@ class ParameterSweep:
         def f(param_tuples):
 
             # First update the model with the new parameters
-            loginfo("Updating model with new parameters {}".format(param_tuples))
             # `model` is a global variable in the process module.
             # It must be initialized before calls to f()
-            new_params = model.params
+            new_params = copy(model.params)
             for param, val in zip(params_to_sweep, param_tuples):
                 if param.idx is None:
                     param_val = val
                 else:
                     try:
-                        param_val = getattr(new_params, param.name)
+                        param_val = copy(getattr(new_params, param.name))
                     except AttributeError:
                         raise ValueError(
                             "You are trying to sweep over the parameter "
@@ -133,6 +138,11 @@ class ParameterSweep:
                             .format(param.name, str(model)))
                     try:
                         param_val[param.idx] = val
+                        # I don't understand why, but if param_val and/or
+                        # new_params aren't explicitly copied, this
+                        # assignment sets *all* their values to val.
+                        # The kernel then thinks it hasn't changed and
+                        # doesn't update itself.
                     except IndexError:
                         # The parameter might have an extra dimension
                         # for broadcasting – try without it
@@ -144,7 +154,7 @@ class ParameterSweep:
                         else:
                             # Nope, param.idx really is incompatible
                             raise
-                new_params._replace(**{param.name: param_val})
+                new_params = new_params._replace(**{param.name: param_val})
             model.update_params(new_params)
             if hasattr(model, 'initialize'):
                 model.initialize()
@@ -161,7 +171,7 @@ class ParameterSweep:
 
             ippclient[:].scatter('idnum', ippclient.ids, flatten=True, block=True)
             # Push the model to each engine's <globals> namespace
-            ippclient[:].push({'model': self.model,
+            ippclient[:].push({'model': self._model,
                                'params_to_sweep': self.params_to_sweep})
 
             # # Set up logger
@@ -186,6 +196,8 @@ class ParameterSweep:
         res = HeatMap(self.function_label, res_arr, self.params_to_sweep)
 
         io.save(output_filename, res)
+
+        return res
 
 def monitor_async_result(async_result):
     # Based on http://stackoverflow.com/a/40975521

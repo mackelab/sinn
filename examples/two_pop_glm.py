@@ -22,7 +22,7 @@ import sinn.histories as histories
 from sinn.models.glm import GLM_exp_kernel as GLM
 import sinn.models.noise as noise
 import sinn.iotools as io
-import sinn.analyze.analyze as anlz
+import sinn.analyze as anlz
 import sinn.analyze.sweep as sweep
 
 logger = logging.getLogger('two_pop_srm')
@@ -38,33 +38,36 @@ _DEFAULT_POSTERIORFILE = name + "_logposterior" + ext
 #import dill
 #dill.settings['recurse'] = True
 
-def init_spiking_model():
+def init_activity_model():
     model_params = GLM.Parameters(
         N = np.array((500, 100)),
         c = (2, 2),
         J = ((3, -6), (6, 0)),
         τ = (0.01, 0.08)
         )
-    hist_params = {'t0': 0,
-                   'tn': 4,
-                   'dt': 0.001}
+    Ahist = histories.Series(name='A',
+                             shape=(len(model_params.N),),
+                             t0 = 0,
+                             tn = 4,
+                             dt = 0.001)
 
     # Noisy input
 
     rndstream = shim.RandomStreams(seed=314)
     noise_params = noise.GaussianWhiteNoise.Parameters(
-        std = (2, 2),
+        std = (.000003, .000003),
         shape = (2,)
         )
-    noise_hist = histories.Series(name='ξ', shape=model_params.N.shape, **hist_params)
+    noise_hist = histories.Series(Ahist, name='ξ', shape=model_params.N.shape)
     noise_model = noise.GaussianWhiteNoise(noise_params, noise_hist, rndstream)
+    def input_fn(t):
+        res = 2 + 2*shim.lib.sin(t*2*np.pi) + noise_hist[t]
+        return res
 
-    input_hist = histories.Series(name='I', shape=model_params.N.shape, **hist_params)
-    input_hist.set_update_function(lambda t: lib.sin(t/2/np.pi) + noise_hist[t])
+    input_hist = histories.Series(Ahist, name='I', shape=model_params.N.shape, iterative=False)
+    input_hist.set_update_function(input_fn)
 
     # GLM activity model
-
-    Ahist = histories.Series('A', shape=(len(model_params.N),), **hist_params)
 
     activity_model = GLM(model_params, Ahist, input_hist, rndstream)
 
@@ -72,34 +75,23 @@ def init_spiking_model():
 
 def generate(filename = _DEFAULT_DATAFILE):
     logger.info("Generating data...")
-    compute_data = True
     try:
         # Try to load precomputed data
         activity_model = io.load(filename)
     except FileNotFoundError:
-        pass
-    else:
-        compute_data = False
-
-    if compute_data:
         # Data don't exist, so compute them
-        spiking_model = init_spiking_model()
-        spiking_model.spikehist.compute_up_to(-1)
-        spiking_model.A.set()  # Ensure all time points are computed
+        activity_model = init_activity_model()
+        activity_model.A.compute_up_to(-1)
+        activity_model.A.set()  # Ensure all time points are computed
 
         # Save the new data
-        io.save(filename, spiking_model)
+        io.save(filename, activity_model)
 
         logger.info("Done.")
     else:
         logger.info("Data already exists. Skipping.")
 
-    # try:
-    #     plot_activity(spiking_model.A)
-    # except Exception as e:
-    #     logger.warn("Unable to plot output. You may need to "
-    #                 "install matplotlib or one of its backends.")
-    #     logger.error("The error raised was: \n{}".format(str(e.args)))
+    return activity_model
 
 def plot_activity(model):
 
@@ -111,7 +103,7 @@ def plot_activity(model):
     plt.subplot(2,1,2)
     anlz.plot(model.I)
 
-    plt.show()
+    plt.show(block=False)
 
 
 def plot_posterior(model_filename = _DEFAULT_DATAFILE,
@@ -132,22 +124,24 @@ def plot_posterior(model_filename = _DEFAULT_DATAFILE,
                                          target_dt)
 
     # Plot the posterior
-    logposterior.set_floor(logposterior.max() - 10)
+    logposterior.cmap = 'viridis'
+    logposterior.set_ceil(logposterior.max())
+    logposterior.set_floor(logposterior.min())
     logposterior.set_norm('linear')
     ax, cb = anlz.plot(logposterior)
         # analyze recognizes logposterior as a heat map, and plots accordingly
         # anlz.plot returns a tuple of all plotted objects. For heat maps there
         # are two: the heat map axis and the colour bar
-    ax.set_xlim((2, 8))
-    ax.set_ylim((0.01, 1))
+    # ax.set_xlim((2, 8))
+    # ax.set_ylim((0.01, 1))
 
-    plt.show()
+    plt.show(block=False)
     return
 
 
 def compute_posterior(target_dt,
+                      activity_model = None,
                       output_filename=_DEFAULT_POSTERIORFILE,
-                      model_filename=_DEFAULT_DATAFILE,
                       ipp_url_file=None, ipp_profile=None):
     """
     […]
@@ -163,46 +157,38 @@ def compute_posterior(target_dt,
     --------
     sinn.HeatMap
     """
-    try:
-        # Try to load precomputed data
-        activity_model = io.load(model_filename)
-    except FileNotFoundError:
-        raise FileNotFoundError("Unable to find data file. To create one, run "
-                                "`generate` – this is required to compute the posterior.")
+    if activity_model is None:
+        try:
+            # Try to load precomputed data
+            activity_model = io.load(_DEFAULT_DATAFILE)
+        except FileNotFoundError:
+            raise FileNotFoundError("Unable to find data file {}. To create one, run "
+                                    "`generate` – this is required to compute the posterior."
+                                    .format(_DEFAULT_DATAFILE))
 
     logger.info("Computing log posterior...")
     try:
-        logposterior = io.load(filename)
+        logposterior = io.load(output_filename)
     except FileNotFoundError:
         pass
     else:
         logger.info("Log posterior already computed. Skipping.")
         return logposterior
 
-    Ihist =spiking_model.I
+    Ihist = activity_model.I
 
-    # Initialize the SRM activity model
-    params = spiking_model.params
-    activity_model = srm.Activity(params,
-                                  activity_history = Ahist,
-                                  activity_mean_history = ahist,
-                                  input_history = Ihist)
-
-    activity_model.set_init_occupation_numbers('quiescent')
-    # Construct the arrays of parameters to try
-    fineness = 1
-    burnin = 0#0.5
+   # Construct the arrays of parameters to try
+    fineness = .5
+    burnin = 0.5
     data_len = 4.0
     param_sweep = sweep.ParameterSweep(activity_model)
-    Js_sweep = sweep.linspace(-1, 10, fineness)
-    # τa_sweep = sweep.logspace(0.001, 1, fineness)
-    τm_sweep = sweep.logspace(0.0005, 0.5, fineness)
-    param_sweep.add_param('J', idx=(0,0), axis_stops=Js_sweep)
-    param_sweep.add_param('τ', idx=(1,), axis_stops=τm_sweep)
+    J_sweep = sweep.linspace(-1, 10, fineness)
+    τ_sweep = sweep.logspace(0.0005, 0.5, fineness)
+    param_sweep.add_param('J', idx=(0,0), axis_stops=J_sweep)
+    param_sweep.add_param('τ', idx=(1,), axis_stops=τ_sweep)
     def f(model):
         return model.loglikelihood(burnin, burnin + data_len)
     param_sweep.set_function(f, 'log $L$')
-
 
     # timeout ipp.Client after 3 seconds
     if ipp_url_file is not None:
@@ -221,8 +207,8 @@ def compute_posterior(target_dt,
             with sinn.timeout(3):
                 ippclient = ipp.Client(profile=ipp_profile)
         except TimeoutError:
-            logger.info("Unable to connect to ipyparallel controller." 
-                        "Profile '" + ipp_profile + "'")
+            logger.info("Unable to connect to ipyparallel controller with "
+                        "profile '" + ipp_profile + ".'")
             ippclient = None
         else:
             logger.info("Connected to ipyparallel controller for profile '" + ipp_profile + "'.")
@@ -233,25 +219,37 @@ def compute_posterior(target_dt,
         # Initialize the environment in each cluster process
         ippclient[:].use_dill().get()
             # More robust pickling
-        # ippclient[:].execute("import sinn")
-        # ippclient[:].execute("import sinn.models.srm")
-        # ippclient[:].execute("import sinn.kernels")
-        # ippclient[:].execute("import sinn.histories")
-        # ippclient[:].execute("from sinn.models.srm import Kkernel")
 
     # Compute the posterior
     logposterior = param_sweep.do_sweep(output_filename, ippclient)
-        # This can take a long time
-        # The result will be saved in output_filename
+            # This can take a long time
+            # The result will be saved in output_filename
 
     return logposterior
 
-
 def main():
     activity_model = generate()
+    plt.ioff()
+    plt.figure()
     plot_activity(activity_model)
-    compute_posterior(0.002, ipp_profile="default")
-    plot_posterior()
+    true_params = {'J': activity_model.params.J[0,0],
+                   'τ': activity_model.params.τ[0,1]}
+        # Save the true parameters before they are modified by the sweep
+    activity_model.A.lock = True
+    activity_model.I.lock = True
+        # Locking A and I prevents them from being cleared when the
+        # parameters are updated (by default updating parameters
+        # reinitializes histories). It also triggers a RuntimeError if
+        # an attempt is made to modify A or I, indicating a code error.
+    logposterior = compute_posterior(0.002, activity_model, ipp_profile="default")
+    plt.figure()
+    plot_posterior(logposterior)
+    color = anlz.plot_styles.color_schemes.map[logposterior.cmap].white
+    plt.axvline(true_params['J'], c=color)
+    plt.axhline(true_params['τ'], c=color)
+    plt.show()
+
+    return logposterior
 
 if __name__ == "__main__":
     main()

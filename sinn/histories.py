@@ -38,6 +38,7 @@ class History(HistoryBase):
         + t0               : Time at which history starts
         + tn               : Time at which history ends
         + dt               : Timestep size
+        + lock             : Whether modifications to history are allowed
         + _tarr            : Ordered array of all time bins
         + _cur_tidx        : Tracker for the latest time bin for which we know history.
         + _update_function : Function taking a time and returning the history
@@ -86,6 +87,9 @@ class History(HistoryBase):
         value: timeslice
             The timeslice to store.
         '''
+        if self.lock:
+            raise RuntimeError("Tried to modify locked history {}."
+                               .format(self.name))
 
     def pad(self, before, after=0):
         '''Extend the time array before and after the history. If called
@@ -102,6 +106,8 @@ class History(HistoryBase):
         '''
         self.pad_time(before, after)
         […]
+
+    All methods which modify the history (update, set, clear, compute_up_to) must raise a RuntimeError if `lock` is True.
 
     Derived classes **may** also implement the following methods:
 
@@ -186,6 +192,10 @@ class History(HistoryBase):
             name = "history{}".format(self.instance_counter)
         # Grab defaults from the other instance:
         if hist is not sinn._NoValue:
+            if not isinstance(hist, History):
+                raise ValueError("The first parameter to the History initializer, "
+                                 "if given, must be another history instance. "
+                                 "All other parameters should use keywords.")
             if t0 is sinn._NoValue:
                 t0 = hist.t0
             if tn is sinn._NoValue:
@@ -220,6 +230,8 @@ class History(HistoryBase):
             # Set a default function that will raise an error when called
             def f(*arg):
                 raise RuntimeError("The update function for {} is not set.".format(self))
+        self.lock = False
+            # When this is True, the history is not allowed to be changed
         self._update_function = f
         self._compute_range = None
         self._iterative = iterative
@@ -301,6 +313,9 @@ class History(HistoryBase):
         *Note* If this history is part of a model, you should use that
         model's `clear_history` method instead.
         """
+        if self.lock:
+            raise RuntimeError("Tried to modify locked history {}."
+                               .format(self.name))
         self._cur_tidx = self.t0idx - 1
         try:
             super().clear()
@@ -386,6 +401,11 @@ class History(HistoryBase):
 
     def compute_up_to(self, tidx):
         """Compute the history up to `tidx` inclusive."""
+
+        if self.lock:
+            raise RuntimeError("Tried to modify locked history {}."
+                               .format(self.name))
+
         shim.check(shim.istype(tidx, 'int'))
         start = self._cur_tidx + 1
         stop = shim.ifelse(tidx >= 0,
@@ -407,7 +427,7 @@ class History(HistoryBase):
                         "so computing all times simultaneously."
                         .format(self.name, self._tarr[tidx]))
             self.update(slice(start,stop),
-                        self._update_function(self._tarr[time_slice]))
+                        self._update_function(self._tarr[slice(start,stop)]))
         else:
             logger.info("Iteratively computing {} up to {}."
                         .format(self.name, self._tarr[tidx]))
@@ -526,7 +546,7 @@ class History(HistoryBase):
                                         "(int), but the value is too large to ensure the absence "
                                         "of numerical errors. Try using a higher precision type.")
                     t_idx = (t - self._tarr[0]) / self.dt
-                    r_t_idx = round(t_idx)
+                    r_t_idx = np.round(t_idx)
                     if abs(t_idx - r_t_idx) > config.get_abs_tolerance(t) / self.dt:
                         print("t: {}, t0: {}, t-t0: {}, t_idx: {}, dt: {}"
                             .format(t, self._tarr[0], t - self._tarr[0], t_idx, self.dt) )
@@ -770,10 +790,13 @@ class Spiketimes(ConvolveMixin, History):
             self.spike_times = [ deque([init_data])
                                  for neuron_idx in range(np.sum(self.pop_sizes)) ]
 
-    def reset(self, init_data=-np.inf):
+    def clear(self, init_data=-np.inf):
         """Spiketrains can't just be invalidated, they really have to be cleared."""
+        if self.lock:
+            raise RuntimeError("Tried to modify locked history {}."
+                               .format(self.name))
         self.initialize(init_data)
-        super().reset()
+        super().clear()
 
     def retrieve(self, key):
         '''A function taking either an index or a splice and returning respectively
@@ -831,6 +854,10 @@ class Spiketimes(ConvolveMixin, History):
         neuron_idcs: iterable
             List of neuron indices that fired in this bin.
         '''
+        if self.lock:
+            raise RuntimeError("Tried to modify locked history {}."
+                               .format(self.name))
+
         newidx = self.get_t_idx(tidx)
         shim.check(newidx <= self._cur_tidx + 1)
 
@@ -875,6 +902,9 @@ class Spiketimes(ConvolveMixin, History):
         provided it has been previously defined. Can be used to force
         computation of the whole series.
         """
+        if self.lock:
+            raise RuntimeError("Tried to modify locked history {}."
+                               .format(self.name))
 
         tarr = self._tarr
 
@@ -1053,6 +1083,10 @@ class Series(ConvolveMixin, History):
             the form `(value, updates)`, where `updates` is a Theano
             update dictionary.
         '''
+        if self.lock:
+            raise RuntimeError("Tried to modify locked history {}."
+                               .format(self.name))
+
         assert(not config.use_theano
                or not isinstance(tidx, theano.gof.Variable))
             # time indices must not be variables
@@ -1190,13 +1224,13 @@ class Series(ConvolveMixin, History):
             raise ValueError("include_padding should be one of {}.".format(padding_vals))
 
         if component is None:
-            return self._data[start:stop]
+            return self[start:stop]
         elif shim.istype(component, 'int'):
-            return self._data[start:stop, component]
+            return self[start:stop, component]
         elif len(component) == 1:
-            return self._data[start:stop, component[0]]
+            return self[start:stop, component[0]]
         elif len(component) == 2:
-            return self._data[start:stop, component[0], component[1]]
+            return self[start:stop, component[0], component[1]]
         else:
             raise NotImplementedError("Really, you used more than 2 data dimensions in a series array ? Ok, well let me know and I'll implement that.")
 
@@ -1220,6 +1254,9 @@ class Series(ConvolveMixin, History):
         provided it has been previously defined. Can be used to force
         computation of the whole series.
         """
+        if self.lock:
+            raise RuntimeError("Tried to modify locked history {}."
+                               .format(self.name))
 
         data = None
 
@@ -1276,6 +1313,9 @@ class Series(ConvolveMixin, History):
         """Refresh data to allow a new call returning theano variables.
         `new_data` should not be a complex type, like the result of a `scan`
         """
+        if self.lock:
+            raise RuntimeError("Tried to modify locked history {}."
+                               .format(self.name))
         self._data = new_data
         self._original_data = None
         super.theano_reset()
@@ -1331,11 +1371,11 @@ class Series(ConvolveMixin, History):
                     "When trying to compute the convolution at {}, we calculated "
                     "a starting point preceding the history's padding. Is it "
                     "possible you specified time as an integer instead of a float ? "
-                    "Floats are treated as times, while integers are treated as time indices."
+                    "Floats are treated as times, while integers are treated as time indices. "
                     .format(tidx))
             dim_diff = discretized_kernel.ndim - self.ndim
             return self.dt * lib.sum(discretized_kernel[kernel_slice][::-1]
-                                         * shim.add_axes(self[hist_slice], dim_diff, -self.ndim),
+                                     * shim.add_axes(self[hist_slice], dim_diff, -self.ndim),
                                      axis=0)
                 # history needs to be augmented by a dimension to match the kernel
                 # Since kernels are [to idx][from idx], the augmentation has to be on

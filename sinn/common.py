@@ -12,16 +12,16 @@ import numpy as np
 from collections import namedtuple, deque
 
 import theano_shim as shim
-import sinn
+from . import config
 #import sinn.config as config
 import sinn.diskcache as diskcache
-floatX = sinn.config.floatX
+floatX = config.floatX
 lib = shim.lib
 
 # Configure logger
 # See e.g. https://docs.python.org/3/howto/logging-cookbook.html
 logger = logging.getLogger('sinn')
-logger.setLevel(sinn.config.logLevel)
+logger.setLevel(config.logLevel)
 _fh = logging.handlers.RotatingFileHandler(
       os.path.basename(sys.argv[0]) + "_" + str(os.getpid()) + ".sinn.log", mode='w', maxBytes=5e7, backupCount=5)
     # ~50MB log files, keep at most 5
@@ -34,11 +34,22 @@ _ch.setFormatter(_logging_formatter)
 logger.addHandler(_fh)
 logger.addHandler(_ch)
 
+def clip_probabilities(prob_array,
+                       min_prob = config.abs_tolerance,
+                       max_prob = 1-config.abs_tolerance):
+    if not config.use_theano:
+        if np.any(prob_array > max_prob) or np.any(prob_array < min_prob):
+            logger.warning("Some probabilities were clipped.")
+    return lib.clip(prob_array, min_prob, max_prob)
+        # Clipping a little bit within the interval [0,1] avoids problems
+        # with likelihoods (which tend to blow up when p = 0 or 1)
+
+
 class HistoryBase:
 
     def __init__(self, t0, tn):
-        self.t0 = sinn.config.cast_floatX(t0)
-        self.tn = sinn.config.cast_floatX(tn)
+        self.t0 = config.cast_floatX(t0)
+        self.tn = config.cast_floatX(tn)
         self._tarr = None # Implement in child classes
 
     def get_time(self, t):
@@ -171,7 +182,7 @@ class OpCache:
                         k += 1
 
                 # Create the new data cache
-                if sinn.config.use_theano:
+                if config.use_theano:
                     assert(self.old_cache is None)
                     # Keep the old cache in memory, otherwise updates mechanism will break
                     self.old_cache[hash(other)] = self.cache[hash(other)].data
@@ -196,6 +207,7 @@ class OpCache:
 ##################################
 
 # TODO: Subclass? namedtuple to have the casting done on instantiation (rather than when intialization the class it's attached to)
+# This would also allow defining __eq__ to deal with numpy arrays
 
 #Parameter = namedtuple('Parameter', ['name', 'cast_function', 'default'])
 #Parameter.__new__.__defaults__ = [None]
@@ -215,6 +227,22 @@ def define_parameters(param_dict):
                                               for key in keys ])
         # http://stackoverflow.com/a/18348004
     return Parameters
+
+def params_are_equal(params1, params2):
+    if set(params1._fields) != set(params2._fields):
+        log.warning("Comparing parameter sets for equality that don't even have the same fields.")
+        return False
+    for field in params1._fields:
+        attr1 = getattr(params1, field)
+        attr2 = getattr(params2, field)
+        if type(attr1) != type(attr2):
+            log.error("The attributes {} in two different parameter sets are not even of the same type: {}({}), {}({}). This is almost certainly an error."
+                      .format(field, str(attr1), str(type(attr1)),
+                              str(attr2), str(type(attr2))))
+            return False
+        if np.any(attr1 != attr2):
+            return False
+    return True
 
 def make_shared_tensor_params(params):
     TParameters = namedtuple('TParameters', params._fields)
@@ -293,7 +321,18 @@ class ParameterMixin:
         #                     "requires a `params` argument.")
         self.set_parameters(params)
 
-    def set_parameters(self, params):
+    def cast_parameters(self, params):
+        """
+        Take parameters and cast them to the defined shape and type.
+
+        Parameters
+        ----------
+        params: namedtuple
+
+        Returns
+        -------
+        namedtuple
+        """
         assert(self.parameters_are_valid(params))
 
         # Cast the parameters to ensure they're of prescribed type
@@ -311,8 +350,10 @@ class ParameterMixin:
                     pass
             else:
                 param_dict[key] = np.asarray(getattr(params, key), dtype=self.Parameter_info[key])
+        return self.Parameters(**param_dict)
 
-        self.params = self.Parameters(**param_dict)
+    def set_parameters(self, params):
+        self.params = self.cast_parameters(params)
 
 
     def parameters_are_valid(self, params):

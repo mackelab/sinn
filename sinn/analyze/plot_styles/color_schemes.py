@@ -1,6 +1,6 @@
 from collections import namedtuple
 
-qualitative = {
+property_cycles = {
     'dark pastel': ['#1e6ea7', '#9d3a11']
     }
 

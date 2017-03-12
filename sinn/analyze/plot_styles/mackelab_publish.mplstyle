@@ -2,3 +2,6 @@
 # plt.style.use(['mackelab_default.mplstyle', 'mackelab_publish.mplstyle']
 
 font.size: 6
+
+# dark-text options
+text.color: 4f6066
