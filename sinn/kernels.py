@@ -17,8 +17,6 @@ import sinn.config as config
 import sinn.mixins as mixins
 import sinn.diskcache as diskcache
 
-floatX = config.floatX
-lib = shim.lib
 ConvolveMixin = mixins.ConvolveMixin
 ParameterMixin = com.ParameterMixin
 
@@ -54,7 +52,10 @@ def checkcache(init):
 class Kernel(ConvolveMixin, ParameterMixin):
     """Generic Kernel class. All kernels should derive from this.
     Kernels associated to histories with shape (M,) should have shape (M,M),
-    with indexing following kernel[to idx][from idx].
+    with indexing following kernel[to idx][from idx]. (See below for caveats.)
+
+    Derived kernels must implement `_eval_f`. They should NOT implement `eval`.
+    They should probably also implement `__init__` and `_convolve_single_t`.
 
     IMPORTANT OPTIMIZATION NOTE:
     If you only need the diagonal of the kernel (because it only depends
@@ -115,7 +116,10 @@ class Kernel(ConvolveMixin, ParameterMixin):
         if hasattr(self, 'eval'):
             # Sanity test on the eval method
             try:
-                self.shape_output(self.eval(0))
+                eval_at_0 = shim.get_test_value(self.eval(0), nofail=True)
+                    # get_test_value returns None if eval(0) is a Theano var with no test value
+                if eval_at_0 is not None:
+                    self.shape_output(eval_at_0)
             except (AssertionError, ValueError):
                 raise ValueError("The parameters to the kernel's evaluation "
                                  "function seem to have incompatible shapes. "
@@ -136,7 +140,7 @@ class Kernel(ConvolveMixin, ParameterMixin):
         if not shim.isscalar(t):
             t = shim.add_axes(t, self.params[0].ndim-1, 'right')
                 # FIXME: This way of fixing t dimensions is not robust
-        return self._eval_f(t, from_idx)
+        return self.shape_output(self._eval_f(t, from_idx))
 
     def _convolve_op_single_t(self, hist, t, kernel_slice):
         return hist._convolve_op_single_t(self, t, kernel_slice)
@@ -150,19 +154,26 @@ class Kernel(ConvolveMixin, ParameterMixin):
         If the output shape matches the kernel's, return it as is.
         If the output shape is "half" the kernel's (e.g. (2,) and (2,2)),
           treat it as a column and repeat it horizontally with tile.
-          This will allocate memory.
+          This will allocate memory. (This option is still experimental.)
         Otherwise, try to reshape it with the kernel's shape.
           This will fail if the number of elements don't match.
         """
-        shim.check(self.shape == output.shape
-                   or self.shape == output.shape*2
-                   or np.prod(self.shape) == np.prod(output.shape))
-        shim.ifelse(output.shape == self.shape,
-                    output,
-                    shim.ifelse(self.shape == output.shape*2,
-                                lib.tile(shim.add_axes(output, output.ndim).T,
-                                         (1,)*output.ndim + output.shape),
-                                output.reshape(self.shape) ) )
+        shim.check(shim.eq(self.shape, output.shape)
+                   or shim.eq(self.shape, output.shape*2)
+                   or shim.eq(np.prod(self.shape), shim.prod(output.shape)))
+        output_ndim = output.ndim # Save in case it gets modified
+        # The second ifelse condition below uses some funky syntax, because
+        # ifelse expects an integer (0/1).
+        return shim.ifelse(shim.all(shim.eq(output.shape, self.shape)),
+                           output.reshape(self.shape),
+                           shim.ifelse(shim.and_(shim.bool(shim.eq(len(self.shape), 2*output_ndim)),
+                                                 shim.all(shim.eq(self.shape,
+                                                                  shim.concatenate((output.shape, output.shape))))),
+                                       shim.tile(shim.add_axes(output, output_ndim).T,
+                                                 (1,)*output_ndim + output.shape,
+                                                 ndim=2*output_ndim),
+                                       output.reshape(self.shape),
+                                       outshape=self.shape) )
 
     # ====================================
     # Caching interface
@@ -268,14 +279,11 @@ class ExpKernel(Kernel):
         self.last_conv = None  # Keep track of the last convolution result
         self.last_hist = None  # Keep track of the history object used for the last convolution
 
-    def eval(self, t, from_idx=slice(None,None)):
-        if not shim.isscalar(t):
-            t = shim.add_axes(t, self.params.t_offset.ndim-1, 'right')
-            # FIXME: This way of fixing t dimension isn't robust
+    def _eval_f(self, t, from_idx=slice(None,None)):
         return shim.switch(shim.lt(t, self.params.t_offset[:,from_idx]),
                            0,
                            self.params.height[:,from_idx]
-                             * lib.exp(-(t-self.params.t_offset[:,from_idx])
+                             * shim.exp(-(t-self.params.t_offset[:,from_idx])
                                        / self.params.decay_const[:,from_idx]) )
             # We can use indexing because ParameterMixin ensures parameters are at least 2D
 
@@ -298,7 +306,7 @@ class ExpKernel(Kernel):
         elif self.last_conv is not None and self.last_hist is hist:
             if t > self.last_t:
                 Δt = t - self.last_t
-                result = ( lib.exp(-hist.time_interval(Δt)/self.params.decay_const)
+                result = ( self.shape_output(shim.lib.exp(-hist.time_interval(Δt)/self.params.decay_const))
                            * self.last_conv
                            + hist.convolve(self, t,
                                            slice(hist.index_interval(self.memory_blind_time),

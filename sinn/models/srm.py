@@ -18,7 +18,6 @@ import sinn.kernels as kernels
 import sinn.models as models
 import sinn.models.common
 
-lib = shim.lib
 Model  = models.common.Model
 ModelKernelMixin = models.common.ModelKernelMixin
 Kernel = kernels.Kernel
@@ -38,7 +37,7 @@ class K(ModelKernelMixin, kernels.ExpKernel):
             t_offset    = model_params.τs )
         return κparams
     def update_params(self, model_params):
-        assert(self.t0 == lib.min(model_params.τs))
+        assert(self.t0 == shim.lib.min(model_params.τs))
         return super().update_params(model_params)
 
 class SRMBase(Model):
@@ -83,7 +82,7 @@ class SRMBase(Model):
         # (We shamelessly abuse of unicode support for legibility)
         self.JsᕽAᐩI = histories.Series(self.A, "JsᕽAᐩI",
                                     shape = self.A.shape,
-                                    f = lambda t: lib.dot(params.Js, self.A[t]) + self.I[t])
+                                    f = lambda t: shim.lib.dot(params.Js, self.A[t]) + self.I[t])
                                                               # NxN  dot  N   +  N
         self.cache(self.JsᕽAᐩI)
         self.JsᕽAᐩI._cur_tidx
@@ -102,7 +101,7 @@ class SRMBase(Model):
         ##########################################
         # Model memory time & padding
         #########################################
-        self.memory_time = self.κ.memory_time if memory_time is None else lib.max(self.κ.memory_time, memory_time)
+        self.memory_time = self.κ.memory_time if memory_time is None else shim.lib.max(self.κ.memory_time, memory_time)
         #self.a.pad()
         #self.A.pad()
 
@@ -140,19 +139,19 @@ class SRMBase(Model):
         # start_idcs = len(t) - abs_refrac_idx_len
             # The time array is flipped, so the start idx of the absolute refractory
             # period is at the end.
-        # self.η = shim.ifelse(lib.any(shim.gt(abs_refrac_idx_len, 0)),
-        #                      lib.stack( [ shim.set_subtensor(ηr[start_idx:,i], shim.inf)
+        # self.η = shim.ifelse(shim.lib.any(shim.gt(abs_refrac_idx_len, 0)),
+        #                      shim.lib.stack( [ shim.set_subtensor(ηr[start_idx:,i], shim.inf)
         #                                   for i, start_idx in enumerate(start_idcs) ] ),
         #                      ηr)
 
         # MOST RECENTLY COMMENTED OUT
-        # retval = lib.stack(
+        # retval = shim.lib.stack(
         #     [ shim.switch(t >= self.params.τabs,
-        #                   self.params.Jr * lib.exp(-(t-self.params.τabs)/self.params.τm),
+        #                   self.params.Jr * shim.lib.exp(-(t-self.params.τabs)/self.params.τm),
         #                   shim.inf)
         #       for t in tarr.flatten() ] )
         retval = shim.switch(tarr >= self.params.τabs,
-                          self.params.Jr * lib.exp(-(tarr-self.params.τabs)/self.params.τm),
+                          self.params.Jr * shim.lib.exp(-(tarr-self.params.τabs)/self.params.τm),
                           shim.inf)
 
             # Both Jr and the τ should be indexed as [to idx][from idx], so
@@ -161,7 +160,7 @@ class SRMBase(Model):
             # If there's more than one kernel dimension, we need to contract the result
             if kernel_dims > 2:
                 raise NotImplementedError
-            retval = lib.sum(retval, axis=-1)
+            retval = shim.lib.sum(retval, axis=-1)
 
         return retval
 
@@ -214,7 +213,7 @@ class Activity(SRMBase):
         # TODO Make these kernels DiscreteKernel's, and add to list to update
         # TODO Common initialize function ?
         η_finite_t = self.η_fn(tarr_η)
-        self.η = lib.concatenate((np.zeros((1,) + η_finite_t.shape[1:]), # ∞-bin
+        self.η = shim.lib.concatenate((np.zeros((1,) + η_finite_t.shape[1:]), # ∞-bin
                                   η_finite_t))  # rest
         super().update_params(model_params)
 
@@ -275,12 +274,12 @@ class Activity(SRMBase):
 
         # Calculate the kernel
         η_finite_t = self.η_fn(tarr_η)
-        self.η = lib.concatenate((np.zeros((1,) + η_finite_t.shape[1:]), # ∞-bin
+        self.η = shim.lib.concatenate((np.zeros((1,) + η_finite_t.shape[1:]), # ∞-bin
                                   η_finite_t))  # rest
 
-       # self.η = shim.ifelse(lib.any(shim.gt(abs_refrac_idx_len, 0)),
-        #                      lib.stack(
-        #                          [ lib.stack(
+       # self.η = shim.ifelse(shim.lib.any(shim.gt(abs_refrac_idx_len, 0)),
+        #                      shim.lib.stack(
+        #                          [ shim.lib.stack(
         #                             [ shim.set_subtensor(ηr[start_idx:,i,j], shim.inf)
         #                                for j, start_idx in enumerate(start_idx_row) ] )
         #                             for i, start_idx_row in enumerate(start_idcs) ] ),
@@ -349,7 +348,7 @@ class Activity(SRMBase):
             self._init_occN[1:] = self.params.N / M
         else:
             self._init_occN[1:] = init_occN
-            shim.check(lib.sum(self.occN[1:]) == self.params.N)
+            shim.check(shim.lib.sum(self.occN[1:]) == self.params.N)
 
     def initialize(self):
         """
@@ -379,7 +378,7 @@ class Activity(SRMBase):
         # (occN[0] is a superfluous bin used to store an
         #  intermediate value – don't use it except in next line)
         # ( superfluous bin => len(occN) = len(ρ) + 1 )
-        new_occN = lib.concatenate(
+        new_occN = shim.lib.concatenate(
                            (occN[1:] - last_normalized_E_bin_spikes, # * last_spike_count,
                             shim.add_axes(last_spike_count, 1, 'before')),
                            axis=0)
@@ -397,20 +396,20 @@ class Activity(SRMBase):
         θ = self.η
 
         # Update h
-#        h = lib.sum( self.κ.convolve(JsᕽAᐩI, t), axis=1 )
+#        h = shim.lib.sum( self.κ.convolve(JsᕽAᐩI, t), axis=1 )
             # Kernels are [to idx][from idx], so to get the total contribution to
             # population i, we sum over axis 1 (the 'from indices')
         h = shim.add_axes(self.κ.convolve(JsᕽAᐩI, t), 1, 'before')
             # Add an axis for the θ lags
 
         # Update ρ
-        ρ = self.params.c * lib.exp(h - θ)
+        ρ = self.params.c * shim.lib.exp(h - θ)
 
         # Compute the new a(t)
         # In the writeup we set axis=1, because we sum once for the entire
         # series, so t is another dimension
         E_bin_spikes = self.a.dt * ρ * occN[1:]
-        E_spikes = lib.sum(E_bin_spikes, axis=0, keepdims=True)
+        E_spikes = shim.lib.sum(E_bin_spikes, axis=0, keepdims=True)
         normalized_E_bin_spikes = E_bin_spikes #/ E_spikes
 
         return E_spikes[0], normalized_E_bin_spikes
@@ -455,7 +454,7 @@ class Activity(SRMBase):
         new_a = new_a / self.a.dt / self.params.N
             # a_onestep_2nd_half actually returns a spike count: convert to activity
 
-        if not config.use_theano:
+        if not config.use_theano():
 
             self.a.update(self.a.get_t_idx(t_array[0]), new_a)
             self.normalized_E_bin_spikes.set_value(new_nEbs)
@@ -496,7 +495,7 @@ class Activity(SRMBase):
             # Reassign the output to the original shared variable
             updates[self.normalized_E_bin_spikes] = updates.pop(new_nEbs)
             # Include the originally calculated a in the returned value
-            returned_a = lib.concatenate((shim.add_axes(new_a, 1, 'before'), res_a),
+            returned_a = shim.lib.concatenate((shim.add_axes(new_a, 1, 'before'), res_a),
                                        axis = 0)
 
             return returned_a, updates
@@ -504,7 +503,7 @@ class Activity(SRMBase):
     def A_update(self, t):
         return self.rndstream.normal(size=self.A.shape,
                                      avg=self.a[t],
-                                     std=lib.sqrt(self.a[t]/self.params.N/self.A.dt))
+                                     std=shim.lib.sqrt(self.a[t]/self.params.N/self.A.dt))
 
     def update_params(self, new_params):
         """Change parameter values, and refresh the affected kernels."""
@@ -516,10 +515,10 @@ class Activity(SRMBase):
         astop = self.a.get_t_idx(data_end) + 1
         Astop = self.A.get_t_idx(data_end) + 1
 
-        return - ( lib.sum(lib.log(self.a[astart:astop]))
+        return - ( shim.lib.sum(shim.lib.log(self.a[astart:astop]))
                    + self.a.dt
-                     * lib.sum( self.params.N
-                                * lib.sum( ( self.A[Astart:Astop]
+                     * shim.lib.sum( self.params.N
+                                * shim.lib.sum( ( self.A[Astart:Astop]
                                                - self.a[astart:astop])**2
                                            / self.a[astart:astop],
                                           axis=0, keepdims=True) ) )
@@ -555,7 +554,7 @@ class Spiking(SRMBase):
                 t_offset = model_params.τabs )
             return ηparams
         def update_params(self, model_params):
-            assert(self.t0 == lib.min(model_params.τabs))
+            assert(self.t0 == shim.lib.min(model_params.τabs))
                 # Should not change t0
             return super().update_params(model_params)
 
@@ -564,7 +563,7 @@ class Spiking(SRMBase):
         def get_kernel_params(model_params):
             return None # No parameters
         def update_params(self, model_params):
-            assert(lib.max(self.memory_time) == lib.max(self.params.τabs))
+            assert(shim.lib.max(self.memory_time) == shim.lib.max(self.params.τabs))
             # No params => nothing to do
 
     def __init__(self, params,
@@ -595,11 +594,11 @@ class Spiking(SRMBase):
         self.ηabs = Spiking.Habs('ηabs',
                               shape       = (len(params.N),),
                               f           = self.ηabs_fn,
-                              memory_time = lib.max(params.τabs),
+                              memory_time = shim.lib.max(params.τabs),
                               t0          = 0 )
         self.cache(self.ηabs)
 
-        self.memory_time = lib.max((self.memory_time, self.ηr.memory_time + self.ηabs.memory_time))
+        self.memory_time = shim.lib.max((self.memory_time, self.ηr.memory_time + self.ηabs.memory_time))
 
         self.A.pad(self.memory_time)
         self.spikehist.pad(self.memory_time)
@@ -631,12 +630,12 @@ class Spiking(SRMBase):
         assert(h.shape == self.spikehist.pop_sizes.shape)
 
         # Compute ρ
-        ρ = lib.concatenate(
-              [ self.params.c[i] * lib.exp(h[i] - θ[slc])
+        ρ = shim.lib.concatenate(
+              [ self.params.c[i] * shim.lib.exp(h[i] - θ[slc])
                 for i, slc in enumerate(self.spikehist.pop_slices) ] )
 
         # Decide which neurons spike
-        bin_spikes = lib.nonzero( self.spikehist.dt * ρ
+        bin_spikes = shim.lib.nonzero( self.spikehist.dt * ρ
                                   > self.rndstream.uniform(ρ.shape) )
         shim.check(len(bin_spikes) == 1)
         return bin_spikes[0]
@@ -644,5 +643,5 @@ class Spiking(SRMBase):
     def A_update(self, t):
         spikevec = self.spikehist[t]
             # The vector must be constructed, so avoid calling multiple times
-        return lib.stack(
-            [ lib.sum(spikevec[slc]) for slc in self.spikehist.pop_slices ] )
+        return shim.lib.stack(
+            [ shim.lib.sum(spikevec[slc]) for slc in self.spikehist.pop_slices ] )

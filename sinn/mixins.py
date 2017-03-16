@@ -9,8 +9,6 @@ import numpy as np
 import theano_shim as shim
 import sinn.common as com
 import sinn.config as config
-floatX = config.floatX
-lib = shim.lib
 
 class CachedOperation:
     """All op mixins which contain an OpCache object should inherit
@@ -117,10 +115,13 @@ class ConvolveMixin(CachedOperation):
             len(kernel_slice)
         except TypeError:
             kernel_slice = [kernel_slice]
+            output_scalar = True
+        else:
+            output_scalar = False
         if not isinstance(kernel_slice[0], slice):
             raise ValueError("Kernel bounds must be specified as a slice.")
 
-        if np.isscalar(t):
+        if shim.isscalar(t):
             #tidx = self.get_t_idx(t)
             output_tidx = history.get_t_idx(t) - history.t0idx
                 # TODO: This will break if t doesn't exactly correspond to a bin.
@@ -141,10 +142,11 @@ class ConvolveMixin(CachedOperation):
                     return self._convolve_op_single_t(other, t, slc)
                     #######################################
 
-            retval = lib.stack( [ convolve_single_t(t, slc)
+            retval = shim.lib.stack( [ convolve_single_t(t, slc)
                                   for slc in kernel_slice ] )
 
         else:
+            assert(isinstance(t, slice))
             start = history.t0idx if t.start is None else history.get_t_idx(t.start) - history.t0idx
             stop = history.t0idx + len(history) if t.stop is None else history.get_t_idx(t.stop) - history.t0idx
             output_tidx = slice(start, stop)
@@ -156,7 +158,7 @@ class ConvolveMixin(CachedOperation):
 
             retval = self._conv_cache.ensureget(other, kernel_slice)[:,output_tidx]
 
-        if len(retval) == 1:
+        if output_scalar:
             # Caller only passed a single kernel slice, and so is not
             # expecting the result to be wrapped in a list.
             return retval[0]
@@ -180,7 +182,7 @@ class ConvolveMixin(CachedOperation):
             history = other
             kernel = self
 
-        return lib.stack( [self._convolve_op_single_t(other, t, kernel_slice)
+        return shim.lib.stack( [self._convolve_op_single_t(other, t, kernel_slice)
                            for t in history._tarr[history.t0idx: history.t0idx + len(history)]] )
 
 

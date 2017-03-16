@@ -15,6 +15,9 @@ try:
     import matplotlib.pyplot as plt
 except ImportError:
     logging.warning("Unable to import matplotlib. Plotting won't work.")
+    do_plots = False
+else:
+    do_plots = True
 
 import theano_shim as shim
 import sinn
@@ -35,8 +38,7 @@ _DEFAULT_DATAFILE = "2-pop-glm.dat"
 name, ext = os.path.splitext(_DEFAULT_DATAFILE)
 _DEFAULT_POSTERIORFILE = name + "_logposterior" + ext
 
-#import dill
-#dill.settings['recurse'] = True
+sinn.config.load_theano()
 
 def init_activity_model():
     model_params = GLM.Parameters(
@@ -45,6 +47,7 @@ def init_activity_model():
         J = ((3, -6), (6, 0)),
         τ = (0.01, 0.08)
         )
+    memory_time = 0.553 # What we get with τ=(0.01, 0.08)
     Ahist = histories.Series(name='A',
                              shape=(len(model_params.N),),
                              t0 = 0,
@@ -61,7 +64,10 @@ def init_activity_model():
     noise_hist = histories.Series(Ahist, name='ξ', shape=model_params.N.shape)
     noise_model = noise.GaussianWhiteNoise(noise_params, noise_hist, rndstream)
     def input_fn(t):
-        res = 2 + 2*shim.lib.sin(t*2*np.pi) + noise_hist[t]
+        import numpy as np
+            # Ensure that proper references to dependencies are pickled
+            # This is only necessary for scripts directly called on the cli – imported modules are fine.
+        res = 10 + 10*np.sin(t*2*np.pi) + noise_hist[t]
         return res
 
     input_hist = histories.Series(Ahist, name='I', shape=model_params.N.shape, iterative=False)
@@ -69,7 +75,8 @@ def init_activity_model():
 
     # GLM activity model
 
-    activity_model = GLM(model_params, Ahist, input_hist, rndstream)
+    activity_model = GLM(model_params, Ahist, input_hist, rndstream,
+                         memory_time=memory_time)
 
     return activity_model
 
@@ -81,8 +88,15 @@ def generate(filename = _DEFAULT_DATAFILE):
     except FileNotFoundError:
         # Data don't exist, so compute them
         activity_model = init_activity_model()
-        activity_model.A.compute_up_to(-1)
-        activity_model.A.set()  # Ensure all time points are computed
+        if activity_model.A.use_theano:
+            logger.info("Compiling activity model...")
+            activity_model.A.compile()
+            logger.info("Done.")
+            Ahist = activity_model.A.compiled_history
+        else:
+            Ahist = activity_model.A
+        Ahist.compute_up_to(-1)
+        #activity_model.A.set()  # Ensure all time points are computed
 
         # Save the new data
         io.save(filename, activity_model)
@@ -229,9 +243,12 @@ def compute_posterior(target_dt,
 
 def main():
     activity_model = generate()
-    plt.ioff()
-    plt.figure()
-    plot_activity(activity_model)
+    if do_plots:
+        plt.ioff()
+        plt.figure()
+        plot_activity(activity_model)
+        plt.show()
+    return
     true_params = {'J': activity_model.params.J[0,0],
                    'τ': activity_model.params.τ[0,1]}
         # Save the true parameters before they are modified by the sweep

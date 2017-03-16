@@ -17,24 +17,43 @@ disk_cache_file = ""
 # `config.reload`   (TODO)
 
 librairies = set()
-#librairies = ['theano']
 
+floatX = 'float32'
+cast_floatX = float
+    # This just creates the floatX variables. They are actually initialized below.
 
-if 'theano' in librairies:
-    try:
-        import theano
-        #librairies.append('theano')
-    except ImportError:
-        print("The theano library was not found.")
-        librairies.remove('theano')
-        use_theano = False
-    else:
-        use_theano = True
-else:
-    use_theano = False
+def load_librairies(library_list):
+    global librairies, floatX, cast_floatX
 
-# shim.use_theano() would be even clearer
-shim.load(use_theano=use_theano)
+    library_set = set(library_list)
+    if 'theano' in library_set.difference(librairies):
+        try:
+            shim.load(load_theano=True, reraise=True)
+        except ImportError:
+            library_set.remove('theano')
+
+    librairies.union(set(library_list))
+    set_floatX()
+
+def unload_librairies(library_list):
+    global librairies
+
+    if 'theano' in set(library_list):
+        shim.load(load_theano=False)
+
+    librairies.difference_update(library_list)
+    set_floatX()
+
+def load_theano():
+    """
+    Call this to activate Theano in Theano-aware modules.
+    Best done at the top of a script, right after the imports.
+    """
+    load_librairies(['theano'])
+
+def use_theano():
+    """Flag method: returns True if Theano is used."""
+    return shim.use_theano
 
 #######################
 # Set functions to cast to numerical float
@@ -42,21 +61,26 @@ shim.load(use_theano=use_theano)
 # TODO: Rewrite these functions so they always check the value of floatX
 #       That way we can change the cast precision by just changing floatX
 
-if use_theano:
-    floatX = theano.config.floatX
-    if floatX == 'float32':
-        cast_floatX = np.float32
-    elif floatX == 'float64':
-        floatX = np.float64
+def set_floatX():
+    global floatX, cast_floatX
+
+    if 'theano' in librairies:
+        floatX = theano.config.floatX
+        if floatX == 'float32':
+            cast_floatX = np.float32
+        elif floatX == 'float64':
+            cast_floatX = np.float64
+        else:
+            raise ValueError("The theano float type is set to '{}', which is unrecognized.".format(theano.config.floatX))
     else:
-        raise ValueError("The theano float type is set to '{}', which is unrecognized.".format(theano.config.floatX))
-else:
-    cast_floatX = float
-    if cast_floatX(0.09) * 1e10 == 9e8:
-        # Evaluates to true on a 64-bit float, but not a 32-bit.
-        floatX = 'float64'
-    else:
-        floatX = 'float32'
+        if float(0.09) * 1e10 == 9e8:
+            # Evaluates to true on a 64-bit float, but not a 32-bit.
+            floatX = 'float64'
+        else:
+            floatX = 'float32'
+        cast_floatX = float
+
+set_floatX()
 
 
 ######################
@@ -82,10 +106,10 @@ def get_tolerance(var, tol_type):
     -------
     float
     """
-    var_type = np.asarray(var).dtype
-    if var_type == np.float32:
+    var_type = shim.asarray(var).dtype
+    if var_type in [np.float32, 'float32']:
         return precision_dict['32'][tol_type]
-    elif var_type == np.float64:
+    elif var_type in [np.float64, 'float64']:
         return precision_dict['64'][tol_type]
     else:
         raise ValueError("Unknown dtype '{}'.".format(var_type))

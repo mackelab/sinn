@@ -15,8 +15,6 @@ import theano_shim as shim
 from . import config
 #import sinn.config as config
 import sinn.diskcache as diskcache
-floatX = config.floatX
-lib = shim.lib
 
 # Configure logger
 # See e.g. https://docs.python.org/3/howto/logging-cookbook.html
@@ -37,13 +35,12 @@ logger.addHandler(_ch)
 def clip_probabilities(prob_array,
                        min_prob = config.abs_tolerance,
                        max_prob = 1-config.abs_tolerance):
-    if not config.use_theano:
+    if not config.use_theano():
         if np.any(prob_array > max_prob) or np.any(prob_array < min_prob):
             logger.warning("Some probabilities were clipped.")
-    return lib.clip(prob_array, min_prob, max_prob)
+    return shim.lib.clip(prob_array, min_prob, max_prob)
         # Clipping a little bit within the interval [0,1] avoids problems
         # with likelihoods (which tend to blow up when p = 0 or 1)
-
 
 class HistoryBase:
 
@@ -156,8 +153,8 @@ class OpCache:
 
         if None in data_keys:
             # There are operations with new arguments we need to compute
-            new_data = lib.stack( [
-                #lib.convolve(self[:], dis_kernel[slc], mode='valid')
+            new_data = shim.lib.stack( [
+                #shim.lib.convolve(self[:], dis_kernel[slc], mode='valid')
                 ###########################################
                 # CUSTOMIZATION: Here is the call to the custom operation we are caching
                 self.op(other, arg)
@@ -182,11 +179,11 @@ class OpCache:
                         k += 1
 
                 # Create the new data cache
-                if config.use_theano:
+                if config.use_theano():
                     assert(self.old_cache is None)
                     # Keep the old cache in memory, otherwise updates mechanism will break
                     self.old_cache[hash(other)] = self.cache[hash(other)].data
-                    self.cache[hash(other)].data = lib.concatenate(
+                    self.cache[hash(other)].data = shim.lib.concatenate(
                                 (self.old_cache[hash(other)], new_data) )
                     # This is a shared variable, so add to the updates list
                     shim.theano_updates[self.old_cache[hash(other)].data] = \
@@ -195,7 +192,7 @@ class OpCache:
                     # Since we aren't using Theano, we don't need to create old_cache
                     # and can allow reuse of cache memory
                     self.cache[hash(other)].data.set_value(
-                        lib.concatenate(
+                        shim.lib.concatenate(
                             (self.cache[hash(other)].data.get_value(), new_data), axis = 0 )
                     )
         return self.cache[hash(other)].data[data_keys]
@@ -251,7 +248,7 @@ def make_shared_tensor_params(params):
         # TODO: Check if val is already a theano tensor and adjust accordingly
         try:
             if val.dtype.kind in sp.typecodes['Float']:
-                param_lst.append(theano.shared(sp.array(val, dtype=floatX)))
+                param_lst.append(theano.shared(sp.array(val, dtype=config.floatX)))
             else:
                 param_lst.append(theano.shared(val))
         except ValueError:
@@ -260,7 +257,7 @@ def make_shared_tensor_params(params):
             #        create a ElemWise.cast{} code, wrt which we can't differentiate
             # FIXME: does it even make sense to produce a shared variable from another Theano variable ?
             if val.dtype.kind in sp.typecodes['Float']:
-                param_lst.append(T.cast(theano.shared(val), dtype=floatX))
+                param_lst.append(T.cast(theano.shared(val), dtype=config.floatX))
             else:
                 param_lst.append(theano.shared(val))
         param_lst[-1].name = name
@@ -277,7 +274,7 @@ def make_cst_tensor_params(param_names, params):
     global name_counter
     id_nums = range(name_counter, name_counter + len(param_names))
     name_counter += len(param_names)
-    return TParameters(*(T.constant(getattr(params,name), str(id_num) + '_' + name, dtype=theano.config.floatX)
+    return TParameters(*(T.constant(getattr(params,name), str(id_num) + '_' + name, dtype=config.floatX)
                          for name, id_num in zip(param_names, id_nums)))
 
 def get_parameter_subset(model, src_params):

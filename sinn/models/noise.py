@@ -14,7 +14,6 @@ import sinn.config as config
 import sinn.common as com
 import sinn.models.common
 
-lib = shim.lib
 Model = sinn.models.common.Model
 
 class GaussianWhiteNoise(Model):
@@ -32,11 +31,17 @@ class GaussianWhiteNoise(Model):
     def __init__(self, params, history, random_stream):
         self.rndstream = random_stream
         super().__init__(params, history)
+        history._iterative = False # It's white noise => no dependence on the past
 
     def eval(self, t):
-        return lib.clip(self.rndstream.normal(avg  = 0,
-                                              std  = self.params.std/np.sqrt(self.history.dt),
-                                              size = self.params.shape),
+        if hasattr(t, 'shape'):
+            outshape = np.concatenate((t.shape, self.params.shape))
+                # Shape is an array, not a tuple
+        else:
+            outshape = self.params.shape
+        return shim.lib.clip(self.rndstream.normal(avg  = 0,
+                                                   std  = self.params.std/np.sqrt(self.history.dt),
+                                                   size = outshape),
                        -self.params.clip_limit,
                        self.params.clip_limit)
 
@@ -46,6 +51,10 @@ class Step(Model):
                                     ( 'begin',  (config.cast_floatX, None, False) ),
                                     ( 'end',    (config.cast_floatX, None, False) ) ) )
     Parameters = com.define_parameters(Parameter_info)
+
+    def __init__(self, params, history):
+        super().__init__(params, history)
+        history._iterative = False # Value at t does not depend on past
 
     def eval(self, t):
         return self.params.height if self.params.begin < t < self.params.end else 0

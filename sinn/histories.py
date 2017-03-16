@@ -17,8 +17,6 @@ import sinn
 import sinn.common as com
 import sinn.config as config
 import sinn.mixins as mixins
-floatX = config.floatX
-lib = shim.lib
 HistoryBase = com.HistoryBase
 ConvolveMixin = mixins.ConvolveMixin
 
@@ -33,16 +31,22 @@ class History(HistoryBase):
     previous to t is also known (by forcing a computation if necessary).
 
     Derived classes can safely expect the following attributes to be defined:
-        + name             : Unique identifying string
-        + shape            : Shape at a single time point, or number of elements in the system
-        + t0               : Time at which history starts
-        + tn               : Time at which history ends
-        + dt               : Timestep size
-        + lock             : Whether modifications to history are allowed
-        + _tarr            : Ordered array of all time bins
-        + _cur_tidx        : Tracker for the latest time bin for which we know history.
+        + name             : str. Unique identifying string
+        + shape            : int tuple. Shape at a single time point, or number of elements in the system
+        + t0               : float. Time at which history starts
+        + tn               : float. Time at which history ends
+        + dt               : float. Timestep size
+        + lock             : bool. Whether modifications to history are allowed
+        + _tarr            : float ndarray. Ordered array of all time bins
+        + _cur_tidx        : int. Tracker for the latest time bin for which we know history.
         + _update_function : Function taking a time and returning the history
                              at that time
+        + compiled_history : (Theano histories only) Another History instance of same
+                             type, where the update function graph has been compiled.
+                             Create with `compile` method.
+    The following methods are also guaranteed to be defined:
+        + compile          : If the update function is a Theano graph, compile it
+                             and attach the new history as `compiled_history`.
     A History may also define
         + _compute_range   : Function taking an array of consecutive times and returning
                              an array-like object of the history at those times.
@@ -52,6 +56,7 @@ class History(HistoryBase):
     Classes deriving from History **must** provide the following attributes:
         + _strict_index_rounding : (bool) True => times are only converted
                                    to indices if they are multiples of dt.
+        + _data            : Where the actual data is stored. Type can be anything.
 
     and implement the following methods:
 
@@ -145,7 +150,7 @@ class History(HistoryBase):
     instance_counter = 0
 
     def __init__(self, hist=sinn._NoValue, name=None, *args, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
-                 shape=sinn._NoValue, f=sinn._NoValue, iterative=sinn._NoValue):
+                 shape=sinn._NoValue, f=sinn._NoValue, iterative=sinn._NoValue, use_theano=sinn._NoValue):
         """
         Initialize History object.
         Instead of passing the parameters, another History instance may be passed as
@@ -188,6 +193,8 @@ class History(HistoryBase):
         None
         """
         self.instance_counter += 1
+        self.lock = False
+            # When this is True, the history is not allowed to be changed
         if name is None:
             name = "history{}".format(self.instance_counter)
         # Grab defaults from the other instance:
@@ -208,21 +215,43 @@ class History(HistoryBase):
                 f = hist._update_function
             if iterative is sinn._NoValue:
                 iterative = hist._iterative
+            if use_theano is sinn._NoValue:
+                use_theano = hist.use_theano
         else:
             assert(sinn._NoValue not in [t0, tn, dt, shape])
         if iterative is sinn._NoValue:
             # Default value
             iterative = True
 
+        # Determine whether the series data will use Theano.
+        # The default depends on whether Theano is loaded. If it is not loaded
+        # and we try to use it for this history, an error is raised.
+        if use_theano is sinn._NoValue:
+            if sinn.config.use_theano():
+                self.use_theano = True
+            else:
+                self.use_theano = False
+        else:
+            self.use_theano = use_theano
+
         super().__init__(t0, np.ceil( (tn - t0)/dt ) * dt + t0)
             # Set t0 and tn, ensuring (tn - t0) is a round multiple of dt
+
+        if self.use_theano and not sinn.config.use_theano():
+            raise ValueError("You are attempting to construct a series with Theano "
+                             "but it is not loaded. Run `sinn.config.load_theano()` "
+                             "before constructing this series.")
+        elif self.use_theano:
+            self.compiled_history = None
+            self._theano_cur_tidx = -1
+
         self.name = name
         self.shape = shape
             # shape at a single time point, or number of elements
             # in the system
         self.ndim = len(shape)
 
-        self.dt = np.array(dt, dtype=floatX)
+        self.dt = np.array(dt, dtype=config.floatX)
         self._cur_tidx = -1
             # Tracker for the latest time bin for which we
             # know history.
@@ -230,11 +259,10 @@ class History(HistoryBase):
             # Set a default function that will raise an error when called
             def f(*arg):
                 raise RuntimeError("The update function for {} is not set.".format(self))
-        self.lock = False
-            # When this is True, the history is not allowed to be changed
         self._update_function = f
         self._compute_range = None
         self._iterative = iterative
+        self._inputs = set()
 
         self._tarr = np.arange(self.t0,
                                self.tn + self.dt - config.abs_tolerance,
@@ -256,9 +284,14 @@ class History(HistoryBase):
 
         NOTE: key will not be shifted to reflect history padding. So `key = 0`
         may well refer to a time *before* t0.
+
+        Parameters
+        ----------
+        key: int, float, slice or array
+            If an array, it must be consecutive (this is not checked).
         """
 
-        if shim.istype(key, ('int', 'float')):
+        if shim.isscalar(key):
             key = self.get_t_idx(key)
                 # If `key` is a negative integer, returns as is
                 # If `key` is a negative float, returns a positive index integer
@@ -268,20 +301,26 @@ class History(HistoryBase):
                 # key = -1 returns last element
             end = key
 
-        elif isinstance(key, slice):
-            # Get the latest point queried for in `key`
-            if key.start is None:
+        elif isinstance(key, slice) or shim.isarray(key):
+            if isinstance(key, slice):
+                start = key.start
+                stop = key.stop
+            else:
+                start = shim.min(key)
+                stop = self.get_t_idx(shim.max(key)) + 1
+
+            if start is None:
                 start = 0
             else:
-                start = self.get_t_idx(key.start)
+                start = self.get_t_idx(start)
                 start = shim.ifelse(start >= 0,
                                    start,
                                    len(self._tarr) + start)
 
-            if key.stop is None:
+            if stop is None:
                 stop = len(self._tarr)
             else:
-                stop = self.get_t_idx(key.stop)
+                stop = self.get_t_idx(stop)
                 stop = shim.ifelse(stop >= 0,
                                    stop,
                                    len(self._tarr) + start)
@@ -300,7 +339,11 @@ class History(HistoryBase):
                              "integer, a float, or a slice of integers and floats"
                              .format(key, type(key)))
 
-        if end > self._cur_tidx:
+        if shim.is_theano_object(end):
+            # For theano objects, we don't really compute, but just save the
+            # value up to which the later evaluation will need to go.
+            self.compute_up_to(end)
+        elif end > self._cur_tidx:
             self.compute_up_to(end)
 
         return self.retrieve(key)
@@ -377,14 +420,17 @@ class History(HistoryBase):
             A integer tuple `(n, m)` where `n` is the number of bins added
             before, and `m` the number of bins added after
         """
+        for t in (before, after):
+            if shim.is_theano_object(t):
+                raise ValueError("Times must be NumPy or pure Python variables. ")
         if isinstance(before, int):
             before_idx_len = before
         else:
-            before_idx_len = int(lib.ceil(before / self.dt))
+            before_idx_len = int(np.ceil(before / self.dt))
         if isinstance(after, int):
             after_idx_len = after
         else:
-            after_idx_len = int(lib.ceil(after / self.dt))
+            after_idx_len = int(np.ceil(after / self.dt))
         before = before_idx_len * self.dt
         after = after_idx_len * self.dt
 
@@ -407,10 +453,25 @@ class History(HistoryBase):
                                .format(self.name))
 
         shim.check(shim.istype(tidx, 'int'))
+
         start = self._cur_tidx + 1
-        stop = shim.ifelse(tidx >= 0,
-                           tidx + 1,
-                           len(self._tarr) + tidx + 1)
+        end = shim.ifelse(tidx >= 0,
+                          tidx,
+                          len(self._tarr) + tidx)
+
+        if shim.is_theano_object(tidx):
+            # Don't actually compute: just store the current_idx we would need
+            self._theano_cur_tidx = shim.largest(end, self._theano_cur_tidx)
+            return
+
+        if end <= self._cur_tidx:
+            # Nothing to compute
+            return
+
+        #########
+        # Did not abort the computation => now let's do the computation
+
+        stop = end + 1  # exclusive upper bound
 
         if self._compute_range is not None:
             # A specialized function for computing multiple time points
@@ -432,7 +493,7 @@ class History(HistoryBase):
             logger.info("Iteratively computing {} up to {}."
                         .format(self.name, self._tarr[tidx]))
             old_percent = 0
-            for i in lib.arange(start, stop):
+            for i in np.arange(start, stop):
                 percent = (i*100)//stop
                 if percent > old_percent:
                     logger.info("{}%".format(percent))
@@ -533,7 +594,7 @@ class History(HistoryBase):
                     shim.check(t >= self._tarr[0])
                 except AssertionError:
                     raise RuntimeError("You've tried to obtain the time index at t={}, which "
-                                       "is outside this history's range. Please add padding"
+                                       "is outside this history's range. Please add padding."
                                        .format(t))
 
                 if self._strict_index_rounding:
@@ -546,14 +607,14 @@ class History(HistoryBase):
                                         "(int), but the value is too large to ensure the absence "
                                         "of numerical errors. Try using a higher precision type.")
                     t_idx = (t - self._tarr[0]) / self.dt
-                    r_t_idx = np.round(t_idx)
-                    if abs(t_idx - r_t_idx) > config.get_abs_tolerance(t) / self.dt:
-                        print("t: {}, t0: {}, t-t0: {}, t_idx: {}, dt: {}"
-                            .format(t, self._tarr[0], t - self._tarr[0], t_idx, self.dt) )
-                        print("(t0 above is the earliest time, including padding.)")
+                    r_t_idx = shim.round(t_idx)
+                    if (not shim.is_theano_object(r_t_idx)
+                          and abs(t_idx - r_t_idx) > config.get_abs_tolerance(t) / self.dt):
+                        logger.error("t: {}, t0: {}, t-t0: {}, t_idx: {}, dt: {}"
+                                     .format(t, self._tarr[0], t - self._tarr[0], t_idx, self.dt) )
                         raise ValueError("Tried to obtain the time index of t=" +
                                         str(t) + ", but it does not seem to exist.")
-                    return int(r_t_idx)
+                    return shim.cast_int32(r_t_idx)
 
                 else:
                     # Allow t to take any value, and round down to closest
@@ -581,23 +642,32 @@ class History(HistoryBase):
         return slice(0 if slc.start is None else flip(slc.start),
                      len(self._tarr) if slc.stop is None else flip(slc.stop))
 
-    # def theano_reset(self):
-    #     """Allow theano functions to be called again.
-    #     It is assumed that variables in self._theano_updates have been safely
-    #     updated externally.
-    #     """
-    #     try:
-    #         super().theano_reset()
-    #     except AttributeError:
-    #         pass
+    def theano_reset(self):
+        """Allow theano functions to be called again.
+        It is assumed that variables in self._theano_updates have been safely
+        updated externally.
+        """
+        if self.lock:
+            raise RuntimeError("Cannot modify the locked history {}."
+                               .format(self.name))
+
+        try:
+            self._theano_cur_tidx = -1
+        except AttributeError:
+            raise RuntimeError("You are calling `theano_reset` on a non-Theano history.")
+
+        try:
+            super().theano_reset()
+        except AttributeError:
+            pass
 
     def discretize_kernel(self, kernel):
 
-        discretization_name = "discrete" + "_" + str(id(self))  # Unique id for discretized kernel
+        dis_attr_name = "discrete_" + str(id(self))  # Unique id for discretized kernel
 
-        if hasattr(kernel, discretization_name):
+        if hasattr(kernel, dis_attr_name):
             # TODO: Check that this history (self) hasn't changed
-            return getattr(kernel, discretization_name)
+            return getattr(kernel, dis_attr_name)
 
         else:
             #TODO: Add compability check of the kernel's shape with this history.
@@ -630,63 +700,179 @@ class History(HistoryBase):
 
             #full_idx_len = memory_idx_len + idx_shift
             #    # `memory_time` is the amount of time before t0
-
+            dis_name = ("dis_" + kernel.name + " (" + self.name + ")")
             dis_kernel = Series(t0=t0,
                                 tn=t0 + memory_idx_len*self.dt,
                                 dt=self.dt,
                                 shape=kernel.shape,
-                                f=kernel_func)
+                                f=kernel_func,
+                                name=dis_name,
+                                use_theano=False)
             dis_kernel.idx_shift = idx_shift
 
-            setattr(kernel, discretization_name, dis_kernel)
+            setattr(kernel, dis_attr_name, dis_kernel)
 
             return dis_kernel
 
-    #####################################################
-    # Operator definitions
-    #####################################################
-    # TODO: Operations with two Histories (right now I'm assuming scalars or arrays)
+    def add_input(self, variable):
+        if isinstance(variable, str):
+            # Not sure why a string would be an input, but it guards against the next line
+            self._inputs.add(variable)
+        try:
+            for x in variable:
+                self._inputs.add(x)
+        except TypeError:
+            # variable is not iterable
+            self._inputs.add(x)
+    add_inputs = add_input
+        # Synonym to add_input
 
-    def _apply_op(self, op, b=None):
-        new_series = Series(self)
-        if b is None:
-            new_series.set_update_function(lambda t: op(self[t]))
-            new_series.set_range_update_function(lambda tarr: op(self[self.tarr_to_slice(tarr)]))
+    def compile(self, inputs=None):
+
+        self._compiling = True
+
+        if inputs is None:
+            inputs = []
+        if not self.use_theano:
+            raise RuntimeError("You cannot compile a Series that does not use Theano.")
+        try:
+            inputs = set(inputs)
+        except TypeError:
+            inputs = set([inputs])
+
+        self._inputs = self._inputs.union(inputs)
+        if self in self._inputs:
+            assert(self._iterative)
+            self._inputs.remove(self)  # We'll add it back later. We remove it now to
+                                       # avoid calling its `compile` method
+
+        # Convert the inputs to a list to fix the order
+        if self._iterative:
+            input_self = [self._data]
         else:
-            new_series.set_update_function(lambda t: op(self[t], b))
-            new_series.set_range_update_function(lambda tarr: op(self[self.tarr_to_slice(tarr)], b))
-        return new_series
+            input_self = []
+        input_list = list(self._inputs)
 
-    def __abs__(self):
-        return self._apply_op(operator.abs)
-    def __add__(self, other):
-        return self._apply_op(operator.add, other)
-    def __radd__(self, other):
-        return self._apply_op(lambda a,b: b+a, other)
-    def __sub__(self, other):
-        return self._apply_op(operator.sub, other)
-    def __rsub__(self, other):
-        return self._apply_op(lambda a,b: b-a, other)
-    def __mul__(self, other):
-        return self._apply_op(operator.mul, other)
-    def __rmul__(self, other):
-        return self._apply_op(lambda a,b: b*a, other)
-    def __matmul__(self, other):
-        return self._apply_op(operator.matmul, other)
-    def __rmatmul__(self, other):
-        return self._apply_op(lambda a,b: operator.matmul(b,a), other)
-            # Using operator.matmul rather than @ prevents import fails on Python <3.5
-    def __truediv__(self, other):
-        return self._apply_op(operator.truediv, other)
-    def __rtruediv__(self, other):
-        return self._apply_op(lambda a,b: b/a, other)
-    def __floordiv__(self, other):
-        return self._apply_op(operator.floordiv, other)
-    def __rfloordiv__(self, other):
-        return self._apply_op(lambda a,b: b//a, other)
-    def __mod__(self, other):
-        return self._apply_op(operator.mod, other)
+        # Create the new history which will contain the compiled update function
+        self.compiled_history = self.__class__(self, name=self.name + " (compiled)", use_theano=False)
+        # Compiled histories must have exactly the same indices, so we match the padding
+        self.compiled_history.pad(self.t0idx, len(self._tarr) - len(self) - self.t0idx)
 
+        # To avoid circular dependencies (e.g. where A[t] depends on B[t] which
+        # depends on A[t-1]),  we recursively compile the inputs so that their
+        # own graphs don't show up in this one. The `compiling` flag is used
+        # to prevent infinite recursion.
+        input_histories = []
+        eval_histories = []
+        terminating_histories = []
+            # Typically, calculations take the form A[t-1] -> B[t] -> C[t] -> A[t]
+            # In this case, A[t-1] would be the history terminating the cycle started at A[t]
+            # These are identified by the fact that they are already in the middle of a
+            # compilation (with the `compile` flag).
+            # When determining up to which point they need to be computed, we substract one
+            # from these (otherwise we would get infinite recursion).
+        input_list_for_eval = []
+        for i, inp in enumerate(input_list):
+            if isinstance(inp, History):
+                input_histories.append(inp)
+                if inp.use_theano:
+                    if inp.compiled_history is None:
+                        inp.compile(inputs.difference([inp]))
+                    if inp._compiling:
+                        terminating_histories.append(inp)
+                    eval_histories.append(inp.compiled_history)
+                    input_list[i] = inp._data
+                else:
+                    raise ValueError("Cannot compile a history which has non-Theano "
+                                     "dependencies.")
+
+                input_list_for_eval.append(eval_histories[-1]._data)
+            else:
+                raise ValueError("History compilation with inputs of type {} is unsupported."
+                                 .format(type(inp)))
+        assert(len(input_list) == len(input_list_for_eval))
+
+        def get_required_tidx(hist):
+            if hist in terminating_histories:
+                return hist._theano_cur_tidx - 1
+            else:
+                return hist._theano_cur_tidx
+
+        # Compile the update function twice: for integers (time indices) and floats (times)
+        # We also compile a second function, which returns the time indices up to which
+        # each history on which this one depends must be calculated. This is used to
+        # precompute each dependent history, (this is not done automatically because we
+        # need to use the raw data structure).
+        t_idx = shim.T.scalar('t_idx', dtype='int32')
+        assert(len(shim.theano_updates) == 0)
+        output_res_idx = self._update_function(t_idx)
+            # This should populate shim.theano_updates if there are shared variable
+        update_f_idx = shim.theano.function(inputs=[t_idx] + input_list + input_self,
+                                            outputs=output_res_idx,
+                                            updates=shim.theano_updates,
+                                            on_unused_input='warn')
+        output_tidcs_idx = [get_required_tidx(hist) for hist in input_histories]
+        get_tidcs_idx = shim.theano.function(inputs=[t_idx] + input_list,
+                                             outputs=output_tidcs_idx,
+                                             on_unused_input='ignore') # No need for duplicate warnings
+
+        for hist in input_histories:
+            hist.theano_reset() # resets the _theano_cur_tidx
+        shim.theano_reset()
+            # Clear the updates stored in shim.theano_updates
+
+        # Now compile for floats
+        t_float = shim.T.scalar('t', dtype=sinn.config.floatX)
+        assert(len(shim.theano_updates) == 0)
+        output_res_float = self._update_function(t_float)
+            # This should populate shim.theano_updates if there are shared variable
+        update_f_float = shim.theano.function(inputs=[t_float] + input_list + input_self,
+                                              outputs=output_res_float,
+                                              updates=shim.theano_updates,
+                                              on_unused_input='warn')
+        output_tidcs_float = [get_required_tidx(hist) for hist in input_histories]
+        get_tidcs_float = shim.theano.function(inputs=[t_float] + input_list,
+                                               outputs=output_tidcs_float,
+                                               on_unused_input='ignore')
+        for hist in input_histories:
+            hist.theano_reset() # reset _theano_cur_tidx
+        shim.theano_reset()
+            # Clear the updates stored in shim.theano_updates
+
+        # The new update function type checks the input and evaluates the proper
+        # compiled function
+        def new_update_f(t):
+            # TODO Compile separate functions for when t is an array
+            # TODO Safeguard against infinite recursion
+
+            def single_t(t):
+                if self._iterative:
+                    f_inputs = [t] + input_list_for_eval + [self.compiled_history._data]
+                else:
+                    f_inputs = [t] + input_list_for_eval
+
+                if shim.istype(t, 'int'):
+                    t_idcs = get_tidcs_idx(t, *input_list_for_eval)
+                    for t_idx, hist in zip(t_idcs, eval_histories):
+                        hist.compute_up_to(t_idx)
+                    return update_f_idx(*f_inputs)
+                else:
+                    t_idcs = get_tidcs_float(t, *input_list_for_eval)
+                    for t_idx, hist in zip(t_idcs, eval_histories):
+                        if t_idx > hist._cur_tidx:
+                            # Normally compute_up_to checks for this, but if
+                            # t_idx = -1 it will incorrectly compute up to the end
+                            hist.compute_up_to(t_idx)
+                    return update_f_float(*f_inputs)
+
+            if shim.isscalar(t):
+                return single_t(t)
+            else:
+                return np.array([single_t(ti) for ti in t])
+
+        self.compiled_history.set_update_function(new_update_f)
+
+        self._compiling = False
 
 class Spiketimes(ConvolveMixin, History):
     """A class to store spiketrains.
@@ -784,10 +970,10 @@ class Spiketimes(ConvolveMixin, History):
             #                for pop_init, pop_size
             #                in zip(init_data, self.pop_sizes)))
 
-            self.spike_times = [ deque([init_data[neuron_idx]])
+            self._data = [ deque([init_data[neuron_idx]])
                                  for neuron_idx in range(np.sum(self.pop_sizes)) ]
         else:
-            self.spike_times = [ deque([init_data])
+            self._data = [ deque([init_data])
                                  for neuron_idx in range(np.sum(self.pop_sizes)) ]
 
     def clear(self, init_data=-np.inf):
@@ -824,11 +1010,11 @@ class Spiketimes(ConvolveMixin, History):
         if shim.istype(key, 'int') or shim.istype(key, 'float'):
             t = self.get_time(key)
             return np.fromiter( ( True if t in spikelist else False
-                                   for spikelist in self.spike_times ),
+                                   for spikelist in self._data ),
                                  dtype=bool )
         elif isinstance(key, slice):
             if (key.start is None) and (key.stop is None):
-                return self.spike_times
+                return self._data
             else:
                 start = -shim.inf if key.start is None else self.get_time(key.start)
                 stop = shim.inf if key.stop is None else self.get_time(key.stop)
@@ -837,7 +1023,7 @@ class Spiketimes(ConvolveMixin, History):
                 return [ itertools.islice(spikelist,
                                           int(np.searchsorted(spikelist, start)),
                                           int(np.searchsorted(spikelist, stop)))
-                         for spikelist in self.spike_times ]
+                         for spikelist in self._data ]
         else:
             raise ValueError("Key must be either an integer, float or a splice object.")
 
@@ -863,11 +1049,11 @@ class Spiketimes(ConvolveMixin, History):
 
         time = self.get_time(tidx)
         for neuron_idx in neuron_idcs:
-            self.spike_times[neuron_idx].append(time)
+            self._data[neuron_idx].append(time)
 
-        # for neuron_lst, spike_times in zip(value, self.spike_times):
+        # for neuron_lst, _data in zip(value, self._data):
         #     for neuron_idx in neuron_lst:
-        #         spike_times[neuron_idx].append(time)
+        #         _data[neuron_idx].append(time)
 
         self._cur_tidx = newidx  # Set the cur_idx. If tidx was less than the current index,
                                  # then the latter is *reduced*, since we no longer know
@@ -916,12 +1102,12 @@ class Spiketimes(ConvolveMixin, History):
             raise NotImplementedError
 
         else:
-            assert(len(source) == len(self.spike_times))
+            assert(len(source) == len(self._data))
             for i, spike_list in enumerate(source):
-                self.spike_times[i] = spike_list
+                self._data[i] = spike_list
 
         self._cur_tidx = len(self) - 1
-        return self.spike_times
+        return self._data
 
 
     def _convolve_op_single_t(self, kernel, t, kernel_slice):
@@ -993,12 +1179,12 @@ class Spiketimes(ConvolveMixin, History):
 
         # For explanations of how summing works, see the IPython
         # notebook in the docs
-        spike_times = self[start:stop]
+        _data = self[start:stop]
         if kernel.ndim == 2 and kernel.shape[0] == kernel.shape[1]:
             shim.check(kernel.shape[0] == len(self.pop_sizes))
             return np.stack (
                      np.asarray(np.sum( f(t-s, from_pop_idx)
-                             for spike_list in spike_times[self.pop_slices[from_pop_idx]]
+                             for spike_list in self._data[self.pop_slices[from_pop_idx]]
                              for s in spike_list )).reshape(kernel.shape[0:1])
                      for from_pop_idx in range(len(self.pop_sizes)) ).T
                 # np.asarray is required because summing over generator
@@ -1006,9 +1192,9 @@ class Spiketimes(ConvolveMixin, History):
                 # scalar instead of a NumPy float
 
         elif kernel.ndim == 1 and kernel.shape[0] == len(self.pop_sizes):
-            return lib.concatenate(
-                  [ lib.stack( shim.asarray(lib.sum( f(t-s, from_pop_idx) for s in spike_list ))
-                               for spike_list in self.spike_times[self.pop_slices[from_pop_idx]] )
+            return shim.lib.concatenate(
+                  [ shim.lib.stack( shim.asarray(shim.lib.sum( f(t-s, from_pop_idx) for s in spike_list ))
+                               for spike_list in self._data[self.pop_slices[from_pop_idx]] )
                     for from_pop_idx in range(len(self.pop_sizes)) ] )
 
         else:
@@ -1022,7 +1208,7 @@ class Series(ConvolveMixin, History):
     Store history as a series, i.e. as an array of dimension T x (shape), where
     T is the number of bins and shape is this history's `shape` attribute.
 
-    Also provides an "infinity bin" – .inf_bin — in which to store the value
+    (DEACTIVATED) Also provides an "infinity bin" – .inf_bin — in which to store the value
     at t = -∞. (Not sure if this is useful after all.)
     """
 
@@ -1053,9 +1239,12 @@ class Series(ConvolveMixin, History):
                          t0=t0, tn=tn, dt=dt,
                          shape=shape, **kwargs)
 
-        # Migration note: _data was previously called self.array
-        self._data = np.zeros(self._tarr.shape + self.shape, dtype=floatX)
-        self.inf_bin = np.zeros(self.shape, dtype=floatX)
+        if self.use_theano:
+            self._data = shim.T.zeros(self._tarr.shape + self.shape, dtype=config.floatX)
+            #self.inf_bin = shim.lib.zeros(self.shape, dtype=config.floatX)
+        else:
+            self._data = np.zeros(self._tarr.shape + self.shape, dtype=config.floatX)
+
         self._original_data = None
             # Stores a Theano update dictionary. This value can only be
             # changed once.
@@ -1087,8 +1276,7 @@ class Series(ConvolveMixin, History):
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))
 
-        assert(not config.use_theano
-               or not isinstance(tidx, theano.gof.Variable))
+        assert(not shim.is_theano_object(tidx))
             # time indices must not be variables
 
         # Check if value includes an update dictionary.
@@ -1113,26 +1301,35 @@ class Series(ConvolveMixin, History):
             shim.check(tidx.start <= self._cur_tidx + 1)
                 # Ensure that we update at most one step in the future
 
-        if config.use_theano and isinstance(value, theano.gof.Variable):
-            if self._original_data is not None or self._theano_updates != {}:
+        if shim.is_theano_object(value):
+            if self._original_data is not None or shim.theano_updates != {}:
                 raise RuntimeError("You can only update data once within a "
                                    "Theano computational graph. If you need "
-                                   "to update repeatedly, compile a single "
+                                   "multiple updates, compile a single "
                                    "update as a function, and call that "
                                    "function repeatedly.")
+            if not shim.is_theano_object(self._data):
+                raise ValueError("You are trying to update a pure numpy series "
+                                 "with a Theano variable. You need to make the "
+                                 "series a Theano variable as well.")
             self._original_data = self._data
                 # Persistently store the current _data
                 # It's important not to reuse variables after they've
                 # been used in set_subtensor, but they must remain
                 # in memory.
-            self._data = T.set_subtensor(self._original_data[tidx], value)
+            self._data = shim.set_subtensor(self._original_data[tidx], value)
             if updates is not None:
                 shim.theano_updates.update(updates)
                     #.update is a dictionary method
 
         else:
             if updates is not None:
-                raise RuntimeError("For normal Python and Numpy functions, update variables in place rather than using an update dictionary.")
+                raise RuntimeError("For normal Python and NumPy functions, update "
+                                   "variables in place rather than using an update dictionary.")
+            if self._data[tidx].shape != value.shape:
+                raise ValueError("Series '{}': The shape of the update value - {} - does not match "
+                                 "the shape of a timeslice(s) - {} -."
+                                 .format(self.name, value.shape, self._data[tidx].shape))
             self._data[tidx] = value
 
         self._cur_tidx = end
@@ -1158,6 +1355,7 @@ class Series(ConvolveMixin, History):
             Default is to fill with zeros.
         '''
 
+        previous_tarr_shape = self._tarr.shape
         before_len, after_len = self.pad_time(before, after)
 
         if not kwargs:
@@ -1168,7 +1366,32 @@ class Series(ConvolveMixin, History):
         pad_width = ( [(before_len, after_len)]
                       + [(0, 0) for i in range(len(self.shape))] )
 
-        self._data = np.pad(self._data, pad_width, **kwargs)
+        self._data = shim.pad(self._data, previous_tarr_shape + self.shape,
+                              pad_width, **kwargs)
+
+
+    def generator(self, inputs):
+        """
+        Return a function which, given the inputs, returns a pure numpy Series
+        object equivalent to this one in the current state (i.e. at the current tidx).
+        This function only makes sense on a Series where the data is a Theano variable.
+        (For non-Theano data, the returned generator just returns `self`.)
+        """
+        if not shim.is_theano_object(self._data):
+            def gen(self, input_vals):
+                assert(len(inputs) == len(input_vals))
+                assert(x == y for x,y in zip(inputs, input_vals))
+                return self
+
+        else:
+            f = shim.theano.function(inputs, self._data)
+            def gen(self, input_vals):
+                new_series = Series(self)
+                new_series.set(f(input_vals))
+                return new_series
+
+        return gen
+
 
     # def set_inf_bin(self, value):
     #     """
@@ -1309,22 +1532,18 @@ class Series(ConvolveMixin, History):
         self._cur_tidx = len(tarr) - 1
         return self._data
 
-    def theano_reset(self, new_data):
+    def theano_reset(self, new_data=None):
         """Refresh data to allow a new call returning theano variables.
         `new_data` should not be a complex type, like the result of a `scan`
         """
-        if self.lock:
-            raise RuntimeError("Tried to modify locked history {}."
-                               .format(self.name))
-        self._data = new_data
-        self._original_data = None
-        super.theano_reset()
+        if new_data is not None:
+            self._data = new_data
+            self._original_data = None
+        super().theano_reset()
 
     def convolve(self, kernel, t=slice(None, None), kernel_slice=slice(None,None),
                  *args, **kwargs):
-        """Small wrapper around ConvolveMixin.convolve.
-        Discretizes the kernel and converts the kernel_slice into a slice of
-        time indices. Also converts t into a slice of indices, so the
+        """Small wrapper around ConvolveMixin.convolve. Discretizes the kernel and converts the kernel_slice into a slice of time indices. Also converts t into a slice of indices, so the
         _convolve_op* methods can work with indices.
         """
         # Run the convolution on a discretized kernel
@@ -1343,13 +1562,20 @@ class Series(ConvolveMixin, History):
             len(kernel_slice)
         except TypeError:
             kernel_slice = [kernel_slice]
+            single_kernel = True
+        else:
+            single_kernel = False
 
         kernel_idx_slices = [ slice( get_start_idx(slc.start), get_stop_idx(slc.stop) )
                               for slc in kernel_slice ]
         tidx = self.get_t_idx(t)
 
-        return super().convolve(discretized_kernel,
-                                tidx, kernel_idx_slices, *args, **kwargs)
+        result = super().convolve(discretized_kernel,
+                                  tidx, kernel_idx_slices, *args, **kwargs)
+        if single_kernel:
+            return result[0]
+        else:
+            return np.array(result)
 
     def _convolve_op_single_t(self, discretized_kernel, tidx, kernel_slice):
         # When indexing data, make sure to use self[…] rather than self._data[…],
@@ -1374,7 +1600,7 @@ class Series(ConvolveMixin, History):
                     "Floats are treated as times, while integers are treated as time indices. "
                     .format(tidx))
             dim_diff = discretized_kernel.ndim - self.ndim
-            return self.dt * lib.sum(discretized_kernel[kernel_slice][::-1]
+            return self.dt * shim.lib.sum(discretized_kernel[kernel_slice][::-1]
                                      * shim.add_axes(self[hist_slice], dim_diff, -self.ndim),
                                      axis=0)
                 # history needs to be augmented by a dimension to match the kernel
@@ -1416,4 +1642,51 @@ class Series(ConvolveMixin, History):
                 # Check that there is enough padding after tn
             return retval
 
+
+    #####################################################
+    # Operator definitions
+    #####################################################
+    # TODO: Operations with two Histories (right now I'm assuming scalars or arrays)
+
+    def _apply_op(self, op, b=None):
+        new_series = Series(self)
+        if b is None:
+            new_series.set_update_function(lambda t: op(self[t]))
+            new_series.set_range_update_function(lambda tarr: op(self[self.tarr_to_slice(tarr)]))
+            new_series.add_input(self)
+        else:
+            new_series.set_update_function(lambda t: op(self[t], b))
+            new_series.set_range_update_function(lambda tarr: op(self[self.tarr_to_slice(tarr)], b))
+            new_series.add_input([self, b])
+        return new_series
+
+    def __abs__(self):
+        return self._apply_op(operator.abs)
+    def __add__(self, other):
+        return self._apply_op(operator.add, other)
+    def __radd__(self, other):
+        return self._apply_op(lambda a,b: b+a, other)
+    def __sub__(self, other):
+        return self._apply_op(operator.sub, other)
+    def __rsub__(self, other):
+        return self._apply_op(lambda a,b: b-a, other)
+    def __mul__(self, other):
+        return self._apply_op(operator.mul, other)
+    def __rmul__(self, other):
+        return self._apply_op(lambda a,b: b*a, other)
+    def __matmul__(self, other):
+        return self._apply_op(operator.matmul, other)
+    def __rmatmul__(self, other):
+        return self._apply_op(lambda a,b: operator.matmul(b,a), other)
+            # Using operator.matmul rather than @ prevents import fails on Python <3.5
+    def __truediv__(self, other):
+        return self._apply_op(operator.truediv, other)
+    def __rtruediv__(self, other):
+        return self._apply_op(lambda a,b: b/a, other)
+    def __floordiv__(self, other):
+        return self._apply_op(operator.floordiv, other)
+    def __rfloordiv__(self, other):
+        return self._apply_op(lambda a,b: b//a, other)
+    def __mod__(self, other):
+        return self._apply_op(operator.mod, other)
 

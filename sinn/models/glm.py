@@ -19,7 +19,6 @@ import sinn.models as models
 
 logger = logging.getLogger("sinn.models.glm")
 
-lib = shim.lib
 Model = models.Model
 ModelKernelMixin = models.ModelKernelMixin
 Kernel = kernels.Kernel
@@ -76,27 +75,54 @@ class GLM_exp_kernel(Model):
         self.add_history(self.ρ)
         self.add_history(self.JᕽAᐩI)
 
+        self.A.add_inputs([self.ρ])
+        self.ρ.add_inputs([self.JᕽAᐩI])
+        self.JᕽAᐩI.add_inputs([self.A, self.I])
+
         self.A.set_update_function(self.A_fn)
         self.ρ.set_update_function(self.ρ_fn)
 
         κshape = self.params.N.shape
-        self.κ = ExpK('κ', self.params, κshape)
+        self.κ = ExpK('κ', self.params, κshape, memory_time=memory_time)
         self.add_kernel(self.κ)
 
         self.JᕽAᐩI.pad(self.κ.memory_time)
 
     def JᕽAᐩI_fn(self, t):
-        return lib.dot(self.params.J, self.A[t]) + self.I[t]
+        return shim.lib.dot(self.params.J, self.A[t]) + self.I[t]
                               # NxN  dot  N   +  N
 
     def ρ_fn(self, t):
-        return self.params.c * lib.exp(self.κ.convolve(self.JᕽAᐩI, t))
+        return self.params.c * shim.exp(self.κ.convolve(self.JᕽAᐩI, t))
 
     def A_fn(self, t):
         p_arr = sinn.clip_probabilities(self.ρ[t] * self.A.dt)
         return self.rndstream.binomial(size = self.A.shape,
                                        n = self.params.N,
                                        p = self.ρ[t] * self.A.dt) / self.params.N / self.A.dt
+
+    def A_range_fn(self, t_array):
+        shim.check( t_array[0] < t_array[-1] )
+            # We don't want to check that the entire array is ordered; this is a compromise
+        shim.check( t_array[0] == self.a._cur_tidx + 1 )
+            # Because we only store the last value of occN, calculation
+            # must absolutely be done iteratively
+
+        if not shim.is_theano_object(self.A._data):
+            def loop(t):
+                res = self.A_fn(t)
+                # If you have any shared variables, update them here
+                return res
+
+            A_lst = [loop(t) for t in t_array]
+            return A_lst
+
+        else:
+            res, upds = theano.scan(self.A_onestep,
+                                    sequences = t_array,
+                                    non_sequences = [self.JᕽAᐩI],
+                                    name = 'A scan')
+
 
     def update_params(self, new_params):
         if np.all(new_params.J == self.params.J):
@@ -136,10 +162,10 @@ class GLM_exp_kernel(Model):
 
         # loglikelihood: -log k! - log (N-k)! + k log p + (N-k) log (1-p) + cst
         # We use the Stirling approximation for the second log
-        l = lib.sum( -lib.log(sp.misc.factorial(k_arr, exact=True))
-                     -(self.params.N-k_arr)*lib.log(self.params.N - k_arr)
+        l = shim.lib.sum( -shim.lib.log(sp.misc.factorial(k_arr, exact=True))
+                     -(self.params.N-k_arr)*shim.lib.log(self.params.N - k_arr)
                      + self.params.N-k_arr
-                     + k_arr*lib.log(p_arr) + k_arr*lib.log(1-p_arr) )
+                     + k_arr*shim.lib.log(p_arr) + k_arr*shim.lib.log(1-p_arr) )
             # with exact=True, factorial is computed only once for whole array
 
         return l
@@ -151,7 +177,7 @@ class GLM_exp_kernel(Model):
         v_arr = ρ_arr * (1/self.A.dt - ρ_arr) / self.params.N
 
         # Log-likelihood: Σ -log σ + (x-μ)²/2σ² + cst
-        l = lib.sum( -lib.log(lib.sqrt(v_arr)) + (A_arr - ρ_arr)**2 / 2 / v_arr )
+        l = shim.lib.sum( -shim.lib.log(shim.lib.sqrt(v_arr)) + (A_arr - ρ_arr)**2 / 2 / v_arr )
 
         return l
 

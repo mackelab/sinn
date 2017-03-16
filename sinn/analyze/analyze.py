@@ -123,6 +123,11 @@ def plot(history):
     A list of the created axes.
     """
 
+    if hasattr(history, 'compiled_history'):
+        if history.compiled_history is None:
+            raise ValueError("You need to compile a Theano history before plotting it.")
+        history = history.compiled_history
+
     if isinstance(history, histories.Series):
         ax = plt.gca()
         plt.plot(history.get_time_array(), history.get_trace())

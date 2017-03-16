@@ -18,9 +18,6 @@ import sinn.common as com
 import sinn.histories
 import sinn.kernels
 import sinn.diskcache as diskcache
-floatX = config.floatX
-lib = shim.lib
-
 
 class Model(com.ParameterMixin):
     """Abstract model class.
