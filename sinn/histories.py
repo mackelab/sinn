@@ -652,7 +652,7 @@ class History(HistoryBase):
                                .format(self.name))
 
         try:
-            self._theano_cur_tidx = -1
+            self._theano_cur_tidx = self.t0idx - 1
         except AttributeError:
             raise RuntimeError("You are calling `theano_reset` on a non-Theano history.")
 
