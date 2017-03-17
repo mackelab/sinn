@@ -339,8 +339,8 @@ class History(HistoryBase):
                              "integer, a float, or a slice of integers and floats"
                              .format(key, type(key)))
 
-        if shim.is_theano_object(end):
-            # For theano objects, we don't really compute, but just save the
+        if shim.is_theano_variable(end):
+            # For theano variables, we don't really compute, but just save the
             # value up to which the later evaluation will need to go.
             self.compute_up_to(end)
         elif end > self._cur_tidx:
@@ -846,18 +846,21 @@ class History(HistoryBase):
             # TODO Safeguard against infinite recursion
 
             def single_t(t):
+                input_data = [data.get_value(borrow=True) for data in input_list_for_eval]
+                    # each stored _data member is a shared variable, but we need to evaluate
+                    # on the underlying plain NumPy data
                 if self._iterative:
-                    f_inputs = [t] + input_list_for_eval + [self.compiled_history._data]
+                    f_inputs = [t] + input_data + [self.compiled_history._data.get_value(borrow=True)]
                 else:
-                    f_inputs = [t] + input_list_for_eval
+                    f_inputs = [t] + input_data
 
                 if shim.istype(t, 'int'):
-                    t_idcs = get_tidcs_idx(t, *input_list_for_eval)
+                    t_idcs = get_tidcs_idx(t, *input_data)
                     for t_idx, hist in zip(t_idcs, eval_histories):
                         hist.compute_up_to(t_idx)
                     return update_f_idx(*f_inputs)
                 else:
-                    t_idcs = get_tidcs_float(t, *input_list_for_eval)
+                    t_idcs = get_tidcs_float(t, *input_data)
                     for t_idx, hist in zip(t_idcs, eval_histories):
                         if t_idx > hist._cur_tidx:
                             # Normally compute_up_to checks for this, but if
@@ -1076,7 +1079,7 @@ class Spiketimes(ConvolveMixin, History):
         # Since data is stored as spike times, no need to update the data
 
     def set(self, source=None):
-        """Set the entire series in one go. `source` may be a list of arrays, a
+        """Set the entire set of spiketimes in one go. `source` may be a list of arrays, a
         function, or even another History instance. It's useful for
         example if we've already computed history by some other means,
         or we specified it as a function (common for inputs).
@@ -1243,7 +1246,8 @@ class Series(ConvolveMixin, History):
             self._data = shim.T.zeros(self._tarr.shape + self.shape, dtype=config.floatX)
             #self.inf_bin = shim.lib.zeros(self.shape, dtype=config.floatX)
         else:
-            self._data = np.zeros(self._tarr.shape + self.shape, dtype=config.floatX)
+            self._data = shim.shared(np.zeros(self._tarr.shape + self.shape, dtype=config.floatX),
+                                     borrow=True)
 
         self._original_data = None
             # Stores a Theano update dictionary. This value can only be
@@ -1301,17 +1305,18 @@ class Series(ConvolveMixin, History):
             shim.check(tidx.start <= self._cur_tidx + 1)
                 # Ensure that we update at most one step in the future
 
-        if shim.is_theano_object(value):
+        if self.use_theano:
+            if not shim.is_theano_object(value):
+                logger.warning("Updating a Theano array ({}) with a Python value. "
+                               "This is likely an error.".format(self.name))
             if self._original_data is not None or shim.theano_updates != {}:
                 raise RuntimeError("You can only update data once within a "
                                    "Theano computational graph. If you need "
                                    "multiple updates, compile a single "
                                    "update as a function, and call that "
                                    "function repeatedly.")
-            if not shim.is_theano_object(self._data):
-                raise ValueError("You are trying to update a pure numpy series "
-                                 "with a Theano variable. You need to make the "
-                                 "series a Theano variable as well.")
+            assert(shim.is_theano_variable(self._data))
+                # This should be guaranteed by self.use_theano=False
             self._original_data = self._data
                 # Persistently store the current _data
                 # It's important not to reuse variables after they've
@@ -1322,19 +1327,36 @@ class Series(ConvolveMixin, History):
                 shim.theano_updates.update(updates)
                     #.update is a dictionary method
 
+            self._theano_cur_tidx = shim.largest(self._theano_cur_tidx, end)
+
         else:
+            if shim.is_theano_variable(value):
+                raise ValueError("You are trying to update a pure numpy series ({}) "
+                                 "with a Theano variable. You need to make the "
+                                 "series a Theano variable as well."
+                                 .format(self.name))
+            assert(shim.is_shared_variable(self._data))
+                # This should be guaranteed by self.use_theano=False
+
+            dataobject = self._data.get_value(borrow=True)
+
             if updates is not None:
                 raise RuntimeError("For normal Python and NumPy functions, update "
                                    "variables in place rather than using an update dictionary.")
-            if self._data[tidx].shape != value.shape:
+            if dataobject[tidx].shape != value.shape:
                 raise ValueError("Series '{}': The shape of the update value - {} - does not match "
                                  "the shape of a timeslice(s) - {} -."
-                                 .format(self.name, value.shape, self._data[tidx].shape))
-            self._data[tidx] = value
+                                 .format(self.name, value.shape, dataobject[tidx].shape))
 
-        self._cur_tidx = end
-            # If we updated in the past, this will reduce _cur_tidx
-            # – which is what we want
+            dataobject[tidx] = value
+            self._data.set_value(dataobject, borrow=True)
+
+            #self._data = shim.set_subtensor(self._data[tidx], value)
+            #self._data[tidx] = value
+
+            self._cur_tidx = end
+                # If we updated in the past, this will reduce _cur_tidx
+                # – which is what we want
 
     def pad(self, before, after=0, **kwargs):
         '''Extend the time array before and after the history. If called
@@ -1366,31 +1388,35 @@ class Series(ConvolveMixin, History):
         pad_width = ( [(before_len, after_len)]
                       + [(0, 0) for i in range(len(self.shape))] )
 
-        self._data = shim.pad(self._data, previous_tarr_shape + self.shape,
-                              pad_width, **kwargs)
-
-
-    def generator(self, inputs):
-        """
-        Return a function which, given the inputs, returns a pure numpy Series
-        object equivalent to this one in the current state (i.e. at the current tidx).
-        This function only makes sense on a Series where the data is a Theano variable.
-        (For non-Theano data, the returned generator just returns `self`.)
-        """
-        if not shim.is_theano_object(self._data):
-            def gen(self, input_vals):
-                assert(len(inputs) == len(input_vals))
-                assert(x == y for x,y in zip(inputs, input_vals))
-                return self
-
+        if self.use_theano:
+            self._data = shim.pad(self._data, previous_tarr_shape + self.shape,
+                                  pad_width, **kwargs)
         else:
-            f = shim.theano.function(inputs, self._data)
-            def gen(self, input_vals):
-                new_series = Series(self)
-                new_series.set(f(input_vals))
-                return new_series
+            self._data.set_value( shim.pad(self._data, previous_tarr_shape + self.shape,
+                                           pad_width, **kwargs) )
 
-        return gen
+
+    # def generator(self, inputs):
+    #     """
+    #     Return a function which, given the inputs, returns a pure numpy Series
+    #     object equivalent to this one in the current state (i.e. at the current tidx).
+    #     This function only makes sense on a Series where the data is a Theano variable.
+    #     (For non-Theano data, the returned generator just returns `self`.)
+    #     """
+    #     if not shim.is_theano_object(self._data):
+    #         def gen(self, input_vals):
+    #             assert(len(inputs) == len(input_vals))
+    #             assert(x == y for x,y in zip(inputs, input_vals))
+    #             return self
+
+    #     else:
+    #         f = shim.theano.function(inputs, self._data)
+    #         def gen(self, input_vals):
+    #             new_series = Series(self)
+    #             new_series.set(f(input_vals))
+    #             return new_series
+
+    #     return gen
 
 
     # def set_inf_bin(self, value):
@@ -1411,7 +1437,14 @@ class Series(ConvolveMixin, History):
 
     def zero(self):
         """Zero out the series. The initial data point will NOT be zeroed"""
-        self._data[1:] = np.zeros(self._data.shape[1:])
+        if self.use_theano:
+            self._original_data = self._data
+            self._data = shim.set_subtensor(self._original_data[1:],
+                                            shim.T.zeros(self._data.shape[1:]))
+        else:
+            new_data = self._data.get_value(borrow=True)
+            new_data[1:] = np.zeros(self._data.shape[1:])
+            self._data.set_value(new_data, borrow=True)
 
     def get_trace(self, component=None, include_padding='none'):
         """
@@ -1446,14 +1479,19 @@ class Series(ConvolveMixin, History):
         else:
             raise ValueError("include_padding should be one of {}.".format(padding_vals))
 
+        self.compute_up_to(stop-1)
         if component is None:
-            return self[start:stop]
+            #return self[start:stop]
+            return self._data.get_value()[start:stop]
         elif shim.istype(component, 'int'):
-            return self[start:stop, component]
+            #return self[start:stop, component]
+            return self._data.get_value()[start:stop, component]
         elif len(component) == 1:
-            return self[start:stop, component[0]]
+            #return self[start:stop, component[0]]
+            return self._data.get_value()[start:stop, component]
         elif len(component) == 2:
-            return self[start:stop, component[0], component[1]]
+            #return self[start:stop, component[0], component[1]]
+            return self._data.get_value()[start:stop, component]
         else:
             raise NotImplementedError("Really, you used more than 2 data dimensions in a series array ? Ok, well let me know and I'll implement that.")
 
@@ -1524,10 +1562,10 @@ class Series(ConvolveMixin, History):
                                   ) from e  #.with_traceback(e.__traceback__)
 
             shim.check(data is not None)
-            shim.check(data.shape == self._data.shape)
+            shim.check(data.shape == self._data.get_value(borrow=True).shape)
             shim.check(data.shape[0] == len(tarr))
 
-            self._data = data
+            self._data.set_value(data, borrow=True)
 
         self._cur_tidx = len(tarr) - 1
         return self._data
@@ -1537,8 +1575,8 @@ class Series(ConvolveMixin, History):
         `new_data` should not be a complex type, like the result of a `scan`
         """
         if new_data is not None:
-            self._data = new_data
-            self._original_data = None
+            self._data.set_value(new_data, borrow=True)
+        self._original_data = None
         super().theano_reset()
 
     def convolve(self, kernel, t=slice(None, None), kernel_slice=slice(None,None),

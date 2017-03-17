@@ -123,7 +123,8 @@ def plot(history):
     A list of the created axes.
     """
 
-    if hasattr(history, 'compiled_history'):
+    if history.use_theano:
+        assert(hasattr(history, 'compiled_history'))
         if history.compiled_history is None:
             raise ValueError("You need to compile a Theano history before plotting it.")
         history = history.compiled_history
