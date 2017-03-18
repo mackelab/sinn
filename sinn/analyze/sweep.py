@@ -60,7 +60,7 @@ class ParameterSweep:
     def __init__(self, model):
         self._model = model
         self.params_to_sweep = []
-        self.imports = []
+        self.imports = ['sinn', 'sinn.config', ('theano_shim', 'shim')]
         self.function = None
         self.shape = ()
         self.workdir = os.getcwd()
@@ -121,6 +121,8 @@ class ParameterSweep:
 
         def f(param_tuples):
 
+            loginfo("Evaluating sweep at {}".format(str(param_tuples)))
+
             # First update the model with the new parameters
             # `model` is a global variable in the process module.
             # It must be initialized before calls to f()
@@ -167,7 +169,13 @@ class ParameterSweep:
             ippclient[:].execute("import os")
             ippclient[:].execute("os.chdir('" + self.workdir + "')")
             for pkgname in self.imports:
-                ippclient[:].execute("import " + pkgname)
+                if isinstance(pkgname, tuple):
+                    ippclient[:].execute("import " + pkgname[0])
+                    ippclient[:].execute(pkgname[1] + " = " + pkgname[0])
+                else:
+                    ippclient[:].execute("import " + pkgname)
+            if sinn.config.use_theano():
+                ippclient[:].execute("sinn.config.load_theano()")
 
             ippclient[:].scatter('idnum', ippclient.ids, flatten=True, block=True)
             # Push the model to each engine's <globals> namespace
@@ -184,7 +192,6 @@ class ParameterSweep:
             # ippclient[:].push({'_logging_formatter': _logging_formatter})
             # ippclient[:].execute("_fh.setFormatter(_logging_formatter)")
             # ippclient[:].execute("logger.addHandler(_fh)")
-
             res_arr_raw = ippclient[:].map_async(f, self.param_list())
             monitor_async_result(res_arr_raw)
             res_arr = np.array(res_arr_raw.get()).reshape(self.shape)

@@ -122,7 +122,7 @@ def plot_activity(model):
 
 def plot_posterior(model_filename = _DEFAULT_DATAFILE,
                    posterior_filename = _DEFAULT_POSTERIORFILE):
-    plt.style.use('../sinn/analyze/plot_styles/mackelab_default.mplstyle')
+    plt.style.use('../sinn/analyze/stylelib/mackelab_default.mplstyle')
 
     target_dt = 0.002
         # The activity timestep we want to use.
@@ -200,15 +200,23 @@ def compute_posterior(target_dt,
     τ_sweep = sweep.logspace(0.0005, 0.5, fineness)
     param_sweep.add_param('J', idx=(0,0), axis_stops=J_sweep)
     param_sweep.add_param('τ', idx=(1,), axis_stops=τ_sweep)
-    def f(model):
-        return model.loglikelihood(burnin, burnin + data_len)
-    param_sweep.set_function(f, 'log $L$')
 
-    # timeout ipp.Client after 3 seconds
+    # Define the loglikelihood function
+    # if sinn.config.use_theano():
+    #     # TODO Precompile function
+    #     def l(model):
+    #         lcompiled = shim.theano.function([], model.loglikelihood(burnin, burnin + data_len))
+    #         return lcompiled()
+    # else:
+    #     def l(model):
+    #         return model.loglikelihood(burnin, burnin + data_len)
+    param_sweep.set_function(activity_model.get_loglikelihood(), 'log $L$')
+
+    # timeout ipp.Client after 2 seconds
     if ipp_url_file is not None:
         import ipyparallel as ipp
         try:
-            with sinn.timeout(3):
+            with sinn.timeout(2):
                 ippclient = ipp.Client(url_file=ipp_url_file)
         except TimeoutError:
             logger.info("Unable to connect to ipyparallel controller.")
@@ -247,8 +255,6 @@ def main():
         plt.ioff()
         plt.figure()
         plot_activity(activity_model)
-        plt.show()
-    return
     true_params = {'J': activity_model.params.J[0,0],
                    'τ': activity_model.params.τ[0,1]}
         # Save the true parameters before they are modified by the sweep
@@ -259,12 +265,13 @@ def main():
         # reinitializes histories). It also triggers a RuntimeError if
         # an attempt is made to modify A or I, indicating a code error.
     logposterior = compute_posterior(0.002, activity_model, ipp_profile="default")
-    plt.figure()
-    plot_posterior(logposterior)
-    color = anlz.plot_styles.color_schemes.map[logposterior.cmap].white
-    plt.axvline(true_params['J'], c=color)
-    plt.axhline(true_params['τ'], c=color)
-    plt.show()
+    if do_plots:
+        plt.figure()
+        plot_posterior(logposterior)
+        color = anlz.stylelib.color_schemes.map[logposterior.cmap].white
+        plt.axvline(true_params['J'], c=color)
+        plt.axhline(true_params['τ'], c=color)
+        plt.show()
 
     return logposterior
 
