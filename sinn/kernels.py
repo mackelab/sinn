@@ -89,6 +89,11 @@ class Kernel(ConvolveMixin, ParameterMixin):
             The time corresponding to f(0). Kernel is zero before this time.
         """
 
+        if shim.is_theano_variable(shape):
+            raise ValueError("You are trying to set the shape of kernel {} "
+                             "with a Theano variable. If it depends on a "
+                             "parameter, make sure you use its `get_value() "
+                             "method.".format(name))
         self.initialize(name, params=params, shape=shape,
                         memory_time=memory_time, t0=t0, **kwargs)
 

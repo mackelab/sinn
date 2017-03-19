@@ -6,7 +6,7 @@ author: Alexandre René
 """
 import logging
 import os
-from collections import namedtuple
+from collections import namedtuple, OrderedDict
 from copy import copy
 import numpy as np
 logger = logging.getLogger('sinn.sweep')
@@ -126,13 +126,18 @@ class ParameterSweep:
             # First update the model with the new parameters
             # `model` is a global variable in the process module.
             # It must be initialized before calls to f()
-            new_params = copy(model.params)
+            new_params_dict = OrderedDict( (key, val.get_value())
+                                           for key, val in model.params._asdict().items())
             for param, val in zip(params_to_sweep, param_tuples):
                 if param.idx is None:
                     param_val = val
                 else:
                     try:
-                        param_val = copy(getattr(new_params, param.name))
+                        param_val = copy(new_params_dict[param.name])
+                        # Copying ensures that we have a new reference,
+                        # ensuring that the model parameters are unchanged.
+                        # Otherwise the kernel may think it hasn't changed,
+                        # and would then not update itself.
                     except AttributeError:
                         raise ValueError(
                             "You are trying to sweep over the parameter "
@@ -140,11 +145,6 @@ class ParameterSweep:
                             .format(param.name, str(model)))
                     try:
                         param_val[param.idx] = val
-                        # I don't understand why, but if param_val and/or
-                        # new_params aren't explicitly copied, this
-                        # assignment sets *all* their values to val.
-                        # The kernel then thinks it hasn't changed and
-                        # doesn't update itself.
                     except IndexError:
                         # The parameter might have an extra dimension
                         # for broadcasting – try without it
@@ -156,8 +156,9 @@ class ParameterSweep:
                         else:
                             # Nope, param.idx really is incompatible
                             raise
-                new_params = new_params._replace(**{param.name: param_val})
-            model.update_params(new_params)
+                new_params_dict[param.name] = param_val
+                #new_params = new_params._replace(**{param.name: param_val})
+            model.update_params(model.Parameters(**new_params_dict))
             if hasattr(model, 'initialize'):
                 model.initialize()
 

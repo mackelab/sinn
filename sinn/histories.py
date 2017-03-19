@@ -439,7 +439,9 @@ class History(HistoryBase):
                                 self.tn + self.dt - config.abs_tolerance + after,
                                 self.dt)
             # Use of _tarr ensures we don't add more padding than necessary
-        self._tarr = np.hstack((before_array, self.get_time_array(), after_array))
+        self._tarr = np.hstack((before_array,
+                                self._tarr[self.t0idx:self.t0idx+len(self)],
+                                after_array))
         self.t0idx = len(before_array)
         self._cur_tidx += len(before_array)
 
@@ -459,7 +461,8 @@ class History(HistoryBase):
                           tidx,
                           len(self._tarr) + tidx)
 
-        if shim.is_theano_object(tidx):
+        #if shim.is_theano_object(tidx):
+        if self.use_theano:
             # Don't actually compute: just store the current_idx we would need
             self._theano_cur_tidx = shim.largest(end, self._theano_cur_tidx)
             return
@@ -484,14 +487,14 @@ class History(HistoryBase):
         elif not self._iterative:
             # Computation doesn't depend on history – just compute the whole thing in
             # one go
-            logger.info("Computing {} up to {}. History is not iterative, "
+            logger.info("Computing {} from {} to {}. History is not iterative, "
                         "so computing all times simultaneously."
-                        .format(self.name, self._tarr[tidx]))
+                        .format(self.name, self._tarr[start], self._tarr[stop-1]))
             self.update(slice(start,stop),
                         self._update_function(self._tarr[slice(start,stop)]))
         else:
-            logger.info("Iteratively computing {} up to {}."
-                        .format(self.name, self._tarr[tidx]))
+            logger.info("Iteratively computing {} from {} to {}."
+                        .format(self.name, self._tarr[start], self._tarr[stop-1]))
             old_percent = 0
             for i in np.arange(start, stop):
                 percent = (i*100)//stop
@@ -504,6 +507,7 @@ class History(HistoryBase):
     def get_time_array(self, include_padding=False):
         """Return the time array.
         By default, the padding portions before and after are not included.
+        Time points which have not yet been computed are also excluded.
         The flag `include_padding` changes this behaviour:
             - True or 'all'     : include padding at both ends
             - 'begin' or 'start': include the padding before t0
@@ -512,13 +516,19 @@ class History(HistoryBase):
         """
 
         if include_padding in ['begin', 'start']:
-            return self._tarr[: self.t0idx+self._unpadded_length]
+            start = 0
+            stop = min(self._cur_tidx+1, self.t0idx+len(self))
         elif include_padding in ['end']:
-            return self._tarr[self.t0idx:]
+            start = self.t0idx
+            stop = min(self._cur_tidx+1, len(self._tarr))
         elif include_padding in [True, 'all']:
-            return self._tarr
+            start = 0
+            stop = min(self._cur_tidx+1, len(self._tarr))
         else:
-            return self._tarr[self.t0idx : self.t0idx+self._unpadded_length]
+            start = self.t0idx
+            stop = min(self._cur_tidx+1, self.t0idx + len(self))
+
+        return self._tarr[start:stop]
 
     def retrieve(self, key):
         raise NotImplementedError  # retrieve function is history type specific
@@ -701,13 +711,17 @@ class History(HistoryBase):
             #full_idx_len = memory_idx_len + idx_shift
             #    # `memory_time` is the amount of time before t0
             dis_name = ("dis_" + kernel.name + " (" + self.name + ")")
+            if shim.is_theano_object(kernel.eval(0)):
+                use_theano=True
+            else:
+                use_theano=False
             dis_kernel = Series(t0=t0,
                                 tn=t0 + memory_idx_len*self.dt,
                                 dt=self.dt,
                                 shape=kernel.shape,
                                 f=kernel_func,
                                 name=dis_name,
-                                use_theano=False)
+                                use_theano=use_theano)
             dis_kernel.idx_shift = idx_shift
 
             setattr(kernel, dis_attr_name, dis_kernel)
@@ -807,6 +821,7 @@ class History(HistoryBase):
         assert(len(shim.theano_updates) == 0)
         output_res_idx = self._update_function(t_idx)
             # This should populate shim.theano_updates if there are shared variable
+        import pdb; pdb.set_trace()
         update_f_idx = shim.theano.function(inputs=[t_idx] + input_list + input_self,
                                             outputs=output_res_idx,
                                             updates=shim.theano_updates,
@@ -1448,7 +1463,10 @@ class Series(ConvolveMixin, History):
 
     def get_trace(self, component=None, include_padding='none'):
         """
-        Return the series data for the given component.
+        Return the series' computed data for the given component.
+        Time points which have not yet been computed are excluded, such that
+        the len(series.get_trace(*)) may be smaller than len(series). The
+        return value is however guaranteed to be consistent with get_time_array().
         If `component` is 'None', return the full multi-dimensional trace
 
         Parameters
@@ -1473,13 +1491,13 @@ class Series(ConvolveMixin, History):
             raise ValueError("include_padding should be one of {}.".format(padding_vals))
 
         if include_padding in ['none', 'before', 'left']:
-            stop = self.t0idx + len(self)
+            stop = self._cur_tidx + 1
         elif include_padding in padding_vals:
-            stop = len(self._tarr)
+            stop = min(self._cur_tidx + 1, len(self._tarr))
         else:
             raise ValueError("include_padding should be one of {}.".format(padding_vals))
 
-        self.compute_up_to(stop-1)
+        assert(self._cur_tidx >= stop - 1)
         if component is None:
             #return self[start:stop]
             return self._data.get_value()[start:stop]

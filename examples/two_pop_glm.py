@@ -34,11 +34,13 @@ ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
 logger.addHandler(ch)
 
-_DEFAULT_DATAFILE = "2-pop-glm.dat"
-name, ext = os.path.splitext(_DEFAULT_DATAFILE)
-_DEFAULT_POSTERIORFILE = name + "_logposterior" + ext
-
 sinn.config.load_theano()
+
+_DEFAULT_DATAFILE = "2-pop-glm.dat"
+theano_str = "_theano" if sinn.config.use_theano() else ""
+name, ext = os.path.splitext(_DEFAULT_DATAFILE)
+_DEFAULT_DATAFILE = name + theano_str + ext
+_DEFAULT_POSTERIORFILE = name + "_logposterior" +theano_str + ext
 
 def init_activity_model():
     model_params = GLM.Parameters(
@@ -74,10 +76,9 @@ def init_activity_model():
     input_hist.set_update_function(input_fn)
 
     # GLM activity model
-
     activity_model = GLM(model_params, Ahist, input_hist, rndstream,
                          memory_time=memory_time)
-
+    sinn.gparams = activity_model.params  # DEBUG
     return activity_model
 
 def generate(filename = _DEFAULT_DATAFILE):
@@ -255,8 +256,9 @@ def main():
         plt.ioff()
         plt.figure()
         plot_activity(activity_model)
-    true_params = {'J': activity_model.params.J[0,0],
-                   'τ': activity_model.params.τ[0,1]}
+    return
+    true_params = {'J': activity_model.params.J.get_value()[0,0],
+                   'τ': activity_model.params.τ.get_value()[0,1]}
         # Save the true parameters before they are modified by the sweep
     activity_model.A.lock = True
     activity_model.I.lock = True

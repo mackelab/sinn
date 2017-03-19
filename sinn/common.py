@@ -226,56 +226,62 @@ def define_parameters(param_dict):
     return Parameters
 
 def params_are_equal(params1, params2):
+    def get_value(param):
+        if shim.is_shared_variable(param):
+            return param.get_value()
+        else:
+            return param
+
     if set(params1._fields) != set(params2._fields):
-        log.warning("Comparing parameter sets for equality that don't even have the same fields.")
+        logger.warning("Comparing parameter sets for equality that don't even have the same fields.")
         return False
     for field in params1._fields:
         attr1 = getattr(params1, field)
         attr2 = getattr(params2, field)
         if type(attr1) != type(attr2):
-            log.error("The attributes {} in two different parameter sets are not even of the same type: {}({}), {}({}). This is almost certainly an error."
+            logger.error("The attributes {} in two different parameter sets are not even of the same type: {}({}), {}({}). This is almost certainly an error."
                       .format(field, str(attr1), str(type(attr1)),
                               str(attr2), str(type(attr2))))
             return False
-        if np.any(attr1 != attr2):
+        if np.any(get_value(attr1) != get_value(attr2)):
             return False
     return True
 
-def make_shared_tensor_params(params):
-    TParameters = namedtuple('TParameters', params._fields)
-    param_lst = []
-    for val, name in zip(params, params._fields):
-        # TODO: Check if val is already a theano tensor and adjust accordingly
-        try:
-            if val.dtype.kind in sp.typecodes['Float']:
-                param_lst.append(theano.shared(sp.array(val, dtype=config.floatX)))
-            else:
-                param_lst.append(theano.shared(val))
-        except ValueError:
-            # Can't convert val to numpy array – it's probably a theano tensor
-            # FIXME: if a scalar is not of type theano.config.floatX, this will actually
-            #        create a ElemWise.cast{} code, wrt which we can't differentiate
-            # FIXME: does it even make sense to produce a shared variable from another Theano variable ?
-            if val.dtype.kind in sp.typecodes['Float']:
-                param_lst.append(T.cast(theano.shared(val), dtype=config.floatX))
-            else:
-                param_lst.append(theano.shared(val))
-        param_lst[-1].name = name
+# def make_shared_tensor_params(params):
+#     TParameters = namedtuple('TParameters', params._fields)
+#     param_lst = []
+#     for val, name in zip(params, params._fields):
+#         # TODO: Check if val is already a theano tensor and adjust accordingly
+#         try:
+#             if val.dtype.kind in sp.typecodes['Float']:
+#                 param_lst.append(theano.shared(sp.array(val, dtype=config.floatX)))
+#             else:
+#                 param_lst.append(theano.shared(val))
+#         except ValueError:
+#             # Can't convert val to numpy array – it's probably a theano tensor
+#             # FIXME: if a scalar is not of type theano.config.floatX, this will actually
+#             #        create a ElemWise.cast{} code, wrt which we can't differentiate
+#             # FIXME: does it even make sense to produce a shared variable from another Theano variable ?
+#             if val.dtype.kind in sp.typecodes['Float']:
+#                 param_lst.append(T.cast(theano.shared(val), dtype=config.floatX))
+#             else:
+#                 param_lst.append(theano.shared(val))
+#         param_lst[-1].name = name
 
-    return TParameters(*param_lst)
+#     return TParameters(*param_lst)
 
-def make_cst_tensor_params(param_names, params):
-    """
-    Construct a Parameters set of Theano constants from a
-    Parameters set of NumPy/Python objects.
-    Code seems obsolete, or at least in dire need of updating.
-    """
-    TParameters = namedtuple('TParameters', param_names)
-    global name_counter
-    id_nums = range(name_counter, name_counter + len(param_names))
-    name_counter += len(param_names)
-    return TParameters(*(T.constant(getattr(params,name), str(id_num) + '_' + name, dtype=config.floatX)
-                         for name, id_num in zip(param_names, id_nums)))
+# def make_cst_tensor_params(param_names, params):
+#     """
+#     Construct a Parameters set of Theano constants from a
+#     Parameters set of NumPy/Python objects.
+#     Code seems obsolete, or at least in dire need of updating.
+#     """
+#     TParameters = namedtuple('TParameters', param_names)
+#     global name_counter
+#     id_nums = range(name_counter, name_counter + len(param_names))
+#     name_counter += len(param_names)
+#     return TParameters(*(T.constant(getattr(params,name), str(id_num) + '_' + name, dtype=config.floatX)
+#                          for name, id_num in zip(param_names, id_nums)))
 
 def get_parameter_subset(model, src_params):
     """
@@ -298,14 +304,33 @@ def get_parameter_subset(model, src_params):
             paramdict[name] = getattr(src_params, name)
     return model.Parameters(**paramdict)
 
+def set_parameters(target, source):
+    assert(hasattr(target, '_fields'))
+    if hasattr(source, '_fields'):
+        # We have a Parameter object
+        assert( set(target._fields) == set(source._fields) )
+        for field in target._fields:
+            val = getattr(source, field)
+            if shim.is_shared_variable(val):
+                val = val.get_value()
+            getattr(target, field).set_value( val )
+    else:
+        assert(isinstance(source, dict))
+        assert( set(target._fields) == set(source.keys()) )
+        for field in target._fields:
+            val = source[field]
+            if shim.is_shared_variable(val):
+                val = val.get_value()
+            getattr(target, field).set_value( val )
+
 
 class ParameterMixin:
 
     Parameter_info = {}
         # Overload this in derived classes
-        # Entries to Parameter dict: 'key': (dtype, default, bool)
-        # If the bool flag is True, parameter will guaranteed to be a matrix with at least 2 dimensions
-        # Default is bool = False.
+        # Entries to Parameter dict: 'key': (dtype, default, ensure_2d)
+        # If the ensure_2d flag is True, parameter will guaranteed to be a matrix with at least 2 dimensions
+        # Default is ensure_2d = False.
     Parameters = define_parameters(Parameter_info)
         # Overload this in derived classes
 
@@ -317,6 +342,7 @@ class ParameterMixin:
         #     raise TypeError("Unsufficient arguments: ParameterMixin "
         #                     "requires a `params` argument.")
         self.set_parameters(params)
+        super().__init__(*args, **kwargs)
 
     def cast_parameters(self, params):
         """
@@ -335,23 +361,35 @@ class ParameterMixin:
         # Cast the parameters to ensure they're of prescribed type
         param_dict = {}
         for key in self.Parameters._fields:
-            if isinstance(self.Parameter_info[key], tuple):
-                # TODO: Find a way to cast to dtype without making and then dereferencing an array
-                param_dict[key] = np.asarray(getattr(params, key), dtype=self.Parameter_info[key][0])
-                try:
-                    if self.Parameter_info[key][2]:
-                        # Also wrap scalars in a 2D matrix so they play nice with algorithms
-                        if shim.get_ndims(param_dict[key]) < 2:
-                            param_dict[key] = shim.add_axes(np.asarray(param_dict[key]), 2 - shim.get_ndims(param_dict[key]))
-                except KeyError:
-                    pass
+            val = getattr(params, key)
+            if shim.is_shared_variable(val) or shim.is_theano_object(val):
+                # HACK We just assume that val has already been properly casted. We do this
+                #      to keep the reference to the original variable
+                param_dict[key] = val
             else:
-                param_dict[key] = np.asarray(getattr(params, key), dtype=self.Parameter_info[key])
+                if isinstance(self.Parameter_info[key], tuple):
+                    # TODO: Find a way to cast to dtype without making and then dereferencing an array
+                    param_dict[key] = None
+                    temp_val = np.asarray(val, dtype=self.Parameter_info[key][0])
+                    # Check if we should ensure parameter is 2d.
+                    try:
+                        if self.Parameter_info[key][2]:
+                            # Also wrap scalars in a 2D matrix so they play nice with algorithms
+                            if temp_val.ndim < 2:
+                                param_dict[key] = shim.shared( shim.add_axes(np.asarray(temp_val), 2 - temp_val.ndim),
+                                                               name = key )
+                    except KeyError:
+                        pass
+                    if param_dict[key] is None:
+                        # `ensure_2d` is either False or unset
+                        param_dict[key] = shim.shared(temp_val, name = key)
+                else:
+                    param_dict[key] = shim.shared(np.asarray(val, dtype=self.Parameter_info[key]),
+                                                  name=key)
         return self.Parameters(**param_dict)
 
     def set_parameters(self, params):
         self.params = self.cast_parameters(params)
-
 
     def parameters_are_valid(self, params):
         """Returns `true` if all of the model's parameters can be set from `params`"""

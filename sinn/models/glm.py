@@ -82,7 +82,7 @@ class GLM_exp_kernel(Model):
         self.A.set_update_function(self.A_fn)
         self.ρ.set_update_function(self.ρ_fn)
 
-        κshape = self.params.N.shape
+        κshape = self.params.N.get_value().shape
         self.κ = ExpK('κ', self.params, κshape, memory_time=memory_time)
         self.add_kernel(self.κ)
 
@@ -185,6 +185,8 @@ class GLM_exp_kernel(Model):
                       + k_arr*shim.log(p_arr) + k_arr*shim.log(1-p_arr) )
             # with exact=True, factorial is computed only once for whole array
 
+        #self.last_parr = p_arr
+        #self.last_l = l
         return l
 
         # #-----------------
