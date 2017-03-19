@@ -35,6 +35,8 @@ ch.setLevel(logging.INFO)
 logger.addHandler(ch)
 
 sinn.config.load_theano()
+shim.theano.config.exception_verbosity='high'
+shim.theano.config.optimizer='fast_compile'
 
 _DEFAULT_DATAFILE = "2-pop-glm.dat"
 theano_str = "_theano" if sinn.config.use_theano() else ""
@@ -69,11 +71,12 @@ def init_activity_model():
         import numpy as np
             # Ensure that proper references to dependencies are pickled
             # This is only necessary for scripts directly called on the cli – imported modules are fine.
-        res = 10 + 10*np.sin(t*2*np.pi) + noise_hist[t]
+        res = 10 + 10*shim.sin(t*2*np.pi) + noise_hist[t]
         return res
 
     input_hist = histories.Series(Ahist, name='I', shape=model_params.N.shape, iterative=False)
     input_hist.set_update_function(input_fn)
+    input_hist.add_inputs([noise_hist])
 
     # GLM activity model
     activity_model = GLM(model_params, Ahist, input_hist, rndstream,
@@ -100,7 +103,7 @@ def generate(filename = _DEFAULT_DATAFILE):
         #activity_model.A.set()  # Ensure all time points are computed
 
         # Save the new data
-        io.save(filename, activity_model)
+#        io.save(filename, activity_model)
 
         logger.info("Done.")
     else:
@@ -256,6 +259,7 @@ def main():
         plt.ioff()
         plt.figure()
         plot_activity(activity_model)
+        plt.show()
     return
     true_params = {'J': activity_model.params.J.get_value()[0,0],
                    'τ': activity_model.params.τ.get_value()[0,1]}

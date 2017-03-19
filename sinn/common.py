@@ -12,6 +12,7 @@ import numpy as np
 from collections import namedtuple, deque
 
 import theano_shim as shim
+from ._globals import *
 from . import config
 #import sinn.config as config
 import sinn.diskcache as diskcache
@@ -41,6 +42,11 @@ def clip_probabilities(prob_array,
     return shim.lib.clip(prob_array, min_prob, max_prob)
         # Clipping a little bit within the interval [0,1] avoids problems
         # with likelihoods (which tend to blow up when p = 0 or 1)
+
+def add_sibling_input(sibling, new_input):
+    for key, val in inputs.items():
+        if sibling in val:
+            inputs[key].add(new_input)
 
 class HistoryBase:
 

@@ -34,16 +34,20 @@ class GaussianWhiteNoise(Model):
         history._iterative = False # It's white noise => no dependence on the past
 
     def eval(self, t):
-        if hasattr(t, 'shape'):
-            outshape = np.concatenate((t.shape, self.params.shape))
-                # Shape is an array, not a tuple
+        # 'shape' and 'clip_limit' are not parameters we want to treat
+        # with Theano, and since all parameters are shared, we use
+        # `get_value()` to get a pure NumPy value.
+        if shim.isscalar(t):
+            outshape = self.params.shape.get_value()
         else:
-            outshape = self.params.shape
+            assert(t.ndim==1)
+            outshape = shim.concatenate((t.shape, self.params.shape.get_value()))
+                # Shape is an array, not a tuple
         return shim.lib.clip(self.rndstream.normal(avg  = 0,
                                                    std  = self.params.std/np.sqrt(self.history.dt),
                                                    size = outshape),
-                       -self.params.clip_limit,
-                       self.params.clip_limit)
+                             -self.params.clip_limit.get_value(),
+                             self.params.clip_limit.get_value())
 
 
 class Step(Model):

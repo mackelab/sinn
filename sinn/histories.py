@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 """
 Created on Mon Jan 16 2017
 
@@ -262,7 +263,7 @@ class History(HistoryBase):
         self._update_function = f
         self._compute_range = None
         self._iterative = iterative
-        self._inputs = set()
+        sinn.inputs[self] = set()
 
         self._tarr = np.arange(self.t0,
                                self.tn + self.dt - config.abs_tolerance,
@@ -729,56 +730,45 @@ class History(HistoryBase):
             return dis_kernel
 
     def add_input(self, variable):
+
         if isinstance(variable, str):
             # Not sure why a string would be an input, but it guards against the next line
-            self._inputs.add(variable)
+            sinn.inputs[self].add(x)
+            #self._inputs.add(variable)
         try:
             for x in variable:
-                self._inputs.add(x)
+                sinn.inputs[self].add(x)
         except TypeError:
             # variable is not iterable
-            self._inputs.add(x)
+            sinn.inputs[self].add(x)
     add_inputs = add_input
         # Synonym to add_input
 
-    def compile(self, inputs=None):
-
-        self._compiling = True
-
+    def get_input_list(self, inputs=None):
         if inputs is None:
             inputs = []
-        if not self.use_theano:
-            raise RuntimeError("You cannot compile a Series that does not use Theano.")
         try:
             inputs = set(inputs)
         except TypeError:
             inputs = set([inputs])
 
-        self._inputs = self._inputs.union(inputs)
-        if self in self._inputs:
+        sinn.inputs[self] = sinn.inputs[self].union(inputs)
+        if self in sinn.inputs[self]:
             assert(self._iterative)
-            self._inputs.remove(self)  # We'll add it back later. We remove it now to
-                                       # avoid calling its `compile` method
+            sinn.inputs[self].remove(self)  # We add `self` separately. We remove it now to
+                                            # avoid calling its `compile` method
 
-        # Convert the inputs to a list to fix the order
-        if self._iterative:
-            input_self = [self._data]
-        else:
-            input_self = []
-        input_list = list(self._inputs)
+        input_list = list(sinn.inputs[self])
 
-        # Create the new history which will contain the compiled update function
-        self.compiled_history = self.__class__(self, name=self.name + " (compiled)", use_theano=False)
-        # Compiled histories must have exactly the same indices, so we match the padding
-        self.compiled_history.pad(self.t0idx, len(self._tarr) - len(self) - self.t0idx)
+        input_histories = []
+        eval_histories = []
+        terminating_histories = []
 
         # To avoid circular dependencies (e.g. where A[t] depends on B[t] which
         # depends on A[t-1]),  we recursively compile the inputs so that their
         # own graphs don't show up in this one. The `compiling` flag is used
         # to prevent infinite recursion.
-        input_histories = []
-        eval_histories = []
-        terminating_histories = []
+
             # Typically, calculations take the form A[t-1] -> B[t] -> C[t] -> A[t]
             # In this case, A[t-1] would be the history terminating the cycle started at A[t]
             # These are identified by the fact that they are already in the middle of a
@@ -806,11 +796,19 @@ class History(HistoryBase):
                                  .format(type(inp)))
         assert(len(input_list) == len(input_list_for_eval))
 
-        def get_required_tidx(hist):
-            if hist in terminating_histories:
-                return hist._theano_cur_tidx - 1
-            else:
-                return hist._theano_cur_tidx
+        return input_list, input_histories, eval_histories, terminating_histories, input_list_for_eval
+
+    def compile(self, inputs=None):
+
+        self._compiling = True
+
+        if not self.use_theano:
+            raise RuntimeError("You cannot compile a Series that does not use Theano.")
+
+        # Create the new history which will contain the compiled update function
+        self.compiled_history = self.__class__(self, name=self.name + " (compiled)", use_theano=False)
+        # Compiled histories must have exactly the same indices, so we match the padding
+        self.compiled_history.pad(self.t0idx, len(self._tarr) - len(self) - self.t0idx)
 
         # Compile the update function twice: for integers (time indices) and floats (times)
         # We also compile a second function, which returns the time indices up to which
@@ -821,11 +819,39 @@ class History(HistoryBase):
         assert(len(shim.theano_updates) == 0)
         output_res_idx = self._update_function(t_idx)
             # This should populate shim.theano_updates if there are shared variable
-        import pdb; pdb.set_trace()
-        update_f_idx = shim.theano.function(inputs=[t_idx] + input_list + input_self,
-                                            outputs=output_res_idx,
-                                            updates=shim.theano_updates,
-                                            on_unused_input='warn')
+            # It might also trigger the creation of some intermediary histories,
+            # which is why we wait until here to grab the list of inputs.
+        input_list, input_histories, eval_histories, terminating_histories, input_list_for_eval = self.get_input_list(inputs)
+        # Convert the inputs to a list to fix the order
+        if self._iterative:
+            input_self = [self._data]
+        else:
+            input_self = []
+
+        def get_required_tidx(hist):
+            # We cast to Theano variables below because the values may
+            # be pure NumPy (if they don't depend on t), and
+            # theano.function requires variables
+            if hist in terminating_histories:
+                return shim.asvariable(hist._theano_cur_tidx - 1)
+            else:
+                return shim.asvariable(hist._theano_cur_tidx)
+
+        try:
+            # TODO? Put this try clause on every theano.function call ?
+            update_f_idx = shim.theano.function(inputs=[t_idx] + input_list + input_self,
+                                                outputs=output_res_idx,
+                                                updates=shim.theano_updates,
+                                                on_unused_input='warn')
+        except shim.theano.gof.fg.MissingInputError as e:
+            err_msg = e.args[0].split('\n')[0] # Remove the stack trace
+            raise RuntimeError("\nYou seem to be missing some inputs for compiling the history {}. "
+                               "Don't forget that all histories on which {} depends "
+                               "must be specified by calling its `add_inputs` method.\n"
+                               .format(self.name, self.name)
+                               + "The original Theano error was (it should contain the name of the missing input):\n"
+                               + err_msg)
+
         output_tidcs_idx = [get_required_tidx(hist) for hist in input_histories]
         get_tidcs_idx = shim.theano.function(inputs=[t_idx] + input_list,
                                              outputs=output_tidcs_idx,
@@ -1258,7 +1284,14 @@ class Series(ConvolveMixin, History):
                          shape=shape, **kwargs)
 
         if self.use_theano:
-            self._data = shim.T.zeros(self._tarr.shape + self.shape, dtype=config.floatX)
+            # Make the dimensions where shape is 1 broadcastable
+            # (as they would be with NumPy)
+            data_tensor_broadcast = tuple(
+                [False] + [True if d==1 else 0 for d in self.shape] )
+            self.DataType = shim.T.TensorType(sinn.config.floatX,
+                                              data_tensor_broadcast)
+            #self._data = shim.T.zeros(self._tarr.shape + self.shape, dtype=config.floatX)
+            self._data = self.DataType(self.name + ' data')
             #self.inf_bin = shim.lib.zeros(self.shape, dtype=config.floatX)
         else:
             self._data = shim.shared(np.zeros(self._tarr.shape + self.shape, dtype=config.floatX),
@@ -1609,6 +1642,13 @@ class Series(ConvolveMixin, History):
             raise ValueError("Kernel bounds must be specified as a slice.")
 
         discretized_kernel = self.discretize_kernel(kernel)
+        sinn.add_sibling_input(self, discretized_kernel)
+            # This adds the discretized_kernel as an input to any history
+            # which already has `self` as an input. It's a compromise solution,
+            # because these don't necessarily involve this convolution, but
+            # the overeager association avoids the complicated problem of
+            # tracking exactly which histories now need `discretized_kernel`
+            # as an input.
 
         def get_start_idx(t):
             return 0 if t is None else discretized_kernel.get_t_idx(t)
