@@ -49,12 +49,28 @@ def add_sibling_input(sibling, new_input):
             inputs[key].add(new_input)
 
 def theano_reset():
-    for hist in sinn.inputs:
+    global inputs
+    for hist in inputs:
         # HACK sinn.inputs happens to have each history as
         # a key, but this is not what it's meant for
-        hist.theano_reset()
+        if not hist.locked:
+            hist.theano_reset()
+    inputs = {}
 
-    sinn.inputs = {}
+def array_to_slice(array):
+    """Always returns a slice going from smallest to biggest.
+    Assumes the array is monotonous and evenly spaced.
+    """
+    dt = shim.abs(array[1] - array[0])
+    shim.check(dt > 0)
+    start = shim.ifelse(shim.lt(array[0], array[-1]),
+                        array[0],
+                        array[-1])
+    stop = shim.ifelse(shim.lt(array[0], array[-1]),
+                       array[-1],
+                       array[0]) + dt
+        # We add dt because the array upper bound is inclusive
+    return slice(start, stop)
 
 class HistoryBase:
 
@@ -133,6 +149,15 @@ class OpCache:
 
     def ensureget(self, other, args):
         """Will compute and cache the operation if it isn't already."""
+
+        ###############################################
+        # Don't use caching for Theano objects
+        if ( (hasattr(self, 'use_theano') and self.use_theano)
+               or (hasattr(other, 'use_theano') and other.use_theano)):
+            return shim.lib.stack( [ self.op(other, arg) for arg in args ] )
+
+        ################################################
+
         # Create a set of keys for the cache dictionary
         arg_keys = [self.sanitize(arg) for arg in args]
 

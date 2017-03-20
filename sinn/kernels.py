@@ -299,11 +299,16 @@ class ExpKernel(Kernel):
 
         #TODO: store multiple caches, one per history
         #TODO: do something with kernel_slice
+        #TODO: Allow Theano to make use of the exp kernel
 
         # We are careful here to avoid converting t to time if not required,
         # so that kernel slicing can work on indices
 
-        if (kernel_slice != slice(None, None)):
+        if (kernel_slice != slice(None, None)
+            or shim.is_theano_object(t)):
+            # HACK Our caching does not deal with Theano times, so in that
+            # case we bypass that as well.
+            # FIXME Ideally we would allow Theano to use the optimized exp kernel as well.
             return hist.convolve(self, t, kernel_slice)
                 # Exit before updating last_t and last_conv
         elif shim.asarray(t).dtype != shim.asarray(self.last_t).dtype:

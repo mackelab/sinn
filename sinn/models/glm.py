@@ -93,7 +93,12 @@ class GLM_exp_kernel(Model):
                               # NxN  dot  N   +  N
 
     def ρ_fn(self, t):
-        return self.params.c * shim.exp(self.κ.convolve(self.JᕽAᐩI, t))
+        if not shim.isscalar(t):
+            # t is an array of times, but convolve wants a slice
+            tslice = sinn.array_to_slice(t)
+        else:
+            tslice = t
+        return self.params.c * shim.exp(self.κ.convolve(self.JᕽAᐩI, tslice))
 
     def A_fn(self, t):
         p_arr = sinn.clip_probabilities(self.ρ[t] * self.A.dt)
@@ -126,9 +131,9 @@ class GLM_exp_kernel(Model):
 
     def update_params(self, new_params):
         if np.all(new_params.J == self.params.J):
-            self.JᕽAᐩI.lock = True
+            self.JᕽAᐩI.locked = True
         else:
-            self.JᕽAᐩI.lock = False
+            self.JᕽAᐩI.locked = False
         super().update_params(new_params)
 
     def loglikelihood(self, start=None, stop=None):
@@ -160,8 +165,8 @@ class GLM_exp_kernel(Model):
 
         # Binomial mean: Np = Nρdt.  E(A) = E(B)/N/dt = ρ
         ρ_arr = ρhist[start:stop]
-        # if Ahist.lock and self.I.lock:
-        #    self.JᕽAᐩI.lock = True
+        # if Ahist.locked and self.I.locked:
+        #    self.JᕽAᐩI.locked = True
         # TODO: lock JᕽAᐩI in a less hacky way
 
         #------------------
@@ -210,13 +215,13 @@ class GLM_exp_kernel(Model):
                 fcompiled = theano.function(input_list, logL,
                                             on_unused_input='warn')
                 sinn.theano_reset()
-                return fcompiled(input_vals)
+                return fcompiled(*input_vals)
         else:
             def f(model):
                 return model.loglikelihood(*args, **kwargs)
         return f
 
-    def get_input_list():
+    def get_input_list(self):
         # TODO: move to Models
         input_list = []
         input_vals = []

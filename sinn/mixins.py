@@ -143,7 +143,7 @@ class ConvolveMixin(CachedOperation):
                     #######################################
 
             retval = shim.lib.stack( [ convolve_single_t(t, slc)
-                                  for slc in kernel_slice ] )
+                                       for slc in kernel_slice ] )
 
         else:
             assert(isinstance(t, slice))
@@ -155,6 +155,14 @@ class ConvolveMixin(CachedOperation):
             # E.g.: assume kernel.idx_shift = 0. Then (convolution result)[0] corresponds
             # to the convolution evaluated at tarr[kernel.stop]. So to get the result
             # at tarr[tidx], we need (convolution result)[tidx - kernel.stop].
+
+            if ( not history._iterative
+                 or history.use_theano and history._is_batch_computable() ):
+                # The history can be computed at any time point independently of the others
+                # Force computing it entirely, to allow the use of batch operations
+                # FIXME conditioning on `use_theano` is meant to make sure that we are
+                # computing a Theano graph, but I'm not positive that it's a 100% safe test
+                history.compute_up_to(history.t0idx + len(history) - 1)
 
             retval = self._conv_cache.ensureget(other, kernel_slice)[:,output_tidx]
 
@@ -183,6 +191,6 @@ class ConvolveMixin(CachedOperation):
             kernel = self
 
         return shim.lib.stack( [self._convolve_op_single_t(other, t, kernel_slice)
-                           for t in history._tarr[history.t0idx: history.t0idx + len(history)]] )
+                                for t in history._tarr[history.t0idx: history.t0idx + len(history)]] )
 
 

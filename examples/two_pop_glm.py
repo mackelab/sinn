@@ -97,10 +97,17 @@ def generate(filename = _DEFAULT_DATAFILE):
             activity_model.A.compile()
             logger.info("Done.")
             Ahist = activity_model.A.compiled_history
+            Ihist = activity_model.I.compiled_history
         else:
             Ahist = activity_model.A
+            Ihist = activity_model.I
         t1 = time.perf_counter()
-        Ahist.compute_up_to(-1)
+        Ahist.set()
+        Ihist.set()
+            # In theory Ihist is computed along with Ahist, but it may e.g.
+            # leave the last data point uncomputed if Ahist does not need it.
+            # Ihist.set() here ensures that the input is also computed all the
+            # way to the end, which avoids when building the graph for the posterior.
         t2 = time.perf_counter()
         logger.info("Data generation took {}s.".format((t2-t1)))
 
@@ -268,8 +275,8 @@ def main():
     true_params = {'J': activity_model.params.J.get_value()[0,0],
                    'τ': activity_model.params.τ.get_value()[0,1]}
         # Save the true parameters before they are modified by the sweep
-    activity_model.A.lock = True
-    activity_model.I.lock = True
+    activity_model.A.lock()
+    activity_model.I.lock()
         # Locking A and I prevents them from being cleared when the
         # parameters are updated (by default updating parameters
         # reinitializes histories). It also triggers a RuntimeError if

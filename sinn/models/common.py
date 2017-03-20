@@ -137,7 +137,7 @@ class Model(com.ParameterMixin):
 
     def update_params(self, new_params):
         """
-        The `lock` attribute of histories is used to determine whether
+        The `locked` attribute of histories is used to determine whether
         they need to be recomputed.
         """
         assert(all( type(param.get_value()) == type(new_param)
@@ -176,7 +176,7 @@ class Model(com.ParameterMixin):
             kernel.update_params(self.params)
 
         for hist in self.history_list:
-            if not hist.lock:
+            if not hist.locked:
                 self.clear_history(hist)
 
     def clear_history(self, history):

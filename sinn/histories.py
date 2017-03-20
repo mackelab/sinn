@@ -37,7 +37,7 @@ class History(HistoryBase):
         + t0               : float. Time at which history starts
         + tn               : float. Time at which history ends
         + dt               : float. Timestep size
-        + lock             : bool. Whether modifications to history are allowed
+        + locked           : bool. Whether modifications to history are allowed. Modify through method
         + _tarr            : float ndarray. Ordered array of all time bins
         + _cur_tidx        : int. Tracker for the latest time bin for which we know history.
         + _update_function : Function taking a time and returning the history
@@ -48,6 +48,7 @@ class History(HistoryBase):
     The following methods are also guaranteed to be defined:
         + compile          : If the update function is a Theano graph, compile it
                              and attach the new history as `compiled_history`.
+        + lock             : Set the locked status
     A History may also define
         + _compute_range   : Function taking an array of consecutive times and returning
                              an array-like object of the history at those times.
@@ -93,7 +94,7 @@ class History(HistoryBase):
         value: timeslice
             The timeslice to store.
         '''
-        if self.lock:
+        if self.locked:
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))
 
@@ -193,9 +194,16 @@ class History(HistoryBase):
         -------
         None
         """
+
+        ############
+        # Flags
+        self._iterative = iterative
+        self._compiling = False
         self.instance_counter += 1
-        self.lock = False
+        self.locked = False
             # When this is True, the history is not allowed to be changed
+        ############
+
         if name is None:
             name = "history{}".format(self.instance_counter)
         # Grab defaults from the other instance:
@@ -262,8 +270,6 @@ class History(HistoryBase):
                 raise RuntimeError("The update function for {} is not set.".format(self))
         self._update_function = f
         self._compute_range = None
-        self._iterative = iterative
-        self._compiling = False
 
         self._tarr = np.arange(self.t0,
                                self.tn + self.dt - config.abs_tolerance,
@@ -283,6 +289,9 @@ class History(HistoryBase):
         Ensure that history has been computed far enough to retrieve
         the desired timeslice, and then call the class' `retrieve` method.
 
+        As a side-effect, adds this history to the list of inputs (it is presumed
+        that since we indexing on it, it will appear in the computational graph.)
+
         NOTE: key will not be shifted to reflect history padding. So `key = 0`
         may well refer to a time *before* t0.
 
@@ -291,8 +300,6 @@ class History(HistoryBase):
         key: int, float, slice or array
             If an array, it must be consecutive (this is not checked).
         """
-        if self.use_theano and self not in sinn.inputs:
-            sinn.inputs[self] = set()
 
         if shim.isscalar(key):
             key = self.get_t_idx(key)
@@ -349,6 +356,17 @@ class History(HistoryBase):
         elif end > self._cur_tidx:
             self.compute_up_to(end)
 
+            if (self.use_theano
+                and self.compiled_history is not None
+                and self.compiled_history._cur_tidx >= end):
+                # If the history has already been computed to this point, just return that
+                return self.compiled_history[key]
+
+
+        # Add `self` to list of inputs
+        if self.use_theano and self not in sinn.inputs:
+            sinn.inputs[self] = set()
+
         return self.retrieve(key)
 
     def clear(self):
@@ -359,14 +377,42 @@ class History(HistoryBase):
         *Note* If this history is part of a model, you should use that
         model's `clear_history` method instead.
         """
-        if self.lock:
+        if self.locked:
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))
         self._cur_tidx = self.t0idx - 1
+
+        if self.use_theano and self.compiled_history is not None:
+            self.compiled_history.clear()
+
         try:
             super().clear()
         except AttributeError:
             pass
+
+    def lock(self):
+        """
+        Lock the history to prevent modifications.
+        Raises a warning if the history has not been set up to its end
+        (since once locked, it can no longer be updated).
+        """
+        if (self._cur_tidx < self.t0idx + len(self) - 1
+            and (not self.use_theano
+                 or self.compiled_history is None)):
+            # Only trigger for Theano histories if their compiled histories are unset
+            # (If they are set, they will do their own check)
+            logger.warning("You are locking the unfilled history {}. Trying to "
+                           "evaluate it beyond {} will trigger an error."
+                           .format(self.name, self._tarr[self._cur_tidx]))
+        self.locked = True
+        if self.use_theano and self.compiled_history is not None:
+            self.compiled_history.lock()
+
+    def unlock(self):
+        """Remove the history lock."""
+        self.locked = False
+        if self.use_theano and self.compiled_history is not None:
+            self.compiled_history.unlock()
 
     def set_update_function(self, func):
         """
@@ -453,10 +499,6 @@ class History(HistoryBase):
     def compute_up_to(self, tidx):
         """Compute the history up to `tidx` inclusive."""
 
-        if self.lock:
-            raise RuntimeError("Tried to modify locked history {}."
-                               .format(self.name))
-
         shim.check(shim.istype(tidx, 'int'))
 
         start = self._cur_tidx + 1
@@ -465,8 +507,11 @@ class History(HistoryBase):
                           len(self._tarr) + tidx)
 
         #if shim.is_theano_object(tidx):
-        if self.use_theano and self._compiling:
+        if self.use_theano and (self._compiling
+                                or any(hist._compiling for hist in sinn.inputs)):
             # Don't actually compute: just store the current_idx we would need
+            # HACK The or line prevents any chaining of Theano graphs
+            # FIXME Allow chaining of Theano graphs when possible/specified
             self._theano_cur_tidx = shim.largest(end, self._theano_cur_tidx)
             return
 
@@ -477,6 +522,21 @@ class History(HistoryBase):
             # know what value `end` has
             # TODO? Remove this and rely on update ? So that NumPy runs
             # go through the same code as Theano ?
+            return
+
+        if (not shim.is_theano_object(end)
+            and hasattr(self, '_theano_cur_tidx')
+            and not shim.is_theano_object(self._theano_cur_tidx)
+            and end <= self._theano_cur_tidx):
+            # Theano computations over fixed time intervals can land here.
+            # In these cases we can also safely abort the computation
+            return
+
+        if (not shim.is_theano_object(end)
+            and self.use_theano
+            and self.compiled_history is not None
+            and end <= self.compiled_history._cur_tidx):
+            # A computed value already exists and has been computed to this point
             return
 
         #########
@@ -491,6 +551,13 @@ class History(HistoryBase):
             tarr = self._tarr
             printlogs = True
 
+        if not self._iterative:
+            batch_computable = True
+        elif (self.use_theano and self._is_batch_computable()):
+            batch_computable = True
+        else:
+            batch_computable = False
+
         if self._compute_range is not None:
             # A specialized function for computing multiple time points
             # has been defined – use it.
@@ -500,14 +567,17 @@ class History(HistoryBase):
             self.update(slice(start, stop),
                         self._compute_range(tarr[slice(start, stop)]))
 
-        elif self._is_batch_computable():
+        elif batch_computable:
             # Computation doesn't depend on history – just compute the whole thing in
             # one go
             if printlogs:
                 logger.info("Computing {} from {} to {}. Computing all times simultaneously."
                             .format(self.name, tarr[start], tarr[stop-1]))
             self.update(slice(start,stop),
-                        self._update_function(tarr[slice(start,stop)]))
+                        self._update_function(tarr[slice(start,stop)][::-1])[::-1])
+                # The order in which _update_function is called is flipped, putting
+                # later times first. This ensures that if upstream computations
+                # are triggered, they will also batch update.
         else:
             assert(not shim.is_theano_object(tarr))
             logger.info("Iteratively computing {} from {} to {}."
@@ -674,7 +744,7 @@ class History(HistoryBase):
         It is assumed that variables in self._theano_updates have been safely
         updated externally.
         """
-        if self.lock:
+        if self.locked:
             raise RuntimeError("Cannot modify the locked history {}."
                                .format(self.name))
 
@@ -738,7 +808,9 @@ class History(HistoryBase):
                                 shape=kernel.shape,
                                 f=kernel_func,
                                 name=dis_name,
-                                use_theano=use_theano)
+                                use_theano=use_theano,
+                                iterative=False)
+                # Kernels are non-iterative by definition: they only depend on their parameters
             dis_kernel.idx_shift = idx_shift
 
             setattr(kernel, dis_attr_name, dis_kernel)
@@ -946,6 +1018,9 @@ class History(HistoryBase):
         """
         Returns true if the history can be computed at all time points
         simultaneously.
+        WARNING: This function is only to be used for the construction of
+        a Theano graph. After compilation, sinn.inputs is cleared, and therefore
+        the result of this function will no longer be valid.
         """
         # Prevent infinite recursion with a temporary property
         if hasattr(self, '_batch_loop_flag'):
@@ -956,7 +1031,14 @@ class History(HistoryBase):
         if not self._iterative:
             # Batch computable by construction
             retval = True
-        elif all( hist.lock or hist._is_batch_computable()
+        elif self not in sinn.inputs:
+            # It's the user's responsibility to specify important inputs;
+            # if there are none, we assume this history does not depend on any other.
+            # Note that undefined intermediary inputs (such as a dynamically
+            # created discretized kernel) are fine, as long as the upstream
+            # is included in sinn.inputs.
+            retval = True
+        elif all( hist.locked or hist._is_batch_computable()
                   for hist in sinn.inputs[self]):
             # The potential cyclical dependency chain has been broken
             retval = True
@@ -1071,7 +1153,7 @@ class Spiketimes(ConvolveMixin, History):
 
     def clear(self, init_data=-np.inf):
         """Spiketrains can't just be invalidated, they really have to be cleared."""
-        if self.lock:
+        if self.locked:
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))
         self.initialize(init_data)
@@ -1133,7 +1215,7 @@ class Spiketimes(ConvolveMixin, History):
         neuron_idcs: iterable
             List of neuron indices that fired in this bin.
         '''
-        if self.lock:
+        if self.locked:
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))
 
@@ -1181,7 +1263,7 @@ class Spiketimes(ConvolveMixin, History):
         provided it has been previously defined. Can be used to force
         computation of the whole series.
         """
-        if self.lock:
+        if self.locked:
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))
 
@@ -1373,7 +1455,7 @@ class Series(ConvolveMixin, History):
             the form `(value, updates)`, where `updates` is a Theano
             update dictionary.
         '''
-        if self.lock:
+        if self.locked:
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))
 
@@ -1615,7 +1697,7 @@ class Series(ConvolveMixin, History):
         provided it has been previously defined. Can be used to force
         computation of the whole series.
         """
-        if self.lock:
+        if self.locked:
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))
 
@@ -1746,8 +1828,8 @@ class Series(ConvolveMixin, History):
                     .format(tidx))
             dim_diff = discretized_kernel.ndim - self.ndim
             return self.dt * shim.lib.sum(discretized_kernel[kernel_slice][::-1]
-                                     * shim.add_axes(self[hist_slice], dim_diff, -self.ndim),
-                                     axis=0)
+                                          * shim.add_axes(self[hist_slice], dim_diff, -self.ndim),
+                                          axis=0)
                 # history needs to be augmented by a dimension to match the kernel
                 # Since kernels are [to idx][from idx], the augmentation has to be on
                 # the second-last axis for broadcasting to be correct.
