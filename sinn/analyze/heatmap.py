@@ -82,10 +82,10 @@ class HeatMap:
     def apply_op(self, new_label, op, b=None):
         if b is None:
             return HeatMap(new_label, op(self.data),
-                           self.param_axes, self.norm)
+                           self.axes, self.norm)
         else:
             return HeatMap(new_label, op(self.data, b),
-                           self.param_axes, self.norm)
+                           self.axes, self.norm)
 
     def __abs__(self):
         return self.apply_op('abs({})'.format(self.function_label),

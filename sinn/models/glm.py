@@ -66,7 +66,7 @@ class GLM_exp_kernel(Model):
 
         # Compute Js*A+I before convolving, so we only convolve once
         # (We shamelessly abuse of unicode support for legibility)
-        self.JᕽAᐩI = histories.Series(self.A, "JsᕽAᐩI",
+        self.JᕽAᐩI = histories.Series(self.A, "JᕽAᐩI",
                                       shape = self.A.shape,
                                       f = self.JᕽAᐩI_fn)
 
@@ -82,7 +82,7 @@ class GLM_exp_kernel(Model):
         self.A.set_update_function(self.A_fn)
         self.ρ.set_update_function(self.ρ_fn)
 
-        κshape = self.params.N.shape
+        κshape = self.params.N.get_value().shape
         self.κ = ExpK('κ', self.params, κshape, memory_time=memory_time)
         self.add_kernel(self.κ)
 
@@ -133,22 +133,34 @@ class GLM_exp_kernel(Model):
 
     def loglikelihood(self, start=None, stop=None):
 
+        hist_type_msg = ("To compute the loglikelihood, you need to use a NumPy "
+                            "history for the {}, or compile the history beforehand.")
+        if self.A.use_theano:
+            if self.A.compiled_history is None:
+                raise RuntimeError(hist_type_msg.format("activity"))
+            else:
+                Ahist = self.A.compiled_history
+        else:
+            Ahist = self.A
+
+        ρhist = self.ρ
+
         # We deliberately use times here (instead of indices) for start/
         # stop so that they remain consistent across different histories
         if start is None:
-            start = self.A.t0
+            start = Ahist.t0
         else:
-            start = self.A.get_time(start)
+            start = Ahist.get_time(start)
         if stop is None:
-            stop = self.A.tn
+            stop = Ahist.tn
         else:
-            stop = self.A.get_time(stop)
+            stop = Ahist.get_time(stop)
 
-        A_arr = self.A[start:stop]
+        A_arr = Ahist[start:stop]
 
         # Binomial mean: Np = Nρdt.  E(A) = E(B)/N/dt = ρ
-        ρ_arr = self.ρ[start:stop]
-        # if self.A.lock and self.I.lock:
+        ρ_arr = ρhist[start:stop]
+        # if Ahist.lock and self.I.lock:
         #    self.JᕽAᐩI.lock = True
         # TODO: lock JᕽAᐩI in a less hacky way
 
@@ -156,31 +168,61 @@ class GLM_exp_kernel(Model):
         # True log-likelihood
 
         # Number of spikes
-        k_arr = (A_arr * self.A.dt * self.params.N).astype('int16')
+        k_arr = (A_arr * Ahist.dt * self.params.N).astype('int16')
         # Spiking probabilities
-        p_arr = sinn.clip_probabilities(ρ_arr * self.A.dt)
+        p_arr = sinn.clip_probabilities(ρ_arr * Ahist.dt)
 
         # loglikelihood: -log k! - log (N-k)! + k log p + (N-k) log (1-p) + cst
         # We use the Stirling approximation for the second log
-        l = shim.lib.sum( -shim.lib.log(sp.misc.factorial(k_arr, exact=True))
-                     -(self.params.N-k_arr)*shim.lib.log(self.params.N - k_arr)
-                     + self.params.N-k_arr
-                     + k_arr*shim.lib.log(p_arr) + k_arr*shim.lib.log(1-p_arr) )
+        l = shim.sum( -shim.log(shim.factorial(k_arr, exact=True))
+                      -(self.params.N-k_arr)*shim.log(self.params.N - k_arr)
+                      + self.params.N-k_arr
+                      + k_arr*shim.log(p_arr) + k_arr*shim.log(1-p_arr) )
             # with exact=True, factorial is computed only once for whole array
 
+        #self.last_parr = p_arr
+        #self.last_l = l
         return l
 
-        #-----------------
-        # Gaussian approximation to the log-likelihood
+        # #-----------------
+        # # Gaussian approximation to the log-likelihood
 
-        # Binomial variance: Np(1-p)  V(A) = V(B)/(Ndt)² = ρ(1/dt - ρ)/N
-        v_arr = ρ_arr * (1/self.A.dt - ρ_arr) / self.params.N
+        # # Binomial variance: Np(1-p)  V(A) = V(B)/(Ndt)² = ρ(1/dt - ρ)/N
+        # v_arr = ρ_arr * (1/Ahist.dt - ρ_arr) / self.params.N
 
-        # Log-likelihood: Σ -log σ + (x-μ)²/2σ² + cst
-        l = shim.lib.sum( -shim.lib.log(shim.lib.sqrt(v_arr)) + (A_arr - ρ_arr)**2 / 2 / v_arr )
+        # # Log-likelihood: Σ -log σ + (x-μ)²/2σ² + cst
+        # l = shim.lib.sum( -shim.lib.log(shim.lib.sqrt(v_arr)) + (A_arr - ρ_arr)**2 / 2 / v_arr )
 
-        return l
+        # return l
 
+    def get_loglikelihood(self, *args, **kwargs):
+        # Pickling is more robust for functions imported from a module, which is why
+        # we don't define `f` in the top level script.
+        if sinn.config.use_theano():
+            # TODO Precompile function
+            def f(model):
+                import theano
+                sinn.gparams = self.params # DEBUG
+                logL = model.loglikelihood(*args, **kwargs)
+                    # Calling logL sets the sinn.inputs, which we need
+                    # before calling get_input_list
+                input_list, input_vals = self.get_input_list()
+                fcompiled = theano.function(input_list, logL,
+                                            on_unused_input='warn')
+                sinn.theano_reset()
+                return fcompiled(input_vals)
+        else:
+            def f(model):
+                return model.loglikelihood(*args, **kwargs)
+        return f
 
-
-
+    def get_input_list():
+        # TODO: move to Models
+        input_list = []
+        input_vals = []
+        for hist in sinn.inputs:
+            if shim.is_theano_variable(hist._data):
+                shape = hist._tarr.shape + hist.shape
+                input_list.append(hist._data)
+                input_vals.append(np.zeros(shape, dtype=sinn.config.floatX))
+        return input_list, input_vals

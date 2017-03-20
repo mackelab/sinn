@@ -140,9 +140,9 @@ class Model(com.ParameterMixin):
         The `lock` attribute of histories is used to determine whether
         they need to be recomputed.
         """
-        logger.info("Updating model with new parameters {}".format(new_params))
-        assert(type(self.params) == type(new_params))
-        self.params = new_params
+        assert(all( type(param.get_value()) == type(new_param)
+                    for param, new_param in zip(self.params, new_params) ))
+        sinn.set_parameters(self.params, new_params)
         logger.info("Model params are now {}. Updating kernels...".format(self.params))
         kernels_to_update = []
         for kernel in self.kernel_list:
@@ -170,9 +170,10 @@ class Model(com.ParameterMixin):
                                         .format(str(op), obj.name, kernel.name))
                             del op.cache[hash(kernel)]
 
-                        diskcache.save(kernel)
-                        logger.info("Updating kernel {}.".format(kernel.name))
-                        kernel.update_params(new_params)
+        for kernel in kernels_to_update:
+            diskcache.save(kernel)
+            logger.info("Updating kernel {}.".format(kernel.name))
+            kernel.update_params(self.params)
 
         for hist in self.history_list:
             if not hist.lock:

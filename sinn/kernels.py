@@ -89,6 +89,11 @@ class Kernel(ConvolveMixin, ParameterMixin):
             The time corresponding to f(0). Kernel is zero before this time.
         """
 
+        if shim.is_theano_variable(shape):
+            raise ValueError("You are trying to set the shape of kernel {} "
+                             "with a Theano variable. If it depends on a "
+                             "parameter, make sure you use its `get_value() "
+                             "method.".format(name))
         self.initialize(name, params=params, shape=shape,
                         memory_time=memory_time, t0=t0, **kwargs)
 
@@ -208,7 +213,10 @@ class Kernel(ConvolveMixin, ParameterMixin):
         attr_to_del = []
         for attr in dir(self):
             if attr[:9] == "discrete_":
-                attr_to_del.append(attr)
+                if not attr.use_theano:
+                    # Theano kernels are not precomputed, so they also
+                    # don't need to be deleted
+                    attr_to_del.append(attr)
         for attr in attr_to_del:
             logger.info("Removing stale kernel " + attr)
             delattr(self, attr)

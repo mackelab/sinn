@@ -44,12 +44,15 @@ def unload_librairies(library_list):
     librairies.difference_update(library_list)
     set_floatX()
 
-def load_theano():
+def load_theano(flag=True):
     """
     Call this to activate Theano in Theano-aware modules.
     Best done at the top of a script, right after the imports.
     """
-    load_librairies(['theano'])
+    if flag:
+        load_librairies(['theano'])
+    else:
+        unload_librairies(['theano'])
 
 def use_theano():
     """Flag method: returns True if Theano is used."""

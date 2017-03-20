@@ -7,6 +7,7 @@ author: Alexandre René
 
 import logging
 import os.path
+import time
 import numpy as np
 import scipy as sp
 from collections import namedtuple, OrderedDict
@@ -34,11 +35,15 @@ ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
 logger.addHandler(ch)
 
-_DEFAULT_DATAFILE = "2-pop-glm.dat"
-name, ext = os.path.splitext(_DEFAULT_DATAFILE)
-_DEFAULT_POSTERIORFILE = name + "_logposterior" + ext
-
 sinn.config.load_theano()
+shim.theano.config.exception_verbosity='high'
+shim.theano.config.optimizer='fast_compile'
+
+_DEFAULT_DATAFILE = "2-pop-glm.dat"
+theano_str = "_theano" if sinn.config.use_theano() else ""
+name, ext = os.path.splitext(_DEFAULT_DATAFILE)
+_DEFAULT_DATAFILE = name + theano_str + ext
+_DEFAULT_POSTERIORFILE = name + "_logposterior" +theano_str + ext
 
 def init_activity_model():
     model_params = GLM.Parameters(
@@ -67,17 +72,16 @@ def init_activity_model():
         import numpy as np
             # Ensure that proper references to dependencies are pickled
             # This is only necessary for scripts directly called on the cli – imported modules are fine.
-        res = 10 + 10*np.sin(t*2*np.pi) + noise_hist[t]
+        res = 10 + 10*shim.sin(t*2*np.pi) + noise_hist[t]
         return res
 
     input_hist = histories.Series(Ahist, name='I', shape=model_params.N.shape, iterative=False)
     input_hist.set_update_function(input_fn)
+    input_hist.add_inputs([noise_hist])
 
     # GLM activity model
-
     activity_model = GLM(model_params, Ahist, input_hist, rndstream,
                          memory_time=memory_time)
-
     return activity_model
 
 def generate(filename = _DEFAULT_DATAFILE):
@@ -95,11 +99,13 @@ def generate(filename = _DEFAULT_DATAFILE):
             Ahist = activity_model.A.compiled_history
         else:
             Ahist = activity_model.A
+        t1 = time.perf_counter()
         Ahist.compute_up_to(-1)
-        #activity_model.A.set()  # Ensure all time points are computed
+        t2 = time.perf_counter()
+        logger.info("Data generation took {}s.".format((t2-t1)))
 
         # Save the new data
-        io.save(filename, activity_model)
+#        io.save(filename, activity_model)
 
         logger.info("Done.")
     else:
@@ -122,7 +128,7 @@ def plot_activity(model):
 
 def plot_posterior(model_filename = _DEFAULT_DATAFILE,
                    posterior_filename = _DEFAULT_POSTERIORFILE):
-    plt.style.use('../sinn/analyze/plot_styles/mackelab_default.mplstyle')
+    plt.style.use('../sinn/analyze/stylelib/mackelab_default.mplstyle')
 
     target_dt = 0.002
         # The activity timestep we want to use.
@@ -200,15 +206,23 @@ def compute_posterior(target_dt,
     τ_sweep = sweep.logspace(0.0005, 0.5, fineness)
     param_sweep.add_param('J', idx=(0,0), axis_stops=J_sweep)
     param_sweep.add_param('τ', idx=(1,), axis_stops=τ_sweep)
-    def f(model):
-        return model.loglikelihood(burnin, burnin + data_len)
-    param_sweep.set_function(f, 'log $L$')
 
-    # timeout ipp.Client after 3 seconds
+    # Define the loglikelihood function
+    # if sinn.config.use_theano():
+    #     # TODO Precompile function
+    #     def l(model):
+    #         lcompiled = shim.theano.function([], model.loglikelihood(burnin, burnin + data_len))
+    #         return lcompiled()
+    # else:
+    #     def l(model):
+    #         return model.loglikelihood(burnin, burnin + data_len)
+    param_sweep.set_function(activity_model.get_loglikelihood(), 'log $L$')
+
+    # timeout ipp.Client after 2 seconds
     if ipp_url_file is not None:
         import ipyparallel as ipp
         try:
-            with sinn.timeout(3):
+            with sinn.timeout(2):
                 ippclient = ipp.Client(url_file=ipp_url_file)
         except TimeoutError:
             logger.info("Unable to connect to ipyparallel controller.")
@@ -235,9 +249,13 @@ def compute_posterior(target_dt,
             # More robust pickling
 
     # Compute the posterior
+    t1 = time.perf_counter()
     logposterior = param_sweep.do_sweep(output_filename, ippclient)
             # This can take a long time
             # The result will be saved in output_filename
+    t2 = time.perf_counter()
+    logger.info("Calculation of the posterior took {}s."
+                .format((t2-t1)))
 
     return logposterior
 
@@ -247,10 +265,8 @@ def main():
         plt.ioff()
         plt.figure()
         plot_activity(activity_model)
-        plt.show()
-    return
-    true_params = {'J': activity_model.params.J[0,0],
-                   'τ': activity_model.params.τ[0,1]}
+    true_params = {'J': activity_model.params.J.get_value()[0,0],
+                   'τ': activity_model.params.τ.get_value()[0,1]}
         # Save the true parameters before they are modified by the sweep
     activity_model.A.lock = True
     activity_model.I.lock = True
@@ -259,12 +275,13 @@ def main():
         # reinitializes histories). It also triggers a RuntimeError if
         # an attempt is made to modify A or I, indicating a code error.
     logposterior = compute_posterior(0.002, activity_model, ipp_profile="default")
-    plt.figure()
-    plot_posterior(logposterior)
-    color = anlz.plot_styles.color_schemes.map[logposterior.cmap].white
-    plt.axvline(true_params['J'], c=color)
-    plt.axhline(true_params['τ'], c=color)
-    plt.show()
+    if do_plots:
+        plt.figure()
+        plot_posterior(logposterior)
+        color = anlz.stylelib.color_schemes.map[logposterior.cmap].white
+        plt.axvline(true_params['J'], c=color)
+        plt.axhline(true_params['τ'], c=color)
+        plt.show()
 
     return logposterior
 

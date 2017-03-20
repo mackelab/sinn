@@ -25,7 +25,7 @@ import theano_shim as shim
 import sinn.histories as histories
 from . import common as com
 from . import heatmap
-from .plot_styles import color_schemes as color_schemes
+from .stylelib import color_schemes as color_schemes
 
 # ==================================
 # Data types
@@ -116,43 +116,43 @@ def subsample(series, amount):
 # ==================================
 # Plotting
 
-def plot(history):
+def plot(data):
     """
     Returns
     -------
     A list of the created axes.
     """
 
-    if history.use_theano:
-        assert(hasattr(history, 'compiled_history'))
-        if history.compiled_history is None:
-            raise ValueError("You need to compile a Theano history before plotting it.")
-        history = history.compiled_history
+    if isinstance(data, histories.Series):
+        if data.use_theano:
+            assert(hasattr(data, 'compiled_history'))
+            if data.compiled_history is None:
+                raise ValueError("You need to compile a Theano history before plotting it.")
+            data = data.compiled_history
 
-    if isinstance(history, histories.Series):
         ax = plt.gca()
-        plt.plot(history.get_time_array(), history.get_trace())
+        plt.plot(data.get_time_array(), data.get_trace())
         return ax
 
-    elif isinstance(history, heatmap.HeatMap):
-        ax1_grid, ax2_grid = np.meshgrid(_centers_to_edges(history.axes[0]), _centers_to_edges(history.axes[1]), indexing='ij')
-        zmin = max(history.floor, history.min())
-        zmax = min(history.ceil, history.max())
+    elif isinstance(data, heatmap.HeatMap):
+        ax1_grid, ax2_grid = np.meshgrid(_centers_to_edges(data.axes[0]), _centers_to_edges(data.axes[1]), indexing='ij')
+        zmin = max(data.floor, data.min())
+        zmax = min(data.ceil, data.max())
         quadmesh = plt.pcolormesh(ax1_grid, ax2_grid,
-                                  history.data.clip(history.floor, history.ceil),
-                                  cmap = history.cmap,
-                                  norm = history.get_norm(),
+                                  data.data.clip(data.floor, data.ceil),
+                                  cmap = data.cmap,
+                                  norm = data.get_norm(),
                                   vmin=zmin, vmax=zmax)
         ax = plt.gca()
-        plt.xlabel(history.axes[0].name)
-        plt.ylabel(history.axes[1].name)
-        ax.set_xscale(history.axes[0].scale)
-        ax.set_yscale(history.axes[1].scale)
+        plt.xlabel(data.axes[0].name)
+        plt.ylabel(data.axes[1].name)
+        ax.set_xscale(data.axes[0].scale)
+        ax.set_yscale(data.axes[1].scale)
 
         cb = plt.colorbar()
-        cb.set_label(history.color_label)
+        cb.set_label(data.color_label)
 
-        color_scheme = color_schemes.map[history.cmap]
+        color_scheme = color_schemes.map[data.cmap]
         ax.tick_params(axis='both', which='both', color=color_scheme.white,
                        top='on', right='on', bottom='on', left='on',
                        direction='in')

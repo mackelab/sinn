@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 """
 Created on Mon Jan 16 2017
 
@@ -262,7 +263,7 @@ class History(HistoryBase):
         self._update_function = f
         self._compute_range = None
         self._iterative = iterative
-        self._inputs = set()
+        self._compiling = False
 
         self._tarr = np.arange(self.t0,
                                self.tn + self.dt - config.abs_tolerance,
@@ -290,6 +291,8 @@ class History(HistoryBase):
         key: int, float, slice or array
             If an array, it must be consecutive (this is not checked).
         """
+        if self.use_theano and self not in sinn.inputs:
+            sinn.inputs[self] = set()
 
         if shim.isscalar(key):
             key = self.get_t_idx(key)
@@ -439,7 +442,9 @@ class History(HistoryBase):
                                 self.tn + self.dt - config.abs_tolerance + after,
                                 self.dt)
             # Use of _tarr ensures we don't add more padding than necessary
-        self._tarr = np.hstack((before_array, self.get_time_array(), after_array))
+        self._tarr = np.hstack((before_array,
+                                self._tarr[self.t0idx:self.t0idx+len(self)],
+                                after_array))
         self.t0idx = len(before_array)
         self._cur_tidx += len(before_array)
 
@@ -459,51 +464,67 @@ class History(HistoryBase):
                           tidx,
                           len(self._tarr) + tidx)
 
-        if shim.is_theano_object(tidx):
+        #if shim.is_theano_object(tidx):
+        if self.use_theano and self._compiling:
             # Don't actually compute: just store the current_idx we would need
             self._theano_cur_tidx = shim.largest(end, self._theano_cur_tidx)
             return
 
-        if end <= self._cur_tidx:
+        if (not shim.is_theano_object(end)
+            and end <= self._cur_tidx):
             # Nothing to compute
+            # We exclude Theano objects because in this case we don't
+            # know what value `end` has
+            # TODO? Remove this and rely on update ? So that NumPy runs
+            # go through the same code as Theano ?
             return
 
         #########
         # Did not abort the computation => now let's do the computation
 
         stop = end + 1  # exclusive upper bound
+        # Construct a time array that will work even for Theano tidx
+        if shim.is_theano_object(start) or shim.is_theano_object(end):
+            tarr = shim.theano.shared(self._tarr, borrow=True)
+            printlogs = False
+        else:
+            tarr = self._tarr
+            printlogs = True
 
         if self._compute_range is not None:
             # A specialized function for computing multiple time points
             # has been defined – use it.
-            logger.info("Computing {} up to {}. Using custom batch operation."
-                        .format(self.name, self._tarr[tidx]))
+            if printlogs:
+                logger.info("Computing {} up to {}. Using custom batch operation."
+                            .format(self.name, tarr[tidx]))
             self.update(slice(start, stop),
-                        self._compute_range(self._tarr[slice(start, stop)]))
+                        self._compute_range(tarr[slice(start, stop)]))
 
-        elif not self._iterative:
+        elif self._is_batch_computable():
             # Computation doesn't depend on history – just compute the whole thing in
             # one go
-            logger.info("Computing {} up to {}. History is not iterative, "
-                        "so computing all times simultaneously."
-                        .format(self.name, self._tarr[tidx]))
+            if printlogs:
+                logger.info("Computing {} from {} to {}. Computing all times simultaneously."
+                            .format(self.name, tarr[start], tarr[stop-1]))
             self.update(slice(start,stop),
-                        self._update_function(self._tarr[slice(start,stop)]))
+                        self._update_function(tarr[slice(start,stop)]))
         else:
-            logger.info("Iteratively computing {} up to {}."
-                        .format(self.name, self._tarr[tidx]))
+            assert(not shim.is_theano_object(tarr))
+            logger.info("Iteratively computing {} from {} to {}."
+                        .format(self.name, tarr[start], tarr[stop-1]))
             old_percent = 0
             for i in np.arange(start, stop):
                 percent = (i*100)//stop
                 if percent > old_percent:
                     logger.info("{}%".format(percent))
                     old_percent = percent
-                self.update(i, self._update_function(self._tarr[i]))
+                self.update(i, self._update_function(tarr[i]))
         logger.info("Done computing {}.".format(self.name))
 
     def get_time_array(self, include_padding=False):
         """Return the time array.
         By default, the padding portions before and after are not included.
+        Time points which have not yet been computed are also excluded.
         The flag `include_padding` changes this behaviour:
             - True or 'all'     : include padding at both ends
             - 'begin' or 'start': include the padding before t0
@@ -512,13 +533,19 @@ class History(HistoryBase):
         """
 
         if include_padding in ['begin', 'start']:
-            return self._tarr[: self.t0idx+self._unpadded_length]
+            start = 0
+            stop = min(self._cur_tidx+1, self.t0idx+len(self))
         elif include_padding in ['end']:
-            return self._tarr[self.t0idx:]
+            start = self.t0idx
+            stop = min(self._cur_tidx+1, len(self._tarr))
         elif include_padding in [True, 'all']:
-            return self._tarr
+            start = 0
+            stop = min(self._cur_tidx+1, len(self._tarr))
         else:
-            return self._tarr[self.t0idx : self.t0idx+self._unpadded_length]
+            start = self.t0idx
+            stop = min(self._cur_tidx+1, self.t0idx + len(self))
+
+        return self._tarr[start:stop]
 
     def retrieve(self, key):
         raise NotImplementedError  # retrieve function is history type specific
@@ -701,13 +728,17 @@ class History(HistoryBase):
             #full_idx_len = memory_idx_len + idx_shift
             #    # `memory_time` is the amount of time before t0
             dis_name = ("dis_" + kernel.name + " (" + self.name + ")")
+            if shim.is_theano_object(kernel.eval(0)):
+                use_theano=True
+            else:
+                use_theano=False
             dis_kernel = Series(t0=t0,
                                 tn=t0 + memory_idx_len*self.dt,
                                 dt=self.dt,
                                 shape=kernel.shape,
                                 f=kernel_func,
                                 name=dis_name,
-                                use_theano=False)
+                                use_theano=use_theano)
             dis_kernel.idx_shift = idx_shift
 
             setattr(kernel, dis_attr_name, dis_kernel)
@@ -715,56 +746,48 @@ class History(HistoryBase):
             return dis_kernel
 
     def add_input(self, variable):
+
+        if self not in sinn.inputs:
+            sinn.inputs[self] = set()
+
         if isinstance(variable, str):
             # Not sure why a string would be an input, but it guards against the next line
-            self._inputs.add(variable)
+            sinn.inputs[self].add(x)
+            #self._inputs.add(variable)
         try:
             for x in variable:
-                self._inputs.add(x)
+                sinn.inputs[self].add(x)
         except TypeError:
             # variable is not iterable
-            self._inputs.add(x)
+            sinn.inputs[self].add(x)
     add_inputs = add_input
         # Synonym to add_input
 
-    def compile(self, inputs=None):
-
-        self._compiling = True
-
+    def get_input_list(self, inputs=None):
         if inputs is None:
             inputs = []
-        if not self.use_theano:
-            raise RuntimeError("You cannot compile a Series that does not use Theano.")
         try:
             inputs = set(inputs)
         except TypeError:
             inputs = set([inputs])
 
-        self._inputs = self._inputs.union(inputs)
-        if self in self._inputs:
+        sinn.inputs[self] = sinn.inputs[self].union(inputs)
+        if self in sinn.inputs[self]:
             assert(self._iterative)
-            self._inputs.remove(self)  # We'll add it back later. We remove it now to
-                                       # avoid calling its `compile` method
+            sinn.inputs[self].remove(self)  # We add `self` separately. We remove it now to
+                                            # avoid calling its `compile` method
 
-        # Convert the inputs to a list to fix the order
-        if self._iterative:
-            input_self = [self._data]
-        else:
-            input_self = []
-        input_list = list(self._inputs)
+        input_list = list(sinn.inputs[self])
 
-        # Create the new history which will contain the compiled update function
-        self.compiled_history = self.__class__(self, name=self.name + " (compiled)", use_theano=False)
-        # Compiled histories must have exactly the same indices, so we match the padding
-        self.compiled_history.pad(self.t0idx, len(self._tarr) - len(self) - self.t0idx)
+        input_histories = []
+        eval_histories = []
+        terminating_histories = []
 
         # To avoid circular dependencies (e.g. where A[t] depends on B[t] which
         # depends on A[t-1]),  we recursively compile the inputs so that their
         # own graphs don't show up in this one. The `compiling` flag is used
         # to prevent infinite recursion.
-        input_histories = []
-        eval_histories = []
-        terminating_histories = []
+
             # Typically, calculations take the form A[t-1] -> B[t] -> C[t] -> A[t]
             # In this case, A[t-1] would be the history terminating the cycle started at A[t]
             # These are identified by the fact that they are already in the middle of a
@@ -792,11 +815,19 @@ class History(HistoryBase):
                                  .format(type(inp)))
         assert(len(input_list) == len(input_list_for_eval))
 
-        def get_required_tidx(hist):
-            if hist in terminating_histories:
-                return hist._theano_cur_tidx - 1
-            else:
-                return hist._theano_cur_tidx
+        return input_list, input_histories, eval_histories, terminating_histories, input_list_for_eval
+
+    def compile(self, inputs=None):
+
+        self._compiling = True
+
+        if not self.use_theano:
+            raise RuntimeError("You cannot compile a Series that does not use Theano.")
+
+        # Create the new history which will contain the compiled update function
+        self.compiled_history = self.__class__(self, name=self.name + " (compiled)", use_theano=False)
+        # Compiled histories must have exactly the same indices, so we match the padding
+        self.compiled_history.pad(self.t0idx, len(self._tarr) - len(self) - self.t0idx)
 
         # Compile the update function twice: for integers (time indices) and floats (times)
         # We also compile a second function, which returns the time indices up to which
@@ -807,10 +838,39 @@ class History(HistoryBase):
         assert(len(shim.theano_updates) == 0)
         output_res_idx = self._update_function(t_idx)
             # This should populate shim.theano_updates if there are shared variable
-        update_f_idx = shim.theano.function(inputs=[t_idx] + input_list + input_self,
-                                            outputs=output_res_idx,
-                                            updates=shim.theano_updates,
-                                            on_unused_input='warn')
+            # It might also trigger the creation of some intermediary histories,
+            # which is why we wait until here to grab the list of inputs.
+        input_list, input_histories, eval_histories, terminating_histories, input_list_for_eval = self.get_input_list(inputs)
+        # Convert the inputs to a list to fix the order
+        if self._iterative:
+            input_self = [self._data]
+        else:
+            input_self = []
+
+        def get_required_tidx(hist):
+            # We cast to Theano variables below because the values may
+            # be pure NumPy (if they don't depend on t), and
+            # theano.function requires variables
+            if hist in terminating_histories:
+                return shim.asvariable(hist._theano_cur_tidx - 1)
+            else:
+                return shim.asvariable(hist._theano_cur_tidx)
+
+        try:
+            # TODO? Put this try clause on every theano.function call ?
+            update_f_idx = shim.theano.function(inputs=[t_idx] + input_list + input_self,
+                                                outputs=output_res_idx,
+                                                updates=shim.theano_updates,
+                                                on_unused_input='warn')
+        except shim.theano.gof.fg.MissingInputError as e:
+            err_msg = e.args[0].split('\n')[0] # Remove the stack trace
+            raise RuntimeError("\nYou seem to be missing some inputs for compiling the history {}. "
+                               "Don't forget that all histories on which {} depends "
+                               "must be specified by calling its `add_inputs` method.\n"
+                               .format(self.name, self.name)
+                               + "The original Theano error was (it should contain the name of the missing input):\n"
+                               + err_msg)
+
         output_tidcs_idx = [get_required_tidx(hist) for hist in input_histories]
         get_tidcs_idx = shim.theano.function(inputs=[t_idx] + input_list,
                                              outputs=output_tidcs_idx,
@@ -876,6 +936,36 @@ class History(HistoryBase):
         self.compiled_history.set_update_function(new_update_f)
 
         self._compiling = False
+
+
+    ################################
+    # Utility functions
+    ################################
+
+    def _is_batch_computable(self):
+        """
+        Returns true if the history can be computed at all time points
+        simultaneously.
+        """
+        # Prevent infinite recursion with a temporary property
+        if hasattr(self, '_batch_loop_flag'):
+            return False
+        else:
+            self._batch_loop_flag = True
+
+        if not self._iterative:
+            # Batch computable by construction
+            retval = True
+        elif all( hist.lock or hist._is_batch_computable()
+                  for hist in sinn.inputs[self]):
+            # The potential cyclical dependency chain has been broken
+            retval = True
+        else:
+            retval = False
+
+        del self._batch_loop_flag
+
+        return retval
 
 class Spiketimes(ConvolveMixin, History):
     """A class to store spiketrains.
@@ -1243,7 +1333,14 @@ class Series(ConvolveMixin, History):
                          shape=shape, **kwargs)
 
         if self.use_theano:
-            self._data = shim.T.zeros(self._tarr.shape + self.shape, dtype=config.floatX)
+            # Make the dimensions where shape is 1 broadcastable
+            # (as they would be with NumPy)
+            data_tensor_broadcast = tuple(
+                [False] + [True if d==1 else 0 for d in self.shape] )
+            self.DataType = shim.T.TensorType(sinn.config.floatX,
+                                              data_tensor_broadcast)
+            #self._data = shim.T.zeros(self._tarr.shape + self.shape, dtype=config.floatX)
+            self._data = self.DataType(self.name + ' data')
             #self.inf_bin = shim.lib.zeros(self.shape, dtype=config.floatX)
         else:
             self._data = shim.shared(np.zeros(self._tarr.shape + self.shape, dtype=config.floatX),
@@ -1448,7 +1545,10 @@ class Series(ConvolveMixin, History):
 
     def get_trace(self, component=None, include_padding='none'):
         """
-        Return the series data for the given component.
+        Return the series' computed data for the given component.
+        Time points which have not yet been computed are excluded, such that
+        the len(series.get_trace(*)) may be smaller than len(series). The
+        return value is however guaranteed to be consistent with get_time_array().
         If `component` is 'None', return the full multi-dimensional trace
 
         Parameters
@@ -1473,13 +1573,13 @@ class Series(ConvolveMixin, History):
             raise ValueError("include_padding should be one of {}.".format(padding_vals))
 
         if include_padding in ['none', 'before', 'left']:
-            stop = self.t0idx + len(self)
+            stop = self._cur_tidx + 1
         elif include_padding in padding_vals:
-            stop = len(self._tarr)
+            stop = min(self._cur_tidx + 1, len(self._tarr))
         else:
             raise ValueError("include_padding should be one of {}.".format(padding_vals))
 
-        self.compute_up_to(stop-1)
+        assert(self._cur_tidx >= stop - 1)
         if component is None:
             #return self[start:stop]
             return self._data.get_value()[start:stop]
@@ -1591,6 +1691,13 @@ class Series(ConvolveMixin, History):
             raise ValueError("Kernel bounds must be specified as a slice.")
 
         discretized_kernel = self.discretize_kernel(kernel)
+        sinn.add_sibling_input(self, discretized_kernel)
+            # This adds the discretized_kernel as an input to any history
+            # which already has `self` as an input. It's a compromise solution,
+            # because these don't necessarily involve this convolution, but
+            # the overeager association avoids the complicated problem of
+            # tracking exactly which histories now need `discretized_kernel`
+            # as an input.
 
         def get_start_idx(t):
             return 0 if t is None else discretized_kernel.get_t_idx(t)
