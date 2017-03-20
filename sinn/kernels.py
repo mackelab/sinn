@@ -213,7 +213,10 @@ class Kernel(ConvolveMixin, ParameterMixin):
         attr_to_del = []
         for attr in dir(self):
             if attr[:9] == "discrete_":
-                attr_to_del.append(attr)
+                if not attr.use_theano:
+                    # Theano kernels are not precomputed, so they also
+                    # don't need to be deleted
+                    attr_to_del.append(attr)
         for attr in attr_to_del:
             logger.info("Removing stale kernel " + attr)
             delattr(self, attr)

@@ -7,6 +7,7 @@ author: Alexandre René
 
 import logging
 import os.path
+import time
 import numpy as np
 import scipy as sp
 from collections import namedtuple, OrderedDict
@@ -81,7 +82,6 @@ def init_activity_model():
     # GLM activity model
     activity_model = GLM(model_params, Ahist, input_hist, rndstream,
                          memory_time=memory_time)
-    sinn.gparams = activity_model.params  # DEBUG
     return activity_model
 
 def generate(filename = _DEFAULT_DATAFILE):
@@ -99,8 +99,10 @@ def generate(filename = _DEFAULT_DATAFILE):
             Ahist = activity_model.A.compiled_history
         else:
             Ahist = activity_model.A
+        t1 = time.perf_counter()
         Ahist.compute_up_to(-1)
-        #activity_model.A.set()  # Ensure all time points are computed
+        t2 = time.perf_counter()
+        logger.info("Data generation took {}s.".format((t2-t1)))
 
         # Save the new data
 #        io.save(filename, activity_model)
@@ -247,9 +249,13 @@ def compute_posterior(target_dt,
             # More robust pickling
 
     # Compute the posterior
+    t1 = time.perf_counter()
     logposterior = param_sweep.do_sweep(output_filename, ippclient)
             # This can take a long time
             # The result will be saved in output_filename
+    t2 = time.perf_counter()
+    logger.info("Calculation of the posterior took {}s."
+                .format((t2-t1)))
 
     return logposterior
 
@@ -259,8 +265,6 @@ def main():
         plt.ioff()
         plt.figure()
         plot_activity(activity_model)
-        plt.show()
-    return
     true_params = {'J': activity_model.params.J.get_value()[0,0],
                    'τ': activity_model.params.τ.get_value()[0,1]}
         # Save the true parameters before they are modified by the sweep

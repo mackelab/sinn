@@ -48,6 +48,14 @@ def add_sibling_input(sibling, new_input):
         if sibling in val:
             inputs[key].add(new_input)
 
+def theano_reset():
+    for hist in sinn.inputs:
+        # HACK sinn.inputs happens to have each history as
+        # a key, but this is not what it's meant for
+        hist.theano_reset()
+
+    sinn.inputs = {}
+
 class HistoryBase:
 
     def __init__(self, t0, tn):

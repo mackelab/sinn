@@ -263,7 +263,7 @@ class History(HistoryBase):
         self._update_function = f
         self._compute_range = None
         self._iterative = iterative
-        sinn.inputs[self] = set()
+        self._compiling = False
 
         self._tarr = np.arange(self.t0,
                                self.tn + self.dt - config.abs_tolerance,
@@ -291,6 +291,8 @@ class History(HistoryBase):
         key: int, float, slice or array
             If an array, it must be consecutive (this is not checked).
         """
+        if self.use_theano and self not in sinn.inputs:
+            sinn.inputs[self] = set()
 
         if shim.isscalar(key):
             key = self.get_t_idx(key)
@@ -463,46 +465,60 @@ class History(HistoryBase):
                           len(self._tarr) + tidx)
 
         #if shim.is_theano_object(tidx):
-        if self.use_theano:
+        if self.use_theano and self._compiling:
             # Don't actually compute: just store the current_idx we would need
             self._theano_cur_tidx = shim.largest(end, self._theano_cur_tidx)
             return
 
-        if end <= self._cur_tidx:
+        if (not shim.is_theano_object(end)
+            and end <= self._cur_tidx):
             # Nothing to compute
+            # We exclude Theano objects because in this case we don't
+            # know what value `end` has
+            # TODO? Remove this and rely on update ? So that NumPy runs
+            # go through the same code as Theano ?
             return
 
         #########
         # Did not abort the computation => now let's do the computation
 
         stop = end + 1  # exclusive upper bound
+        # Construct a time array that will work even for Theano tidx
+        if shim.is_theano_object(start) or shim.is_theano_object(end):
+            tarr = shim.theano.shared(self._tarr, borrow=True)
+            printlogs = False
+        else:
+            tarr = self._tarr
+            printlogs = True
 
         if self._compute_range is not None:
             # A specialized function for computing multiple time points
             # has been defined – use it.
-            logger.info("Computing {} up to {}. Using custom batch operation."
-                        .format(self.name, self._tarr[tidx]))
+            if printlogs:
+                logger.info("Computing {} up to {}. Using custom batch operation."
+                            .format(self.name, tarr[tidx]))
             self.update(slice(start, stop),
-                        self._compute_range(self._tarr[slice(start, stop)]))
+                        self._compute_range(tarr[slice(start, stop)]))
 
-        elif not self._iterative:
+        elif self._is_batch_computable():
             # Computation doesn't depend on history – just compute the whole thing in
             # one go
-            logger.info("Computing {} from {} to {}. History is not iterative, "
-                        "so computing all times simultaneously."
-                        .format(self.name, self._tarr[start], self._tarr[stop-1]))
+            if printlogs:
+                logger.info("Computing {} from {} to {}. Computing all times simultaneously."
+                            .format(self.name, tarr[start], tarr[stop-1]))
             self.update(slice(start,stop),
-                        self._update_function(self._tarr[slice(start,stop)]))
+                        self._update_function(tarr[slice(start,stop)]))
         else:
+            assert(not shim.is_theano_object(tarr))
             logger.info("Iteratively computing {} from {} to {}."
-                        .format(self.name, self._tarr[start], self._tarr[stop-1]))
+                        .format(self.name, tarr[start], tarr[stop-1]))
             old_percent = 0
             for i in np.arange(start, stop):
                 percent = (i*100)//stop
                 if percent > old_percent:
                     logger.info("{}%".format(percent))
                     old_percent = percent
-                self.update(i, self._update_function(self._tarr[i]))
+                self.update(i, self._update_function(tarr[i]))
         logger.info("Done computing {}.".format(self.name))
 
     def get_time_array(self, include_padding=False):
@@ -731,6 +747,9 @@ class History(HistoryBase):
 
     def add_input(self, variable):
 
+        if self not in sinn.inputs:
+            sinn.inputs[self] = set()
+
         if isinstance(variable, str):
             # Not sure why a string would be an input, but it guards against the next line
             sinn.inputs[self].add(x)
@@ -917,6 +936,36 @@ class History(HistoryBase):
         self.compiled_history.set_update_function(new_update_f)
 
         self._compiling = False
+
+
+    ################################
+    # Utility functions
+    ################################
+
+    def _is_batch_computable(self):
+        """
+        Returns true if the history can be computed at all time points
+        simultaneously.
+        """
+        # Prevent infinite recursion with a temporary property
+        if hasattr(self, '_batch_loop_flag'):
+            return False
+        else:
+            self._batch_loop_flag = True
+
+        if not self._iterative:
+            # Batch computable by construction
+            retval = True
+        elif all( hist.lock or hist._is_batch_computable()
+                  for hist in sinn.inputs[self]):
+            # The potential cyclical dependency chain has been broken
+            retval = True
+        else:
+            retval = False
+
+        del self._batch_loop_flag
+
+        return retval
 
 class Spiketimes(ConvolveMixin, History):
     """A class to store spiketrains.

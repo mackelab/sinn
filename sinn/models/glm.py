@@ -142,13 +142,8 @@ class GLM_exp_kernel(Model):
                 Ahist = self.A.compiled_history
         else:
             Ahist = self.A
-        if self.ρ.use_theano:
-            if self.ρ.compiled_history is None:
-                raise RuntimeError(hist_type_msg.format("hazard function"))
-            else:
-                ρhist = self.ρ.compiled_history
-        else:
-            ρhist = self.ρ
+
+        ρhist = self.ρ
 
         # We deliberately use times here (instead of indices) for start/
         # stop so that they remain consistent across different histories
@@ -207,10 +202,27 @@ class GLM_exp_kernel(Model):
             # TODO Precompile function
             def f(model):
                 import theano
-                fcompiled = theano.function([], model.loglikelihood(*args, **kwargs))
-                return fcompiled()
+                sinn.gparams = self.params # DEBUG
+                logL = model.loglikelihood(*args, **kwargs)
+                    # Calling logL sets the sinn.inputs, which we need
+                    # before calling get_input_list
+                input_list, input_vals = self.get_input_list()
+                fcompiled = theano.function(input_list, logL,
+                                            on_unused_input='warn')
+                sinn.theano_reset()
+                return fcompiled(input_vals)
         else:
             def f(model):
                 return model.loglikelihood(*args, **kwargs)
         return f
 
+    def get_input_list():
+        # TODO: move to Models
+        input_list = []
+        input_vals = []
+        for hist in sinn.inputs:
+            if shim.is_theano_variable(hist._data):
+                shape = hist._tarr.shape + hist.shape
+                input_list.append(hist._data)
+                input_vals.append(np.zeros(shape, dtype=sinn.config.floatX))
+        return input_list, input_vals

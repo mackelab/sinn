@@ -28,3 +28,5 @@ inputs = {}
     # The inputs dictionary is keyed by histories. If 'hist' is a History instance,
     # inputs[hist] is a set containing all histories which appear in hist's
     # update function.
+    # Whenever a history's __getitem__ method is called, it adds itself
+    # to this dictionary
