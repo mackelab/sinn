@@ -38,6 +38,7 @@ logger.addHandler(ch)
 sinn.config.load_theano()
 shim.theano.config.exception_verbosity='high'
 shim.theano.config.optimizer='fast_compile'
+#shim.theano.config.optimizer='none'
 
 _DEFAULT_DATAFILE = "2-pop-glm.dat"
 theano_str = "_theano" if sinn.config.use_theano() else ""
@@ -112,7 +113,7 @@ def generate(filename = _DEFAULT_DATAFILE):
         logger.info("Data generation took {}s.".format((t2-t1)))
 
         # Save the new data
-#        io.save(filename, activity_model)
+        # io.save(filename, activity_model)
 
         logger.info("Done.")
     else:

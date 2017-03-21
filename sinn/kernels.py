@@ -124,7 +124,7 @@ class Kernel(ConvolveMixin, ParameterMixin):
                 eval_at_0 = shim.get_test_value(self.eval(0), nofail=True)
                     # get_test_value returns None if eval(0) is a Theano var with no test value
                 if eval_at_0 is not None:
-                    self.shape_output(eval_at_0)
+                    self.shape_output(eval_at_0, ())
             except (AssertionError, ValueError):
                 raise ValueError("The parameters to the kernel's evaluation "
                                  "function seem to have incompatible shapes. "
@@ -143,18 +143,24 @@ class Kernel(ConvolveMixin, ParameterMixin):
 
     def eval(self, t, from_idx=slice(None,None)):
         if not shim.isscalar(t):
+            tshape = t.shape
             t = shim.add_axes(t, self.params[0].ndim-1, 'right')
                 # FIXME: This way of fixing t dimensions is not robust
-        return self.shape_output(self._eval_f(t, from_idx))
+        else:
+            tshape = ()
+        return self.shape_output(self._eval_f(t, from_idx), tshape)
 
     def _convolve_op_single_t(self, hist, t, kernel_slice):
         return hist._convolve_op_single_t(self, t, kernel_slice)
 
-    def shape_output(self, output):
+    def shape_output(self, output, tshape):
         """It may be that the output is only the diagonal of the kernel
         (i.e. the kernel depends only on the 'from' population, not the
         'to' population). Check, and if so, reshape as needed by
         duplicating the columns.
+
+        The time array over which the kernel is evaluated is also a required
+        argument, since that affects the output shape.
 
         If the output shape matches the kernel's, return it as is.
         If the output shape is "half" the kernel's (e.g. (2,) and (2,2)),
@@ -163,22 +169,35 @@ class Kernel(ConvolveMixin, ParameterMixin):
         Otherwise, try to reshape it with the kernel's shape.
           This will fail if the number of elements don't match.
         """
-        shim.check(shim.eq(self.shape, output.shape)
-                   or shim.eq(self.shape, output.shape*2)
-                   or shim.eq(np.prod(self.shape), shim.prod(output.shape)))
-        output_ndim = output.ndim # Save in case it gets modified
+        # There will be an extra dimension in the output if t is an array
+        assert(isinstance(tshape, tuple))
+        if len(tshape) == 0:
+            timeslice_shape = output.shape
+            final_shape = self.shape
+            output_ndim = output.ndim
+            new_axis_pos = 0
+        else:
+            assert(len(tshape)==1)
+            timeslice_shape = output.shape[1:]
+            final_shape = tshape + self.shape
+            output_ndim = output.ndim - 1
+            new_axis_pos = 1
+        shim.check(shim.eq(self.shape, timeslice_shape)
+                   or shim.eq(self.shape, timeslice_shape*2)
+                   or shim.eq(np.prod(self.shape), shim.prod(timeslice_shape)))
         # The second ifelse condition below uses some funky syntax, because
         # ifelse expects an integer (0/1).
+        # FIXME Haven't really tested the shim.tile branch
         return shim.ifelse(shim.all(shim.eq(output.shape, self.shape)),
-                           output.reshape(self.shape),
+                           output.reshape(final_shape),
                            shim.ifelse(shim.and_(shim.bool(shim.eq(len(self.shape), 2*output_ndim)),
                                                  shim.all(shim.eq(self.shape,
-                                                                  shim.concatenate((output.shape, output.shape))))),
-                                       shim.tile(shim.add_axes(output, output_ndim).T,
-                                                 (1,)*output_ndim + output.shape,
-                                                 ndim=2*output_ndim),
-                                       output.reshape(self.shape),
-                                       outshape=self.shape) )
+                                                                  shim.concatenate((timeslice_shape, timeslice_shape))))),
+                                       shim.tile(shim.add_axes(output, output_ndim, pos=new_axis_pos).T,
+                                                 tshape + (1,)*output_ndim + output.shape,
+                                                 ndim=1 + 2*output_ndim),
+                                       output.reshape(final_shape),
+                                       outshape=final_shape) )
 
     # ====================================
     # Caching interface
@@ -319,7 +338,7 @@ class ExpKernel(Kernel):
         elif self.last_conv is not None and self.last_hist is hist:
             if t > self.last_t:
                 Δt = t - self.last_t
-                result = ( self.shape_output(shim.lib.exp(-hist.time_interval(Δt)/self.params.decay_const))
+                result = ( self.shape_output(shim.lib.exp(-hist.time_interval(Δt)/self.params.decay_const), ())
                            * self.last_conv
                            + hist.convolve(self, t,
                                            slice(hist.index_interval(self.memory_blind_time),
@@ -346,6 +365,8 @@ class ExpKernel(Kernel):
 
         return result
 
-    #TODO: _convolve_op_batch ?
+    def _convolve_op_batch(self, hist, kernel_slice):
+        # For batch convolutions, we punt to the history
+        return hist.convolve(self, slice(None, None), kernel_slice)
 
 # TODO? : Indicator kernel ? Optimizations possible ?

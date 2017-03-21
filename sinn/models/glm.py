@@ -89,8 +89,17 @@ class GLM_exp_kernel(Model):
         self.JᕽAᐩI.pad(self.κ.memory_time)
 
     def JᕽAᐩI_fn(self, t):
-        return shim.lib.dot(self.params.J, self.A[t]) + self.I[t]
-                              # NxN  dot  N   +  N
+        assert(len(self.A.shape) == 1) # Too lazy to make the more generic case
+        if shim.isscalar(t):
+            return shim.dot(self.params.J, self.A[t]) + self.I[t]
+                                      # NxN  dot  N   +  N
+        else:
+            # Distribute the dot product along the time axis
+            J = shim.add_axes(self.params.J, 1, 'before')
+            if J.ndim == 3:
+                return shim.sum(J * shim.add_axes(self.A[t], 1, pos='before last'), axis=-1)
+            else:
+                return J*self.A[t]
 
     def ρ_fn(self, t):
         if not shim.isscalar(t):
@@ -138,6 +147,8 @@ class GLM_exp_kernel(Model):
 
     def loglikelihood(self, start=None, stop=None):
 
+        sinn.flag = True   # DEBUG
+
         hist_type_msg = ("To compute the loglikelihood, you need to use a NumPy "
                             "history for the {}, or compile the history beforehand.")
         if self.A.use_theano:
@@ -149,6 +160,10 @@ class GLM_exp_kernel(Model):
             Ahist = self.A
 
         ρhist = self.ρ
+        if not ρhist.use_theano:
+            ρhist.zero('all')  # This is not necessary (ρhist is already cleared)
+                               # but it makes the _data object match what Theano
+                               # graph receives as input.
 
         # We deliberately use times here (instead of indices) for start/
         # stop so that they remain consistent across different histories
@@ -207,10 +222,13 @@ class GLM_exp_kernel(Model):
             # TODO Precompile function
             def f(model):
                 import theano
-                sinn.gparams = self.params # DEBUG
+                if not hasattr(sinn, 'gparams'):
+                    sinn.gparams = self.params # DEBUG
                 logL = model.loglikelihood(*args, **kwargs)
                     # Calling logL sets the sinn.inputs, which we need
                     # before calling get_input_list
+                with open("logL_graph", 'w') as f:
+                    theano.printing.debugprint(logL, file=f)
                 input_list, input_vals = self.get_input_list()
                 fcompiled = theano.function(input_list, logL,
                                             on_unused_input='warn')
@@ -228,6 +246,11 @@ class GLM_exp_kernel(Model):
         for hist in sinn.inputs:
             if shim.is_theano_variable(hist._data):
                 shape = hist._tarr.shape + hist.shape
-                input_list.append(hist._data)
+                if hist._original_data is not None:
+                    # The graph triggered an update of the variable. The input to the
+                    # function remains the original variable.
+                    input_list.append(hist._original_data)
+                else:
+                    input_list.append(hist._data)
                 input_vals.append(np.zeros(shape, dtype=sinn.config.floatX))
         return input_list, input_vals

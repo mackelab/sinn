@@ -194,15 +194,7 @@ class History(HistoryBase):
         -------
         None
         """
-
-        ############
-        # Flags
-        self._iterative = iterative
-        self._compiling = False
         self.instance_counter += 1
-        self.locked = False
-            # When this is True, the history is not allowed to be changed
-        ############
 
         if name is None:
             name = "history{}".format(self.instance_counter)
@@ -245,6 +237,14 @@ class History(HistoryBase):
 
         super().__init__(t0, np.ceil( (tn - t0)/dt ) * dt + t0)
             # Set t0 and tn, ensuring (tn - t0) is a round multiple of dt
+
+        ############
+        # Flags
+        self._iterative = iterative
+        self._compiling = False
+        self.locked = False
+            # When this is True, the history is not allowed to be changed
+        ############
 
         if self.use_theano and not sinn.config.use_theano():
             raise ValueError("You are attempting to construct a series with Theano "
@@ -354,13 +354,14 @@ class History(HistoryBase):
             # value up to which the later evaluation will need to go.
             self.compute_up_to(end)
         elif end > self._cur_tidx:
-            self.compute_up_to(end)
-
             if (self.use_theano
                 and self.compiled_history is not None
                 and self.compiled_history._cur_tidx >= end):
-                # If the history has already been computed to this point, just return that
+                # RETURN FORK: If the history has already been computed to this point,
+                # just return that.
                 return self.compiled_history[key]
+
+            self.compute_up_to(end)
 
 
         # Add `self` to list of inputs
@@ -1479,6 +1480,7 @@ class Series(ConvolveMixin, History):
                 # Ensure that we update at most one step in the future
         else:
             assert(isinstance(tidx, slice))
+            assert(shim.istype(tidx.start, 'int') and shim.istype(tidx.stop, 'int'))
             shim.check(tidx.stop > tidx.start)
             end = tidx.stop - 1
             shim.check(tidx.start <= self._cur_tidx + 1)
@@ -1614,16 +1616,26 @@ class Series(ConvolveMixin, History):
     #     else:
     #         self.inf_bin = np.ones(self.shape) * value
 
-    def zero(self):
-        """Zero out the series. The initial data point will NOT be zeroed"""
+    def zero(self, mode='all'):
+        """Zero out the series. Unless mode='all', the initial data point will NOT be zeroed"""
+        if mode == 'all':
+            mode_slice = slice(None, None)
+        else:
+            mode_slice = slice(1, None)
+
         if self.use_theano:
-            self._original_data = self._data
-            self._data = shim.set_subtensor(self._original_data[1:],
-                                            shim.T.zeros(self._data.shape[1:]))
+            if mode == 'all':
+                self._data = shim.T.zeros(self._data.shape)
+            else:
+                self._original_data = self._data
+                self._data = shim.set_subtensor(self._original_data[mode_slice],
+                                                shim.T.zeros(self._data.shape[mode_slice]))
         else:
             new_data = self._data.get_value(borrow=True)
-            new_data[1:] = np.zeros(self._data.shape[1:])
+            new_data[mode_slice] = np.zeros(self._data.shape[mode_slice])
             self._data.set_value(new_data, borrow=True)
+
+        self.clear()
 
     def get_trace(self, component=None, include_padding='none'):
         """
@@ -1864,8 +1876,9 @@ class Series(ConvolveMixin, History):
                     "When trying to compute the convolution at {}, we calculated "
                     "a starting point preceding the history's padding. Is it "
                     "possible you specified time as an integer rather than scalar ?")
-            retval = self.dt * shim.conv1d(self[:], discretized_kernel[kernel_slice])[domain_slice]
-            shim.check(len(retval) == len(self))
+            dis_kernel_shape = (kernel_slice.stop - kernel_slice.start,) + discretized_kernel.shape
+            retval = self.dt * shim.conv1d(self[:], discretized_kernel[kernel_slice], len(self._tarr), dis_kernel_shape)[domain_slice]
+            shim.check(shim.eq(retval.shape[0], len(self)))
                 # Check that there is enough padding after tn
             return retval
 
