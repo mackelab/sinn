@@ -221,19 +221,26 @@ class GLM_exp_kernel(Model):
         if sinn.config.use_theano():
             # TODO Precompile function
             def f(model):
-                import theano
-                if not hasattr(sinn, 'gparams'):
-                    sinn.gparams = self.params # DEBUG
-                logL = model.loglikelihood(*args, **kwargs)
-                    # Calling logL sets the sinn.inputs, which we need
-                    # before calling get_input_list
-                with open("logL_graph", 'w') as f:
-                    theano.printing.debugprint(logL, file=f)
-                input_list, input_vals = self.get_input_list()
-                fcompiled = theano.function(input_list, logL,
-                                            on_unused_input='warn')
-                sinn.theano_reset()
-                return fcompiled(*input_vals)
+                if 'loglikelihood' not in self.compiled:
+                    import theano
+                    sinn.gparams = self.params
+                    self.theano_reset()
+                        # Make clean slate (in particular, clear the list of inputs)
+                    logL = model.loglikelihood(*args, **kwargs)
+                        # Calling logL sets the sinn.inputs, which we need
+                        # before calling get_input_list
+                    with open("logL_graph", 'w') as f:
+                        theano.printing.debugprint(logL, file=f)
+                    input_list, input_vals = self.get_input_list()
+                    self.compiled['loglikelihood'] = {
+                        'function': theano.function(input_list, logL,
+                                                    on_unused_input='warn'),
+                        'inputs'  : input_vals }
+                    self.theano_reset()
+
+                return self.compiled['loglikelihood']['function'](
+                    *self.compiled['loglikelihood']['inputs'] )
+                    # * is there to expand the list of inputs
         else:
             def f(model):
                 return model.loglikelihood(*args, **kwargs)

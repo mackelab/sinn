@@ -29,7 +29,7 @@ import sinn.iotools as io
 import sinn.analyze as anlz
 import sinn.analyze.sweep as sweep
 
-logger = logging.getLogger('two_pop_srm')
+logger = logging.getLogger('two_pop_glm')
 logger.setLevel(logging.DEBUG)
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
@@ -64,7 +64,7 @@ def init_activity_model():
 
     rndstream = shim.RandomStreams(seed=314)
     noise_params = noise.GaussianWhiteNoise.Parameters(
-        std = (.000003, .000003),
+        std = (.06, .06),
         shape = (2,)
         )
     noise_hist = histories.Series(Ahist, name='ξ', shape=model_params.N.shape)

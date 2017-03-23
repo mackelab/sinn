@@ -592,7 +592,7 @@ class History(HistoryBase):
                 self.update(i, self._update_function(tarr[i]))
         logger.info("Done computing {}.".format(self.name))
 
-    def get_time_array(self, include_padding=False):
+    def get_time_array(self, time_slice=slice(None, None), include_padding=False):
         """Return the time array.
         By default, the padding portions before and after are not included.
         Time points which have not yet been computed are also excluded.
@@ -603,18 +603,33 @@ class History(HistoryBase):
             - False (default)   : do not include padding
         """
 
-        if include_padding in ['begin', 'start']:
-            start = 0
-            stop = min(self._cur_tidx+1, self.t0idx+len(self))
-        elif include_padding in ['end']:
-            start = self.t0idx
-            stop = min(self._cur_tidx+1, len(self._tarr))
-        elif include_padding in [True, 'all']:
-            start = 0
-            stop = min(self._cur_tidx+1, len(self._tarr))
+        if time_slice.start is None:
+            slcidx_start = 0
         else:
-            start = self.t0idx
-            stop = min(self._cur_tidx+1, self.t0idx + len(self))
+            slcidx_start = self.get_t_idx(time_slice.start)
+        if time_slice.stop is None:
+            slcidx_stop = len(self._tarr)
+        else:
+            slcidx_stop = self.get_t_idx(time_slice.stop)
+
+        if include_padding in ['begin', 'start']:
+            start = slcidx_start
+            stop = min(slcidx_stop, self._cur_tidx+1, self.t0idx+len(self))
+        elif include_padding in ['end']:
+            start = max(self.t0idx, slcidx_start)
+            stop = min(slcidx_stop, self._cur_tidx+1, len(self._tarr))
+        elif include_padding in [True, 'all']:
+            start = slcidx_start
+            stop = min(slcidx_stop, self._cur_tidx+1, len(self._tarr))
+        else:
+            start = max(self.t0idx, slcidx_start)
+            stop = min(slcidx_stop, self._cur_tidx+1, self.t0idx + len(self))
+
+        if stop < slcidx_stop and slcidx_stop < self.t0idx+len(self):
+            logger.warning("You asked for the time array up to {}, but the history "
+                            "has only been computed up to {}."
+                            .format(self.get_time(slcidx_stop),
+                                    self.get_time(self.t0idx+len(self))))
 
         return self._tarr[start:stop]
 

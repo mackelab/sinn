@@ -60,6 +60,11 @@ def smooth(series, amount=None, method='mean', **kwargs):
         Note that in general the time range will be shorter than
         the original data, due to the averaging.
     """
+    if series.use_theano:
+        if series.compiled_history is not None:
+            series = series.compiled_history
+        else:
+            raise ValueError("Cannot smooth a Theano array.")
     if method == 'mean':
         assert(amount is not None)
         res = histories.Series(name = series.name + "_smoothed",
@@ -97,6 +102,11 @@ def subsample(series, amount):
         series. Bins are identified by the time at which they begin.
     """
     assert(np.issubdtype(np.asarray(amount).dtype, np.int))
+    if series.use_theano:
+        if series.compiled_history is not None:
+            series = series.compiled_history
+        else:
+            raise ValueError("Cannot subsample a Theano array.")
     newdt = series.dt * amount
     nbins = int( (series.tn - series.t0) // newdt )
         # We might chop off a few bins, if the new dt is not commensurate with
@@ -116,8 +126,18 @@ def subsample(series, amount):
 # ==================================
 # Plotting
 
-def plot(data):
+def plot(data, **kwargs):
     """
+    Parameters
+    ----------
+    data: a sinn data structure
+        This parameter's type will determin the type of plot.
+        - Series: produces a line plot (w/ plt.plot(.))
+        - HeatMap: produces a 2D density (w/ pcolormesh(.))
+        - Spiketimes: produces a raster plot (not implemented)
+
+    **kwargs: keyword arguments
+        These will be forwarded to the underlying plotting function.
     Returns
     -------
     A list of the created axes.
@@ -131,10 +151,11 @@ def plot(data):
             data = data.compiled_history
 
         ax = plt.gca()
-        plt.plot(data.get_time_array(), data.get_trace())
+        plt.plot(data.get_time_array(), data.get_trace(), **kwargs)
         return ax
 
     elif isinstance(data, heatmap.HeatMap):
+        # TODO: Override keyword arguments with **kwargs
         ax1_grid, ax2_grid = np.meshgrid(_centers_to_edges(data.axes[0]), _centers_to_edges(data.axes[1]), indexing='ij')
         zmin = max(data.floor, data.min())
         zmax = min(data.ceil, data.max())
@@ -142,7 +163,8 @@ def plot(data):
                                   data.data.clip(data.floor, data.ceil),
                                   cmap = data.cmap,
                                   norm = data.get_norm(),
-                                  vmin=zmin, vmax=zmax)
+                                  vmin=zmin, vmax=zmax,
+                                  **kwargs)
         ax = plt.gca()
         plt.xlabel(data.axes[0].name)
         plt.ylabel(data.axes[1].name)

@@ -67,6 +67,7 @@ class Model(com.ParameterMixin):
         """
         self.kernel_list = []
         self.history_list = []
+        self.compiled = {}
 
         if history is not None:
             self.history = history
@@ -135,6 +136,17 @@ class Model(com.ParameterMixin):
         if kernel not in self.kernel_list:
             self.kernel_list.append(kernel)
 
+    def theano_reset(self):
+        """Put model back into a clean state, to allow building a new Theano graph."""
+        for hist in self.history_list:
+            if not hist.locked:
+                hist.theano_reset()
+        for kernel in self.kernel_list:
+            kernel.theano_reset()
+
+        sinn.theano_reset() # theano_reset on histories will be called twice,
+                            # but there's not much harm
+
     def update_params(self, new_params):
         """
         The `locked` attribute of histories is used to determine whether
@@ -142,8 +154,9 @@ class Model(com.ParameterMixin):
         """
         assert(all( type(param.get_value()) == type(new_param)
                     for param, new_param in zip(self.params, new_params) ))
-        sinn.set_parameters(self.params, new_params)
         logger.info("Model params are now {}. Updating kernels...".format(self.params))
+
+        # Determine the kernels for which parameters have changed
         kernels_to_update = []
         for kernel in self.kernel_list:
             if not sinn.params_are_equal(
@@ -152,6 +165,10 @@ class Model(com.ParameterMixin):
                 # and compare to the kernel's current parameters. If any of
                 # them differ, add the kernel to the list of kernels to update.
                 kernels_to_update.append(kernel)
+
+        # Now update parameters. This must be done after the check above,
+        # because Theano parameters automatically propagate to the kernels.
+        sinn.set_parameters(self.params, new_params)
 
         # Loop over the list of kernels whose parameters have changed to do
         # two things:

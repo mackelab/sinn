@@ -150,6 +150,24 @@ class Kernel(ConvolveMixin, ParameterMixin):
             tshape = ()
         return self.shape_output(self._eval_f(t, from_idx), tshape)
 
+    def theano_reset(self):
+        """Make state clean for building a new Theano graph.
+        This deletes any discretizations of this kernel, since those
+        may depend on different parameters."""
+        logger.info("Resetting kernel {} for Theano".format(self.name))
+        attr_to_del = []
+        for attr in dir(self):
+            if attr[:9] == "discrete_":
+                # Theano kernels are not precomputed, so they also
+                # don't need to be deleted
+                attr_to_del.append(attr)
+        for attr in attr_to_del:
+            logger.info("Removing stale kernel " + attr)
+            delattr(self, attr)
+
+    def is_theano(self):
+        return any(shim.is_theano_object(p) for p in self.params)
+
     def _convolve_op_single_t(self, hist, t, kernel_slice):
         return hist._convolve_op_single_t(self, t, kernel_slice)
 
@@ -232,7 +250,7 @@ class Kernel(ConvolveMixin, ParameterMixin):
         attr_to_del = []
         for attr in dir(self):
             if attr[:9] == "discrete_":
-                if not attr.use_theano:
+                if not getattr(self, attr).use_theano:
                     # Theano kernels are not precomputed, so they also
                     # don't need to be deleted
                     attr_to_del.append(attr)
@@ -240,6 +258,12 @@ class Kernel(ConvolveMixin, ParameterMixin):
             logger.info("Removing stale kernel " + attr)
             delattr(self, attr)
 
+        # Unless a Kernel subclass does something special in `initialize`, the following
+        # ultimately just calls set_parameters on the kernel. For Theano parameters, and
+        # when updating as part of a larger model, this won't do anything: they all derive
+        # from model parameters, so the changes immediately propagate down. Still we leave
+        # this here a) in case something else is done in `initialize` and b) in case this
+        # method is called on its own.
         logger.info("Reinitializing kernel {} with new parameters {}."
                     .format(self.name, str(new_params)))
         self.initialize(self.name, new_params, self.shape, self.memory_time, self.t0)
@@ -285,7 +309,13 @@ class ExpKernel(Kernel):
             decay_const_val = np.max(shim.get_test_value(params.decay_const))
             memory_time = t0 - decay_const_val * np.log(config.truncation_ratio)
 
-        self.memory_blind_time = np.max(params.t_offset) - t0
+        ########
+        # Initialize base class
+        super().initialize(name, params, shape, memory_time=memory_time, t0=t0, **kwargs)
+            # WARNING: Don't use params below here, only self.params
+
+
+        self.memory_blind_time = np.max(self.params.t_offset.get_value()) - t0
         # self.memory_blind_time = ifelse( (params.t_offset == params.t_offset.flatten()[0]).all(),
         #                                  (shim.asarray(params.t_offset) - t0).flatten()[0],
         #                                  params.t_offset - t0 )
@@ -297,10 +327,6 @@ class ExpKernel(Kernel):
             # In this case, we want the blind time to be a scalar if they are all the same (more efficient),
             # but we leave the result as a matrix if they differ. In the latter case, convolutions
             # need to be calculated for each population separately and recombined.
-
-        ########
-        # Initialize base class
-        super().initialize(name, params, shape, memory_time=memory_time, t0=t0, **kwargs)
 
         self.last_t = None     # Keep track of the last convolution time
         self.last_conv = None  # Keep track of the last convolution result
@@ -327,7 +353,8 @@ class ExpKernel(Kernel):
             or shim.is_theano_object(t)):
             # HACK Our caching does not deal with Theano times, so in that
             # case we bypass that as well.
-            # FIXME Ideally we would allow Theano to use the optimized exp kernel as well.
+            # FIXME Ideally we would allow Theano to use the optimized exp kernel as well,
+            # when we need to do an iterative computation
             return hist.convolve(self, t, kernel_slice)
                 # Exit before updating last_t and last_conv
         elif shim.asarray(t).dtype != shim.asarray(self.last_t).dtype:
