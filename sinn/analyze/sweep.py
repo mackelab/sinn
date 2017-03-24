@@ -221,6 +221,7 @@ def monitor_async_result(async_result):
                 if async_result.stdout[i] != stdout0[i]:
                     # print only new stdout's without previous message and remove '\n' at the end
                     logger.info('(Engine ' + str(i) + ') ' + async_result.stdout[i][len(stdout0[i]):-1])
+                    #TODO output may contain \n; split and output multiple lines, each with engine no.
 
                     # set stdout0 to last output for new comparison
                     stdout0[i] =  async_result.stdout[i]

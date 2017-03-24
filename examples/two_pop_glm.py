@@ -36,8 +36,8 @@ ch.setLevel(logging.INFO)
 logger.addHandler(ch)
 
 sinn.config.load_theano()
-shim.theano.config.exception_verbosity='high'
-shim.theano.config.optimizer='fast_compile'
+#shim.theano.config.exception_verbosity='high'
+#shim.theano.config.optimizer='fast_compile'
 #shim.theano.config.optimizer='none'
 
 _DEFAULT_DATAFILE = "2-pop-glm.dat"
@@ -46,7 +46,7 @@ name, ext = os.path.splitext(_DEFAULT_DATAFILE)
 _DEFAULT_DATAFILE = name + theano_str + ext
 _DEFAULT_POSTERIORFILE = name + "_logposterior" +theano_str + ext
 
-def init_activity_model():
+def init_activity_model(activity_history=None, input_history=None):
     model_params = GLM.Parameters(
         N = np.array((500, 100)),
         c = (2, 2),
@@ -54,34 +54,50 @@ def init_activity_model():
         τ = (0.01, 0.08)
         )
     memory_time = 0.553 # What we get with τ=(0.01, 0.08)
-    Ahist = histories.Series(name='A',
-                             shape=(len(model_params.N),),
-                             t0 = 0,
-                             tn = 4,
-                             dt = 0.001)
+    if activity_history is not None:
+        Ahist = activity_history
+        if Ahist.use_theano:
+            assert(Ahist.compiled_history._cur_tidx >= Ahist.t0idx + len(Ahist) - 1)
+        else:
+            assert(Ahist._cur_tidx >= Ahist.t0idx + len(Ahist) - 1)
+        Ahist.lock()
+    else:
+        Ahist = histories.Series(name='A',
+                                 shape=(len(model_params.N),),
+                                 t0 = 0,
+                                 tn = 4,
+                                 dt = 0.001)
 
     # Noisy input
-
     rndstream = shim.RandomStreams(seed=314)
     noise_params = noise.GaussianWhiteNoise.Parameters(
         std = (.06, .06),
         shape = (2,)
-        )
+    )
     noise_hist = histories.Series(Ahist, name='ξ', shape=model_params.N.shape)
     noise_model = noise.GaussianWhiteNoise(noise_params, noise_hist, rndstream)
+
     def input_fn(t):
         import numpy as np
-            # Ensure that proper references to dependencies are pickled
-            # This is only necessary for scripts directly called on the cli – imported modules are fine.
+        # import ensures that proper references to dependencies are pickled
+        # This is only necessary for scripts directly called on the cli – imported modules are fine.
         res = 10 + 10*shim.sin(t*2*np.pi) + noise_hist[t]
         return res
+    if input_history is not None:
+        Ihist = input_history
+        if Ihist.use_theano:
+            assert(Ihist.compiled_history._cur_tidx >= Ihist.t0idx + len(Ihist) - 1)
+        else:
+            assert(Ihist._cur_tidx >= Ihist.t0idx + len(Ihist) - 1)
+        Ihist.lock()
+    else:
+        Ihist = histories.Series(Ahist, name='I', shape=model_params.N.shape, iterative=False)
 
-    input_hist = histories.Series(Ahist, name='I', shape=model_params.N.shape, iterative=False)
-    input_hist.set_update_function(input_fn)
-    input_hist.add_inputs([noise_hist])
+    Ihist.set_update_function(input_fn)
+    Ihist.add_inputs([noise_hist])
 
     # GLM activity model
-    activity_model = GLM(model_params, Ahist, input_hist, rndstream,
+    activity_model = GLM(model_params, Ahist, Ihist, rndstream,
                          memory_time=memory_time)
     return activity_model
 
@@ -112,8 +128,11 @@ def generate(filename = _DEFAULT_DATAFILE):
         t2 = time.perf_counter()
         logger.info("Data generation took {}s.".format((t2-t1)))
 
-        # Save the new data
-        # io.save(filename, activity_model)
+        # Save the new data. Using the raw format allows us make changes
+        # to the sinn library and still use this data
+        fn, ext = os.path.splitext(filename)
+        io.saveraw(fn + "_A" + ext, activity_model.A)
+        io.saveraw(fn + "_I" + ext, activity_model.I)
 
         logger.info("Done.")
     else:
@@ -224,7 +243,8 @@ def compute_posterior(target_dt,
     # else:
     #     def l(model):
     #         return model.loglikelihood(burnin, burnin + data_len)
-    param_sweep.set_function(activity_model.get_loglikelihood(), 'log $L$')
+    param_sweep.set_function(activity_model.get_loglikelihood(start=1000,
+                                                              stop=1010), 'log $L$')
 
     # timeout ipp.Client after 2 seconds
     if ipp_url_file is not None:
@@ -268,11 +288,16 @@ def compute_posterior(target_dt,
     return logposterior
 
 def main():
-    activity_model = generate()
-    if do_plots:
-        plt.ioff()
-        plt.figure()
-        plot_activity(activity_model)
+    # activity_model = generate()
+    # if do_plots:
+    #     plt.ioff()
+    #     plt.figure()
+    #     plot_activity(activity_model)
+    # #plt.show()
+    # return
+    Ahist = histories.Series.from_raw(io.loadraw("2-pop-glm_A.dat"))
+    Ihist = histories.Series.from_raw(io.loadraw("2-pop-glm_I.dat"))
+    activity_model = init_activity_model(Ahist, Ihist)
     true_params = {'J': activity_model.params.J.get_value()[0,0],
                    'τ': activity_model.params.τ.get_value()[0,1]}
         # Save the true parameters before they are modified by the sweep

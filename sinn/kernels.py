@@ -172,6 +172,16 @@ class Kernel(ConvolveMixin, ParameterMixin):
         return hist._convolve_op_single_t(self, t, kernel_slice)
 
     def shape_output(self, output, tshape):
+        assert(isinstance(tshape, tuple))
+        if len(tshape) == 0:
+            final_shape = self.shape
+        else:
+            assert(len(tshape)==1)
+            final_shape = tshape + self.shape
+        return output.reshape(final_shape)
+
+    # TODO Deprecate the following
+    def old_shape_output(self, output, tshape):
         """It may be that the output is only the diagonal of the kernel
         (i.e. the kernel depends only on the 'from' population, not the
         'to' population). Check, and if so, reshape as needed by
@@ -203,6 +213,7 @@ class Kernel(ConvolveMixin, ParameterMixin):
         shim.check(shim.eq(self.shape, timeslice_shape)
                    or shim.eq(self.shape, timeslice_shape*2)
                    or shim.eq(np.prod(self.shape), shim.prod(timeslice_shape)))
+        
         # The second ifelse condition below uses some funky syntax, because
         # ifelse expects an integer (0/1).
         # FIXME Haven't really tested the shim.tile branch

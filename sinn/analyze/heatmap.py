@@ -6,6 +6,7 @@ author: Alexandre René
 """
 
 from copy import copy
+from collections import OrderedDict
 import numpy as np
 import matplotlib.colors as colors
 
@@ -27,9 +28,26 @@ class HeatMap:
     def raw(self):
         # The raw format is meant for data longevity, and so should
         # seldom, if ever, be changed
-        raw = dict([(ax.name, ax.stops) for ax in self.axes])
+        raw = OrderedDict([(ax.name, ax.stops) for ax in self.axes])
         raw['data'] = self.data
+        raw['color_label'] = self.color_label
         return raw
+
+    @classmethod
+    def from_raw(cls, raw):
+        param_axes = []
+        for key, val in raw:
+            if key not in ['data', 'color_label']:
+                # This is a list of parameter stops
+                # We default to a linear scale since that info is not saved
+                param_axes.append(ParameterAxis(name = key,
+                                                stops = val,
+                                                idx = None,
+                                                scale = 'linear',
+                                                linearize_fn = lambda x:x,
+                                                inverse_linearize_fn = lambda x:x))
+        heatmap = cls(str(raw['color_label']), raw['data'], param_axes)
+        return heatmap
 
     def max(self):
         return self.data.max()
@@ -59,11 +77,11 @@ class HeatMap:
         else:
             raise RuntimeError("What are we doing here ?")
 
-    def slice(ax_slices):
+    def slice(self, ax_slices):
         assert(len(ax_slices) == len(self.axes))
         new_map = copy(self)
         for i, slc in enumerate(ax_slices):
-            new_map.axes[i].stops = self.axes[i].stops[slc]
+            new_map.axes[i] = new_map.axes[i]._replace(self.axes[i].stops[slc])
 
         if len(ax_slices) == 1:
             new_map.data = self.data[ax_slices[0]]

@@ -228,10 +228,7 @@ class History(HistoryBase):
         # The default depends on whether Theano is loaded. If it is not loaded
         # and we try to use it for this history, an error is raised.
         if use_theano is sinn._NoValue:
-            if sinn.config.use_theano():
-                self.use_theano = True
-            else:
-                self.use_theano = False
+            self.use_theano = sinn.config.use_theano()
         else:
             self.use_theano = use_theano
 
@@ -283,6 +280,68 @@ class History(HistoryBase):
 
     def __len__(self):
         return self._unpadded_length
+
+    def raw(self):
+        # The raw format is meant for data longevity, and so should
+        # seldom, if ever, be changed
+
+        if self.use_theano:
+            if self.compiled_history is not None:
+                raw = self.compiled_history.raw()
+            else:
+                raise AttributeError("The `raw` method for uncompiled Theano "
+                                     "histories is undefined.")
+            raw['name'] = self.name # Replace with non-compiled name
+        else:
+            raw = {'name': self.name,
+                   't0': self.t0,
+                   'tn': self.tn,
+                   'dt': self.dt,
+                   't0idx': self.t0idx,
+                   '_unpadded_length': self._unpadded_length,
+                   '_cur_tidx': self._cur_tidx,
+                   'shape': self.shape,
+                   'ndim': self.ndim,
+                   '_tarr': self._tarr,
+                   '_data': self._data,
+                   #'use_theano': self.use_theano,
+                   '_iterative': self._iterative,
+                   'locked': self.locked
+            }
+        return raw
+
+    @classmethod
+    def from_raw(cls, raw, update_function=sinn._NoValue, use_theano=sinn._NoValue):
+        """
+        Parameters
+        ----------
+        use_theano: bool
+            If True, a second Theano history will be constructed, and the loaded
+            one attached as its `compiled_history` attribute.
+            If unspecified, the behaviour is the same as for the History initializer.
+        """
+        hist =  cls(name = str(raw['name']),
+                    t0 = float(raw['t0']), tn = float(raw['tn']), dt = float(raw['dt']),
+                    shape = tuple(raw['shape']),
+                    f = update_function,
+                    iterative = bool(raw['_iterative']),
+                    use_theano = False)
+        hist.t0idx = int(raw['t0idx'])
+        hist._unpadded_length = int(raw['_unpadded_length'])
+        hist._cur_tidx = int(raw['_cur_tidx'])
+        hist.locked = bool(raw['locked'])
+        hist._data = raw['_data']
+        hist._tarr = raw['_tarr']
+        # Decide whether to wrap the history in another Theano history
+        if use_theano is sinn._NoValue:
+            use_theano = sinn.config.use_theano()
+        if use_theano:
+            theano_hist = cls(hist, use_theano=True)
+            theano_hist.compiled_history = hist
+            return theano_hist
+        else:
+            return hist
+
 
     def __getitem__(self, key):
         """
@@ -554,7 +613,8 @@ class History(HistoryBase):
 
         if not self._iterative:
             batch_computable = True
-        elif (self.use_theano and self._is_batch_computable()):
+        #elif (self.use_theano and self._is_batch_computable()):
+        elif self._is_batch_computable():
             batch_computable = True
         else:
             batch_computable = False
