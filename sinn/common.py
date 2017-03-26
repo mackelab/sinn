@@ -58,19 +58,19 @@ def theano_reset():
     inputs = {}
 
 def array_to_slice(array):
-    """Always returns a slice going from smallest to biggest.
+    """
     Assumes the array is monotonous and evenly spaced.
     """
     dt = shim.abs(array[1] - array[0])
-    shim.check(dt > 0)
-    start = shim.ifelse(shim.lt(array[0], array[-1]),
-                        array[0],
-                        array[-1])
+    start = array[0]
     stop = shim.ifelse(shim.lt(array[0], array[-1]),
-                       array[-1],
-                       array[0]) + dt
-        # We add dt because the array upper bound is inclusive
-    return slice(start, stop)
+                       array[-1] + dt,
+                       array[-1] - dt)
+        # We add/subtract dt because the array upper bound is inclusive
+    step = shim.ifelse(shim.lt(array[0], array[-1]),
+                       1,
+                       -1)
+    return slice(start, stop, step)
 
 class HistoryBase:
 

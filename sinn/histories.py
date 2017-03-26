@@ -29,11 +29,12 @@ class History(HistoryBase):
     data at a certain time point.
 
     Ensures that if the history at time t is known, than the history at all times
-    previous to t is also known (by forcing a computation if necessary).
+    previous to t is also known (by forcing a computation if neces#sary).
 
     Derived classes can safely expect the following attributes to be defined:
         + name             : str. Unique identifying string
-        + shape            : int tuple. Shape at a single time point, or number of elements in the system
+        + shape            : int tuple. Shape at a single time point, or number of elements in the syst        # A depends on ρ, so its update function has to be set second
+em
         + t0               : float. Time at which history starts
         + tn               : float. Time at which history ends
         + dt               : float. Timestep size
@@ -262,10 +263,17 @@ class History(HistoryBase):
             # Tracker for the latest time bin for which we
             # know history.
         if f is sinn._NoValue:
+            # TODO Find way to assign useful error message to a missing f, that
+            #      works for histories derived from others (i.e. is recognized as the
+            #      "missing function" function. Maybe a global function or class,
+            #      with which we use isinstance ?
             # Set a default function that will raise an error when called
-            def f(*arg):
-                raise RuntimeError("The update function for {} is not set.".format(self))
-        self._update_function = f
+            def nofunc(*arg):
+                raise RuntimeError("The update function for history {} is not set."
+                                   .format(self.name))
+            self._update_function = nofunc
+        else:
+            self.set_update_function(f)
         self._compute_range = None
 
         self._tarr = np.arange(self.t0,
@@ -424,7 +432,8 @@ class History(HistoryBase):
 
 
         # Add `self` to list of inputs
-        if self.use_theano and self not in sinn.inputs:
+        #if self.use_theano and self not in sinn.inputs:
+        if self not in sinn.inputs:
             sinn.inputs[self] = set()
 
         return self.retrieve(key)
@@ -482,7 +491,14 @@ class History(HistoryBase):
             The update function. Its signature should be
             `func(t)`
         """
-        self._update_function = func
+        def f(t):
+            res = func(t)
+            if shim.isscalar(res):
+                # update functions need to output an object with a shape
+                return shim.add_axes(res, 1)
+            else:
+                return res
+        self._update_function = f
 
     def set_range_update_function(self, func):
         """
@@ -628,6 +644,7 @@ class History(HistoryBase):
             self.update(slice(start, stop),
                         self._compute_range(tarr[slice(start, stop)]))
 
+        # BEBUG: use_theano
         elif batch_computable:
             # Computation doesn't depend on history – just compute the whole thing in
             # one go
@@ -650,6 +667,8 @@ class History(HistoryBase):
                     logger.info("{}%".format(percent))
                     old_percent = percent
                 self.update(i, self._update_function(tarr[i]))
+
+            assert(np.all(np.array(self[start:stop]) == self._update_function(tarr[slice(start,stop)])))
         logger.info("Done computing {}.".format(self.name))
 
     def get_time_array(self, time_slice=slice(None, None), include_padding=False):

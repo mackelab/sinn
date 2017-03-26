@@ -79,8 +79,8 @@ class GLM_exp_kernel(Model):
         self.ρ.add_inputs([self.JᕽAᐩI])
         self.JᕽAᐩI.add_inputs([self.A, self.I])
 
-        self.A.set_update_function(self.A_fn)
         self.ρ.set_update_function(self.ρ_fn)
+        self.A.set_update_function(self.A_fn)
 
         κshape = self.params.N.get_value().shape
         self.κ = ExpK('κ', self.params, κshape, memory_time=memory_time)
@@ -97,9 +97,9 @@ class GLM_exp_kernel(Model):
             # Distribute the dot product along the time axis
             J = shim.add_axes(self.params.J, 1, 'before')
             if J.ndim == 3:
-                return shim.sum(J * shim.add_axes(self.A[t], 1, pos='before last'), axis=-1)
+                return shim.sum(J * shim.add_axes(self.A[t], 1, pos='before last'), axis=-1) + self.I[t]
             else:
-                return J*self.A[t]
+                return J*self.A[t] + self.I[t]
 
     def ρ_fn(self, t):
         if not shim.isscalar(t):

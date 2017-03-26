@@ -50,9 +50,15 @@ def series():
     convolve_test(data, data_fn, kernel, true_conv)
 
     print("\n==========================")
+    print("\nNon-iterative series (same data, but using scipy.signal.convolve)\n")
+    data._iterative = True
+    convolve_test(data, data_fn, kernel, true_conv)
+
+    print("\n==========================")
     print("\n2 populations (2x2 kernel)\n")
     def data_fn2(t):
-        return np.array((np.sin(t), 2*np.sin(t)))
+        axis = 0 if shim.isscalar(t) else 1
+        return np.stack((np.sin(t), 2*np.sin(t)), axis=axis)
     data2 = histories.Series(t0=0, tn=4, dt=dt, shape=(2,), f=data_fn2)
     params2 = kernels.ExpKernel.Parameters(
         height = ((1,   0.3),

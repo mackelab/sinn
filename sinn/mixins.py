@@ -147,8 +147,13 @@ class ConvolveMixin(CachedOperation):
 
         else:
             assert(isinstance(t, slice))
-            start = history.t0idx if t.start is None else history.get_t_idx(t.start) - history.t0idx
-            stop = history.t0idx + len(history) if t.stop is None else history.get_t_idx(t.stop) - history.t0idx
+            if t.step is None or t.step == 1:
+                start = history.t0idx if t.start is None else history.get_t_idx(t.start) - history.t0idx
+                stop = history.t0idx + len(history) if t.stop is None else history.get_t_idx(t.stop) - history.t0idx
+            else:
+                assert(t.step == -1)
+                start = history.t0idx if t.stop is None else history.get_t_idx(t.stop)- history.t0idx + 1
+                stop = history.t0idx + len(history) if t.start is None else history.get_t_idx(t.start) - history.t0idx + 1
             output_tidx = slice(start, stop)
             # We have to adjust the index because the 'valid' mode removes
             # time bins at the ends.
@@ -157,20 +162,24 @@ class ConvolveMixin(CachedOperation):
             # at tarr[tidx], we need (convolution result)[tidx - kernel.stop].
 
             if ( not history._iterative
-                 or (history.use_theano and history._is_batch_computable()) ):
+                # or (history.use_theano and history._is_batch_computable()) ):
+                  or history._is_batch_computable() ):
                 # The history can be computed at any time point independently of the others
                 # Force computing it entirely, to allow the use of batch operations
                 # FIXME conditioning on `use_theano` is meant to make sure that we are
                 # computing a Theano graph, but I'm not positive that it's a 100% safe test
+                # NOTE Why did I want to restrict to Theano graphs anyway ?
                 history.compute_up_to(history.t0idx + len(history) - 1)
             if ( isinstance(kernel, com.HistoryBase) and
                  (not kernel._iterative
-                  or (kernel.use_theano and kernel._is_batch_computable())) ):
+                  or kernel._is_batch_computable()) ):
                 # The 'kernel' may also be a history
                 kernel.compute_up_to(kernel.t0idx + len(kernel) - 1)
 
             retval = self._conv_cache.ensureget(other, kernel_slice)[:,output_tidx]
-
+            if t.step == -1:
+                retval = retval[:, ::-1]
+                  # extra ':' because ensureget returns the result wrapped in an extra dimension
         if output_scalar:
             # Caller only passed a single kernel slice, and so is not
             # expecting the result to be wrapped in a list.

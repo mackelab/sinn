@@ -118,19 +118,21 @@ class Kernel(ConvolveMixin, ParameterMixin):
             #    raise ValueError("The result of kernel functions should be "
             #                     "2-dimensional (1 or both of which may be flat.")
 
-        if hasattr(self, 'eval'):
-            # Sanity test on the eval method
-            try:
-                eval_at_0 = shim.get_test_value(self.eval(0), nofail=True)
-                    # get_test_value returns None if eval(0) is a Theano var with no test value
-                if eval_at_0 is not None:
-                    self.shape_output(eval_at_0, ())
-            except (AssertionError, ValueError):
-                raise ValueError("The parameters to the kernel's evaluation "
-                                 "function seem to have incompatible shapes. "
-                                 "The kernel's output has shape {}, but "
-                                 "you've set it to be reshaped to {}."
-                                 .format(self.eval(0).shape, self.shape))
+        self.evalndim = self.eval(0).ndim
+            # even with a Theano function, this returns a Python scalar
+
+        # Sanity test on the eval method's shape
+        try:
+            eval_at_0 = shim.get_test_value(self.eval(0), nofail=True)
+                # get_test_value returns None if eval(0) is a Theano var with no test value
+            if eval_at_0 is not None:
+                self.shape_output(eval_at_0, ())
+        except (AssertionError, ValueError):
+            raise ValueError("The parameters to the kernel's evaluation "
+                                "function seem to have incompatible shapes. "
+                                "The kernel's output has shape {}, but "
+                                "you've set it to be reshaped to {}."
+                                .format(self.eval(0).shape, self.shape))
         # TODO: add set_eval method, and make memory_time optional here
         assert(memory_time is not None)
         self.memory_time = memory_time
@@ -144,8 +146,12 @@ class Kernel(ConvolveMixin, ParameterMixin):
     def eval(self, t, from_idx=slice(None,None)):
         if not shim.isscalar(t):
             tshape = t.shape
-            t = shim.add_axes(t, self.params[0].ndim-1, 'right')
+            #t = shim.add_axes(t, self.params[0].ndim-1, 'right')
                 # FIXME: This way of fixing t dimensions is not robust
+            if shim.isscalar(from_idx):
+                t = shim.add_axes(t, self.evalndim - 1, 'right')
+            else:
+                t = shim.add_axes(t, self.evalndim, 'right')
         else:
             tshape = ()
         return self.shape_output(self._eval_f(t, from_idx), tshape)
@@ -213,7 +219,7 @@ class Kernel(ConvolveMixin, ParameterMixin):
         shim.check(shim.eq(self.shape, timeslice_shape)
                    or shim.eq(self.shape, timeslice_shape*2)
                    or shim.eq(np.prod(self.shape), shim.prod(timeslice_shape)))
-        
+
         # The second ifelse condition below uses some funky syntax, because
         # ifelse expects an integer (0/1).
         # FIXME Haven't really tested the shim.tile branch

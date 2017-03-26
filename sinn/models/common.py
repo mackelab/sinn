@@ -65,6 +65,7 @@ class Model(com.ParameterMixin):
             If this model has an `eval` method, then that method is also
             attached to `history` as its update function.
         """
+        super().__init__(params=params)
         self.kernel_list = []
         self.history_list = []
         self.compiled = {}
@@ -74,8 +75,6 @@ class Model(com.ParameterMixin):
             self.add_history(history)
             if hasattr(self, 'eval'):
                 history.set_update_function(self.eval)
-
-        super().__init__(params=params)
 
     # Simple consistency check functions
     @staticmethod
