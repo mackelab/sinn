@@ -311,7 +311,7 @@ em
                    'shape': self.shape,
                    'ndim': self.ndim,
                    '_tarr': self._tarr,
-                   '_data': self._data,
+                   '_data': self._data.get_value(),
                    #'use_theano': self.use_theano,
                    '_iterative': self._iterative,
                    'locked': self.locked
@@ -668,7 +668,6 @@ em
                     old_percent = percent
                 self.update(i, self._update_function(tarr[i]))
 
-            assert(np.all(np.array(self[start:stop]) == self._update_function(tarr[slice(start,stop)])))
         logger.info("Done computing {}.".format(self.name))
 
     def get_time_array(self, time_slice=slice(None, None), include_padding=False):
@@ -1116,6 +1115,8 @@ em
         WARNING: This function is only to be used for the construction of
         a Theano graph. After compilation, sinn.inputs is cleared, and therefore
         the result of this function will no longer be valid.
+        HACK: sinn.inputs is no longer cleared, so this function should no longer
+        be limited to Theano graphs – hopefully that doesn't break anything else.
         """
         # Prevent infinite recursion with a temporary property
         if hasattr(self, '_batch_loop_flag'):
@@ -1123,10 +1124,27 @@ em
         else:
             self._batch_loop_flag = True
 
+        # Augment the list of inputs with their compiled forms, if they exist
+        all_inputs = set(sinn.inputs.keys()).union(
+            set([hist.compiled_history for hist in sinn.inputs
+                 if hist.use_theano and hist.compiled_history is not None]) )
+
+        # Get the list of inputs. A compiled history may not be in the input list,
+        # so if `self` is not found, we try to find its parent
+        input_list = None
+        if self in sinn.inputs:
+            input_list = sinn.inputs[self]
+        else:
+            for hist in sinn.inputs:
+                if (hist.use_theano and hist.compiled_history is self):
+                    input_list = sinn.inputs[hist]
+                    break
+        assert(input_list is not None)
+
         if not self._iterative:
             # Batch computable by construction
             retval = True
-        elif self not in sinn.inputs:
+        elif self not in all_inputs:
             # It's the user's responsibility to specify important inputs;
             # if there are none, we assume this history does not depend on any other.
             # Note that undefined intermediary inputs (such as a dynamically
@@ -1134,7 +1152,7 @@ em
             # is included in sinn.inputs.
             retval = True
         elif all( hist.locked or hist._is_batch_computable()
-                  for hist in sinn.inputs[self]):
+                  for hist in input_list):
             # The potential cyclical dependency chain has been broken
             retval = True
         else:

@@ -49,9 +49,9 @@ _DEFAULT_POSTERIORFILE = name + "_logposterior" +theano_str + ext
 def init_activity_model(activity_history=None, input_history=None):
     model_params = GLM.Parameters(
         N = np.array((500, 100)),
-        c = (2, 2),
-        J = ((3, -6), (6, 0)),
-        τ = (0.01, 0.08)
+        c = (5, 2),
+        J = ((4, -3), (3, 0)),
+        τ = (0.01, 0.02)
         )
     memory_time = 0.553 # What we get with τ=(0.01, 0.08)
     if activity_history is not None:
@@ -81,7 +81,7 @@ def init_activity_model(activity_history=None, input_history=None):
         import numpy as np
         # import ensures that proper references to dependencies are pickled
         # This is only necessary for scripts directly called on the cli – imported modules are fine.
-        res = 10 + 10*shim.sin(t*2*np.pi) + noise_hist[t]
+        res = np.array([12,4]) * (1 + shim.sin(t*2*np.pi)) + noise_hist[t]
         return res
     if input_history is not None:
         Ihist = input_history
@@ -101,7 +101,7 @@ def init_activity_model(activity_history=None, input_history=None):
                          memory_time=memory_time)
     return activity_model
 
-def generate(filename = _DEFAULT_DATAFILE):
+def generate(filename = _DEFAULT_DATAFILE, autosave=True):
     logger.info("Generating data...")
     try:
         # Try to load precomputed data
@@ -128,11 +128,12 @@ def generate(filename = _DEFAULT_DATAFILE):
         t2 = time.perf_counter()
         logger.info("Data generation took {}s.".format((t2-t1)))
 
-        # Save the new data. Using the raw format allows us make changes
-        # to the sinn library and still use this data
-        fn, ext = os.path.splitext(filename)
-        io.saveraw(fn + "_A" + ext, activity_model.A)
-        io.saveraw(fn + "_I" + ext, activity_model.I)
+        if autosave:
+            # Save the new data. Using the raw format allows us make changes
+            # to the sinn library and still use this data
+            fn, ext = os.path.splitext(filename)
+            io.saveraw(fn + "_A" + ext, activity_model.A)
+            io.saveraw(fn + "_I" + ext, activity_model.I)
 
         logger.info("Done.")
     else:
@@ -170,12 +171,16 @@ def plot_posterior(model_filename = _DEFAULT_DATAFILE,
         logposterior = compute_posterior(model_filename, posterior_filename,
                                          target_dt)
 
+    # Convert to the posterior. We first make the maximum value 0, to avoid
+    # underflows when computing the exponential
+    posterior = (logposterior - logposterior.max()).apply_op("L", np.exp)
+
     # Plot the posterior
-    logposterior.cmap = 'viridis'
-    logposterior.set_ceil(logposterior.max())
-    logposterior.set_floor(logposterior.min())
-    logposterior.set_norm('linear')
-    ax, cb = anlz.plot(logposterior)
+    posterior.cmap = 'viridis'
+    posterior.set_ceil(posterior.max())
+    posterior.set_floor(0)
+    posterior.set_norm('linear')
+    ax, cb = anlz.plot(posterior)
         # analyze recognizes logposterior as a heat map, and plots accordingly
         # anlz.plot returns a tuple of all plotted objects. For heat maps there
         # are two: the heat map axis and the colour bar
@@ -293,10 +298,9 @@ def main():
     #     plt.ioff()
     #     plt.figure()
     #     plot_activity(activity_model)
-    # #plt.show()
-    # return
-    Ahist = histories.Series.from_raw(io.loadraw("2-pop-glm_A.dat"))
-    Ihist = histories.Series.from_raw(io.loadraw("2-pop-glm_I.dat"))
+    #plt.show()
+    Ahist = histories.Series.from_raw(io.loadraw("2-pop-glm_theano_A.dat"))
+    Ihist = histories.Series.from_raw(io.loadraw("2-pop-glm_theano_I.dat"))
     activity_model = init_activity_model(Ahist, Ihist)
     true_params = {'J': activity_model.params.J.get_value()[0,0],
                    'τ': activity_model.params.τ.get_value()[0,1]}

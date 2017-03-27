@@ -172,7 +172,7 @@ def plot(data, **kwargs):
         ax.set_yscale(data.axes[1].scale)
 
         cb = plt.colorbar()
-        cb.set_label(data.color_label)
+        cb.set_label(data.zlabel)
 
         color_scheme = color_schemes.map[data.cmap]
         ax.tick_params(axis='both', which='both', color=color_scheme.white,

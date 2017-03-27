@@ -103,24 +103,26 @@ class GLM_exp_kernel(Model):
 
     def ρ_fn(self, t):
         if not shim.isscalar(t):
-            # t is an array of times, but convolve wants a slice
-            tslice = sinn.array_to_slice(t)
+            if len(t) == 1:
+                # t is just a singe time, wrapped in an array
+                tslice = t[0]
+            else:
+                # t is an array of times, but convolve wants a slice
+                tslice = sinn.array_to_slice(t)
         else:
             tslice = t
         return self.params.c * shim.exp(self.κ.convolve(self.JᕽAᐩI, tslice))
 
     def A_fn(self, t):
         p_arr = sinn.clip_probabilities(self.ρ[t] * self.A.dt)
-        return self.rndstream.binomial(size = self.A.shape,
-                                       n = self.params.N,
-                                       p = self.ρ[t] * self.A.dt) / self.params.N / self.A.dt
+        return self.rndstream.binomial( size = self.A.shape,
+                                        n = self.params.N,
+                                        p = p_arr ) / self.params.N / self.A.dt
 
     def A_range_fn(self, t_array):
         shim.check( t_array[0] < t_array[-1] )
             # We don't want to check that the entire array is ordered; this is a compromise
         shim.check( t_array[0] == self.a._cur_tidx + 1 )
-            # Because we only store the last value of occN, calculation
-            # must absolutely be done iteratively
 
         if not shim.is_theano_object(self.A._data):
             def loop(t):
@@ -146,8 +148,6 @@ class GLM_exp_kernel(Model):
         super().update_params(new_params)
 
     def loglikelihood(self, start=None, stop=None):
-
-        sinn.flag = True   # DEBUG
 
         hist_type_msg = ("To compute the loglikelihood, you need to use a NumPy "
                             "history for the {}, or compile the history beforehand.")
@@ -180,9 +180,6 @@ class GLM_exp_kernel(Model):
 
         # Binomial mean: Np = Nρdt.  E(A) = E(B)/N/dt = ρ
         ρ_arr = ρhist[start:stop]
-        # if Ahist.locked and self.I.locked:
-        #    self.JᕽAᐩI.locked = True
-        # TODO: lock JᕽAᐩI in a less hacky way
 
         #------------------
         # True log-likelihood
@@ -197,33 +194,18 @@ class GLM_exp_kernel(Model):
         l = shim.sum( -shim.log(shim.factorial(k_arr, exact=True))
                       -(self.params.N-k_arr)*shim.log(self.params.N - k_arr)
                       + self.params.N-k_arr
-                      + k_arr*shim.log(p_arr) + k_arr*shim.log(1-p_arr) )
+                      + k_arr*shim.log(p_arr)
+                      + (self.params.N-k_arr)*shim.log(1-p_arr) )
             # with exact=True, factorial is computed only once for whole array
 
-        #self.last_parr = p_arr
-        #self.last_l = l
         return l
 
-        # #-----------------
-        # # Gaussian approximation to the log-likelihood
-
-        # # Binomial variance: Np(1-p)  V(A) = V(B)/(Ndt)² = ρ(1/dt - ρ)/N
-        # v_arr = ρ_arr * (1/Ahist.dt - ρ_arr) / self.params.N
-
-        # # Log-likelihood: Σ -log σ + (x-μ)²/2σ² + cst
-        # l = shim.lib.sum( -shim.lib.log(shim.lib.sqrt(v_arr)) + (A_arr - ρ_arr)**2 / 2 / v_arr )
-
-        # return l
-
     def get_loglikelihood(self, *args, **kwargs):
-        # Pickling is more robust for functions imported from a module, which is why
-        # we don't define `f` in the top level script.
         if sinn.config.use_theano():
             # TODO Precompile function
             def f(model):
                 if 'loglikelihood' not in self.compiled:
                     import theano
-                    sinn.gparams = self.params
                     self.theano_reset()
                         # Make clean slate (in particular, clear the list of inputs)
                     logL = model.loglikelihood(*args, **kwargs)

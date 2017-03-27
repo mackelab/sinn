@@ -34,8 +34,9 @@ logger.addHandler(_fh)
 logger.addHandler(_ch)
 
 def clip_probabilities(prob_array,
-                       min_prob = config.abs_tolerance,
-                       max_prob = 1-config.abs_tolerance):
+                       min_prob = np.sqrt(config.abs_tolerance),
+                       max_prob = 1-np.sqrt(config.abs_tolerance)):
+    # For float64 variables, we should clip at least 1e-8 away from the bounds
     if not config.use_theano():
         if np.any(prob_array > max_prob) or np.any(prob_array < min_prob):
             logger.warning("Some probabilities were clipped.")
@@ -55,7 +56,7 @@ def theano_reset():
         # a key, but this is not what it's meant for
         if not hist.locked:
             hist.theano_reset()
-    inputs = {}
+    #inputs = {}
 
 def array_to_slice(array):
     """
