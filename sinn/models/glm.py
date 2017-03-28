@@ -201,6 +201,22 @@ class GLM_exp_kernel(Model):
         return l
 
     def get_loglikelihood(self, *args, **kwargs):
+
+        # Sanity check – it's easy to forget to clear histories in an interactive session
+        uncleared_histories = []
+        for hist in self.history_list:
+            if ( not hist.locked and ( ( hist.use_theano and hist.compiled_history is not None
+                                         and hist.compiled_history._cur_tidx >= hist.t0idx )
+                                       or (not hist.use_theano and hist._cur_tidx >= hist.t0idx) ) ):
+                uncleared_histories.append(hist)
+        if len(uncleared_histories) > 0:
+            raise RuntimeError("You are trying to produce a cost function graph, but have "
+                               "uncleared histories. Either lock them (with their .lock() "
+                               "method) or clear them (with their individual .clear() method "
+                               "or the model's .clear_unlocked_histories() method). The latter "
+                               "will delete data.\nUncleared histories: "
+                               + str([hist.name for hist in uncleared_histories]))
+
         if sinn.config.use_theano():
             # TODO Precompile function
             def f(model):

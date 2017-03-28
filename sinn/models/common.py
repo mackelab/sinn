@@ -191,6 +191,7 @@ class Model(com.ParameterMixin):
             logger.info("Updating kernel {}.".format(kernel.name))
             kernel.update_params(self.params)
 
+    def clear_unlocked_histories(self):
         for hist in self.history_list:
             if not hist.locked:
                 self.clear_history(hist)

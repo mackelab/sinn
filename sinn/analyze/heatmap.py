@@ -60,6 +60,8 @@ class HeatMap:
         self.ceil = ceil
     def set_cmap(self, cmap):
         self.cmap = cmap
+    def set_zlabel(self, label):
+        self.zlabel = label
     def set_norm(self, norm):
         # Some common aliases
         if norm == 'lin':
@@ -97,6 +99,10 @@ class HeatMap:
     # Operator definitions
     #####################################################
     # TODO: Operations with two heat maps ?
+
+    def sum(self, axis=None, dtype=None, out=None):
+        # This allows calling np.sum() on a heat map.
+        return np.sum(self.data, axis=axis, dtype=dtype, out=out)
 
     def apply_op(self, new_label, op, b=None):
         if b is None:

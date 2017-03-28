@@ -251,30 +251,32 @@ def compute_posterior(target_dt,
     param_sweep.set_function(activity_model.get_loglikelihood(start=1000,
                                                               stop=1010), 'log $L$')
 
-    # timeout ipp.Client after 2 seconds
-    if ipp_url_file is not None:
-        import ipyparallel as ipp
-        try:
-            with sinn.timeout(2):
-                ippclient = ipp.Client(url_file=ipp_url_file)
-        except TimeoutError:
-            logger.info("Unable to connect to ipyparallel controller.")
-            ippclient = None
-        else:
-            logger.info("Connected to ipyparallel controller.")
-    elif ipp_profile is not None:
-        import ipyparallel as ipp
-        try:
-            with sinn.timeout(3):
-                ippclient = ipp.Client(profile=ipp_profile)
-        except TimeoutError:
-            logger.info("Unable to connect to ipyparallel controller with "
-                        "profile '" + ipp_profile + ".'")
-            ippclient = None
-        else:
-            logger.info("Connected to ipyparallel controller for profile '" + ipp_profile + "'.")
-    else:
-        ippclient = None
+    ippclient = sinn.get_ipp_client(ipp_profile, ipp_url_file)
+
+    # # timeout ipp.Client after 2 seconds
+    # if ipp_url_file is not None:
+    #     import ipyparallel as ipp
+    #     try:
+    #         with sinn.timeout(2):
+    #             ippclient = ipp.Client(url_file=ipp_url_file)
+    #     except TimeoutError:
+    #         logger.info("Unable to connect to ipyparallel controller.")
+    #         ippclient = None
+    #     else:
+    #         logger.info("Connected to ipyparallel controller.")
+    # elif ipp_profile is not None:
+    #     import ipyparallel as ipp
+    #     try:
+    #         with sinn.timeout(3):
+    #             ippclient = ipp.Client(profile=ipp_profile)
+    #     except TimeoutError:
+    #         logger.info("Unable to connect to ipyparallel controller with "
+    #                     "profile '" + ipp_profile + ".'")
+    #         ippclient = None
+    #     else:
+    #         logger.info("Connected to ipyparallel controller for profile '" + ipp_profile + "'.")
+    # else:
+    #     ippclient = None
 
     if ippclient is not None:
         # Initialize the environment in each cluster process

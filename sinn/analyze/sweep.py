@@ -44,7 +44,7 @@ def logspace(low, high, fineness):
     """
     # Note: lambdas don't play nice with pickling (and thence ipyparallel)
     def pow10(x):
-        return x**10
+        return 10**x
     return AxisStops(np.logspace(np.log10(low), np.log10(high),
                                  num=int((np.log10(high)-np.log10(low)))
                                  * 5*fineness/np.log10(10),
@@ -56,11 +56,18 @@ def logspace(low, high, fineness):
 
 
 class ParameterSweep:
+    """
+    When parallelizing, the following packages are imported by default in each process:
+    - sinn
+    - theano_shim as shim
+    - numpy as np
+    Other packages can be added to the list by calling `add_import`.
+    """
 
     def __init__(self, model):
         self._model = model
         self.params_to_sweep = []
-        self.imports = ['sinn', 'sinn.config', ('theano_shim', 'shim')]
+        self.imports = ['sinn', 'sinn.config', ('theano_shim', 'shim'), ('numpy', 'np')]
         self.function = None
         self.shape = ()
         self.workdir = os.getcwd()
