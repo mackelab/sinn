@@ -195,7 +195,12 @@ em
         -------
         None
         """
-        self.instance_counter += 1
+        # The first thing we do is increment the instance counter. This allows us to
+        # ensure every class has a unique name.
+        History.instance_counter += 1
+
+        if self not in sinn.inputs:
+            sinn.inputs[self] = set()
 
         if name is None:
             name = "history{}".format(self.instance_counter)
@@ -289,6 +294,14 @@ em
     def __len__(self):
         return self._unpadded_length
 
+    def __lt__(self, other):
+        # This allows histories to be sorted. IPyParallel sometimes requires this
+        if isinstance(other, History):
+            return self.name < other.name
+        else:
+            raise TypeError("'Lesser than' comparison is not supported between objects of type History and {}."
+                            .format(type(other)))
+
     def raw(self):
         # The raw format is meant for data longevity, and so should
         # seldom, if ever, be changed
@@ -344,7 +357,8 @@ em
         if use_theano is sinn._NoValue:
             use_theano = sinn.config.use_theano()
         if use_theano:
-            theano_hist = cls(hist, use_theano=True)
+            hist.name = str(raw['name']) + " (compiled)"
+            theano_hist = cls(hist, name=str(raw['name']), use_theano=True)
             theano_hist.compiled_history = hist
             return theano_hist
         else:
@@ -748,8 +762,7 @@ em
             try:
                 shim.check( shim.abs(quotient - rquotient) < config.get_abs_tolerance(Δt) / self.dt )
             except AssertionError:
-                print("Δt: {}, dt: {}"
-                      .format(Δt, self.dt) )
+                logger.error("Δt: {}, dt: {}".format(Δt, self.dt) )
                 raise ValueError("Tried to convert t=" + str(Δt) + " to an index interval "
                                  "but its not a multiple of dt.")
             return int( rquotient )
@@ -1118,6 +1131,9 @@ em
         HACK: sinn.inputs is no longer cleared, so this function should no longer
         be limited to Theano graphs – hopefully that doesn't break anything else.
         """
+        if not self._iterative:
+            return True
+
         # Prevent infinite recursion with a temporary property
         if hasattr(self, '_batch_loop_flag'):
             return False
@@ -1140,6 +1156,7 @@ em
                     input_list = sinn.inputs[hist]
                     break
         assert(input_list is not None)
+            # If this history is iterative, it should have at least one input
 
         if not self._iterative:
             # Batch computable by construction
@@ -1514,6 +1531,7 @@ class Series(ConvolveMixin, History):
             Arguments required by History and ConvolveMixin
         """
         if name is None:
+            import pdb; pdb.set_trace()
             name = "series{}".format(self.instance_counter + 1)
         # if shape is None:
         #     raise ValueError("'shape' is a required keyword "

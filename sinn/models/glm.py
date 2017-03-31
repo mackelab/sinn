@@ -88,6 +88,9 @@ class GLM_exp_kernel(Model):
 
         self.JᕽAᐩI.pad(self.κ.memory_time)
 
+        # HACK Should only add dependencies from histories in history_inputs
+        self.history_inputs.union(sinn.inputs)
+
     def JᕽAᐩI_fn(self, t):
         assert(len(self.A.shape) == 1) # Too lazy to make the more generic case
         if shim.isscalar(t):
@@ -183,7 +186,6 @@ class GLM_exp_kernel(Model):
 
         #------------------
         # True log-likelihood
-
         # Number of spikes
         k_arr = (A_arr * Ahist.dt * self.params.N).astype('int16')
         # Spiking probabilities
@@ -204,7 +206,8 @@ class GLM_exp_kernel(Model):
 
         # Sanity check – it's easy to forget to clear histories in an interactive session
         uncleared_histories = []
-        for hist in self.history_list:
+        # HACK Shouldn't need to combine sinn.inputs
+        for hist in self.history_inputs.union(sinn.inputs):
             if ( not hist.locked and ( ( hist.use_theano and hist.compiled_history is not None
                                          and hist.compiled_history._cur_tidx >= hist.t0idx )
                                        or (not hist.use_theano and hist._cur_tidx >= hist.t0idx) ) ):
@@ -219,7 +222,7 @@ class GLM_exp_kernel(Model):
 
         if sinn.config.use_theano():
             # TODO Precompile function
-            def f(model):
+            def likelihood_f(model):
                 if 'loglikelihood' not in self.compiled:
                     import theano
                     self.theano_reset()
@@ -240,15 +243,16 @@ class GLM_exp_kernel(Model):
                     *self.compiled['loglikelihood']['inputs'] )
                     # * is there to expand the list of inputs
         else:
-            def f(model):
+            def likelihood_f(model):
                 return model.loglikelihood(*args, **kwargs)
-        return f
+        return likelihood_f
 
     def get_input_list(self):
         # TODO: move to Models
         input_list = []
         input_vals = []
-        for hist in sinn.inputs:
+        # HACK Shouldn't need to combine sinn.inputs
+        for hist in self.history_inputs.union(sinn.inputs):
             if shim.is_theano_variable(hist._data):
                 shape = hist._tarr.shape + hist.shape
                 if hist._original_data is not None:

@@ -67,7 +67,8 @@ class Model(com.ParameterMixin):
         """
         super().__init__(params=params)
         self.kernel_list = []
-        self.history_list = []
+        #self.history_list = []
+        self.history_inputs = sinn.DependencyGraph('model.history_inputs')
         self.compiled = {}
 
         if history is not None:
@@ -124,12 +125,12 @@ class Model(com.ParameterMixin):
         else:
             assert(isinstance(obj, sinn.histories.History))
             logger.warning("Histories aren't written to disk. Use add_history instead")
-            self.history_list.append(obj)
+            self.history_inputs.add(obj)
 
     def add_history(self, hist):
         assert(isinstance(hist, sinn.histories.History))
-        if hist not in self.history_list:
-            self.history_list.append(hist)
+        if hist not in self.history_inputs:
+            self.history_inputs.add(hist)
     def add_kernel(self, kernel):
         assert(isinstance(kernel, sinn.kernels.Kernel))
         if kernel not in self.kernel_list:
@@ -137,7 +138,7 @@ class Model(com.ParameterMixin):
 
     def theano_reset(self):
         """Put model back into a clean state, to allow building a new Theano graph."""
-        for hist in self.history_list:
+        for hist in self.history_inputs:
             if not hist.locked:
                 hist.theano_reset()
         for kernel in self.kernel_list:
@@ -154,6 +155,10 @@ class Model(com.ParameterMixin):
         assert(all( type(param.get_value()) == type(new_param)
                     for param, new_param in zip(self.params, new_params) ))
         logger.info("Model params are now {}. Updating kernels...".format(self.params))
+
+        # HACK Make sure sinn.inputs and models.history_inputs coincide
+        sinn.inputs.union(self.history_inputs)
+        self.history_inputs.union(sinn.inputs)
 
         # Determine the kernels for which parameters have changed
         kernels_to_update = []
@@ -175,7 +180,7 @@ class Model(com.ParameterMixin):
         #   (And write it to disk for later retrievel if these parameters
         #    are reused.)
         # - Update the kernel itself to the new parameters.
-        for obj in self.history_list + self.kernel_list:
+        for obj in list(self.history_inputs) + self.kernel_list:
             if obj not in kernels_to_update:
                 for op in obj.cached_ops:
                     for kernel in kernels_to_update:
@@ -191,8 +196,10 @@ class Model(com.ParameterMixin):
             logger.info("Updating kernel {}.".format(kernel.name))
             kernel.update_params(self.params)
 
+        self.clear_unlocked_histories()
+
     def clear_unlocked_histories(self):
-        for hist in self.history_list:
+        for hist in self.history_inputs.union(sinn.inputs):
             if not hist.locked:
                 self.clear_history(hist)
 
@@ -204,13 +211,13 @@ class Model(com.ParameterMixin):
         # the entire data.
         logger.info("Clearing history " + history.name)
         history.clear()
-        if history in self.history_list:
-            for obj in self.history_list + self.kernel_list:
+        if history in self.history_inputs.union(sinn.inputs):
+            for obj in list(self.history_inputs) + self.kernel_list:
                 for op in obj.cached_ops:
                     if hash(history) in op.cache:
                         del op.cache[hash(history)]
         else:
-            for obj in self.history_list + self.kernel_list:
+            for obj in list(self.history_inputs) + self.kernel_list:
                 for op in obj.cached_ops:
                     if hash(history) in op.cache:
                         logger.error("Uncached history {} is member of cached "

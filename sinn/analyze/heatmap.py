@@ -6,12 +6,13 @@ author: Alexandre René
 """
 
 from copy import copy
-from collections import OrderedDict
 import operator
 import numpy as np
 import matplotlib.colors as colors
 
 from . import common as com
+
+__ALL__ = ['HeatMap']
 
 class HeatMap:
 
@@ -29,7 +30,9 @@ class HeatMap:
     def raw(self):
         # The raw format is meant for data longevity, and so should
         # seldom, if ever, be changed
-        raw = OrderedDict([(ax.name, ax.stops) for ax in self.axes])
+        raw = {}
+        raw['axes'] = np.array([(ax.name, ax.stops, ax.idx, ax.scale) for ax in self.axes],
+                               dtype=[('name', object), ('stops', object), ('idx', object), ('scale', object)])
         raw['data'] = self.data
         raw['zlabel'] = self.zlabel
         return raw
@@ -37,16 +40,13 @@ class HeatMap:
     @classmethod
     def from_raw(cls, raw):
         param_axes = []
-        for key, val in raw.items():
-            if key not in ['data', 'zlabel']:
-                # This is a list of parameter stops
-                # We default to a linear scale since that info is not saved
-                param_axes.append(ParameterAxis(name = key,
-                                                stops = val,
-                                                idx = None,
-                                                scale = 'linear',
-                                                linearize_fn = lambda x:x,
-                                                inverse_linearize_fn = lambda x:x))
+        for ax in raw['axes']:
+            param_axes.append(HeatMap.ParameterAxis(name = ax['name'],
+                                                    stops = ax['stops'],
+                                                    idx = ax['idx'],
+                                                    scale = ax['scale'],
+                                                    linearize_fn = com.scales[ax['scale']].linearize_fn,
+                                                    inverse_linearize_fn = com.scales[ax['scale']].inverse_linearize_fn))
         heatmap = cls(str(raw['zlabel']), raw['data'], param_axes)
         return heatmap
 

@@ -11,11 +11,18 @@ from copy import copy
 import numpy as np
 logger = logging.getLogger('sinn.sweep')
 
+import theano_shim as shim
 import sinn
 import sinn.iotools as io
 from .heatmap import HeatMap
 
 AxisStops = namedtuple('AxisStops', ['stops', 'scale', 'linearize_fn', 'inverse_linearize_fn'])
+
+
+__ALL__ = ['linspace',
+           'logspace',
+           'ParameterSweep'
+           ]
 
 def linspace(low, high, fineness):
     """Simple wrapper around numpy.linspace with a more easily tunable
@@ -126,13 +133,13 @@ class ParameterSweep:
             def loginfo(msg):
                 print(msg)
 
-        def f(param_tuples):
+        def sweep_f(param_tuples):
 
             loginfo("Evaluating sweep at {}".format(str(param_tuples)))
 
             # First update the model with the new parameters
             # `model` is a global variable in the process module.
-            # It must be initialized before calls to f()
+            # It must be initialized before calls to sweep_f()
             new_params_dict = OrderedDict( (key, val.get_value())
                                            for key, val in model.params._asdict().items())
             for param, val in zip(params_to_sweep, param_tuples):
@@ -170,10 +177,12 @@ class ParameterSweep:
                 model.initialize()
 
             # Now execute and return the function of interest
+            loginfo("Evaluating likelihood function.")
             return self.function(model)
 
         if ippclient is not None:
             # Set up the environment on each client
+            ippclient[:].block = True
             ippclient[:].execute("import os")
             ippclient[:].execute("os.chdir('" + self.workdir + "')")
             for pkgname in self.imports:
@@ -184,11 +193,15 @@ class ParameterSweep:
                     ippclient[:].execute("import " + pkgname)
             if sinn.config.use_theano():
                 ippclient[:].execute("sinn.config.load_theano()")
+                ippclient[:].execute("shim.theano.config.exception_verbosity = '{}'"
+                                     .format(shim.theano.config.exception_verbosity))
+                ippclient[:].execute("shim.theano.config.optimizer = '{}'"
+                                     .format(shim.theano.config.optimizer))
 
             ippclient[:].scatter('idnum', ippclient.ids, flatten=True, block=True)
-            # Push the model to each engine's <globals> namespace
-            ippclient[:].push({'model': self._model,
-                               'params_to_sweep': self.params_to_sweep})
+
+            ippclient[:].execute("sinn.inputs.clear()")
+                # Clear out leftover inputs from a previous calculation
 
             # # Set up logger
             # from sinn.common import _logging_formatter
@@ -200,13 +213,14 @@ class ParameterSweep:
             # ippclient[:].push({'_logging_formatter': _logging_formatter})
             # ippclient[:].execute("_fh.setFormatter(_logging_formatter)")
             # ippclient[:].execute("logger.addHandler(_fh)")
-            res_arr_raw = ippclient[:].map_async(f, self.param_list())
+            ippclient[:].block = False
+            res_arr_raw = ippclient[:].map_async(sweep_f, self.param_list())
             monitor_async_result(res_arr_raw)
             res_arr = np.array(res_arr_raw.get()).reshape(self.shape)
         else:
             os.chdir(self.workdir)
 
-            res_arr = np.fromiter(map(f, self.param_list()), sinn.config.floatX).reshape(self.shape)
+            res_arr = np.fromiter(map(sweep_f, self.param_list()), sinn.config.floatX).reshape(self.shape)
 
         res = HeatMap(self.function_label, res_arr, self.params_to_sweep)
 

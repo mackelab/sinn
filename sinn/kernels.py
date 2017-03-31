@@ -158,18 +158,19 @@ class Kernel(ConvolveMixin, ParameterMixin):
 
     def theano_reset(self):
         """Make state clean for building a new Theano graph.
-        This deletes any discretizations of this kernel, since those
+        This clears any discretizations of this kernel, since those
         may depend on different parameters."""
         logger.info("Resetting kernel {} for Theano".format(self.name))
-        attr_to_del = []
+        #attr_to_del = []
         for attr in dir(self):
             if attr[:9] == "discrete_":
-                # Theano kernels are not precomputed, so they also
-                # don't need to be deleted
-                attr_to_del.append(attr)
-        for attr in attr_to_del:
-            logger.info("Removing stale kernel " + attr)
-            delattr(self, attr)
+                logger.info("Clearing and resetting stale kernel " + attr)
+                getattr(self, attr).clear()
+                getattr(self, attr).theano_reset()
+        #        attr_to_del.append(attr)
+        #for attr in attr_to_del:
+        #    logger.info("Removing stale kernel " + attr)
+        #    delattr(self, attr)
 
     def is_theano(self):
         return any(shim.is_theano_object(p) for p in self.params)
@@ -262,7 +263,7 @@ class Kernel(ConvolveMixin, ParameterMixin):
     #             return retrieved_kernel
 
     def update_params(self, new_params):
-        # Remove all attached discretized kernels, since those are no longer valid
+        # Reset all attached discretized kernels, since those are no longer valid
         logger.info("Updating kernel " + self.name + ":")
         attr_to_del = []
         for attr in dir(self):
@@ -270,10 +271,12 @@ class Kernel(ConvolveMixin, ParameterMixin):
                 if not getattr(self, attr).use_theano:
                     # Theano kernels are not precomputed, so they also
                     # don't need to be deleted
-                    attr_to_del.append(attr)
-        for attr in attr_to_del:
-            logger.info("Removing stale kernel " + attr)
-            delattr(self, attr)
+                    getattr(self, attr).clear()
+
+        #               attr_to_del.append(attr)
+        # for attr in attr_to_del:
+        #     logger.info("Removing stale kernel " + attr)
+        #     delattr(self, attr)
 
         # Unless a Kernel subclass does something special in `initialize`, the following
         # ultimately just calls set_parameters on the kernel. For Theano parameters, and

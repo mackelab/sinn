@@ -45,6 +45,7 @@ def clip_probabilities(prob_array,
         # with likelihoods (which tend to blow up when p = 0 or 1)
 
 def add_sibling_input(sibling, new_input):
+    # TODO Move to Graph class
     for key, val in inputs.items():
         if sibling in val:
             inputs[key].add(new_input)
@@ -72,6 +73,79 @@ def array_to_slice(array):
                        1,
                        -1)
     return slice(start, stop, step)
+
+class Node:
+    def __init__(self, name):
+        self.name = name
+
+class DependencyGraph(dict):
+
+    # DEBUG
+    def __init__(self, name):
+        self.name = name
+        super().__init__()
+
+    def add(self, obj):
+        if obj not in self:
+            self[obj] = set()
+
+    def union(self, other):
+        for obj in other:
+            self.add(obj)
+        if isinstance(other, DependencyGraph):
+            self.match_template(other)
+        return self
+
+    def find_by_name(self, name, nofail=False):
+        res = None
+        for node in self:
+            if node.name == name:
+                assert(res is None)
+                res = node
+        if res is None and not nofail:
+            raise ValueError("Node {} was not found.".format(name))
+        return res
+
+    def match_template(self, template):
+        """Take a template graph, and reproduce the edges therein.
+        Nodes are identified by their name.
+        All names in `template` must already exist, but `self` can contain
+        additional names.
+        """
+        for tmplnode, tmpledges in template.items():
+            node = self.find_by_name(tmplnode.name)
+            edge_list = [self.find_by_name(connected_node.name)
+                         for connected_node in tmpledges]
+            self[node] = self[node].union(edge_list)
+
+    def strip(self):
+        """Return a new graph reproducing the connections but stripping
+        out everything else. Useful if you want to share the connectivity,
+        but your objects contain large data."""
+        nwgraph = Graph()
+
+        node_set = set()
+        for node, edges in self.items():
+            node_set.add(node)
+            node_set.union(edges)
+
+        nwnode_set = set()
+        for node in node_set:
+            nwnode = Node(node.name)
+            nwnode_set.add(nwnode)
+            nwgraph[nwnode] = set()
+
+        nwgraph.match_template(self)
+
+        return nwgraph
+
+inputs = DependencyGraph('sinn.inputs')
+    # The inputs dictionary is keyed by histories. If 'hist' is a History instance,
+    # inputs[hist] is a set containing all histories which appear in hist's
+    # update function.
+    # Whenever a history's __getitem__ method is called, it adds itself
+    # to this dictionary
+
 
 class HistoryBase:
 
