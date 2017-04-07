@@ -20,6 +20,8 @@ librairies = set()
 
 floatX = 'float32'
 cast_floatX = float
+rel_tolerance = 1e-5
+abs_tolerance = 1e-8
     # This just creates the floatX variables. They are actually initialized below.
 
 def load_librairies(library_list):
@@ -57,33 +59,6 @@ def load_theano(flag=True):
 def use_theano():
     """Flag method: returns True if Theano is used."""
     return shim.use_theano
-
-#######################
-# Set functions to cast to numerical float
-
-# TODO: Rewrite these functions so they always check the value of floatX
-#       That way we can change the cast precision by just changing floatX
-
-def set_floatX():
-    global floatX, cast_floatX
-
-    if 'theano' in librairies:
-        floatX = theano.config.floatX
-        if floatX == 'float32':
-            cast_floatX = np.float32
-        elif floatX == 'float64':
-            cast_floatX = np.float64
-        else:
-            raise ValueError("The theano float type is set to '{}', which is unrecognized.".format(theano.config.floatX))
-    else:
-        if float(0.09) * 1e10 == 9e8:
-            # Evaluates to true on a 64-bit float, but not a 32-bit.
-            floatX = 'float64'
-        else:
-            floatX = 'float32'
-        cast_floatX = float
-
-set_floatX()
 
 
 ######################
@@ -123,7 +98,37 @@ def get_abs_tolerance(var):
 def get_rel_tolerance(var):
     return get_tolerance(var, 'rel')
 
-# Direct access to the floatX tolerance:
-rel_tolerance = get_rel_tolerance(cast_floatX(1))
-abs_tolerance = get_abs_tolerance(cast_floatX(1))
+
+#######################
+# Set functions to cast to numerical float
+
+# TODO: Rewrite these functions so they always check the value of floatX
+#       That way we can change the cast precision by just changing floatX
+
+def set_floatX():
+    global floatX, cast_floatX, rel_tolerance, abs_tolerance
+
+    if 'theano' in librairies:
+        floatX = theano.config.floatX
+        if floatX == 'float32':
+            cast_floatX = np.float32
+        elif floatX == 'float64':
+            cast_floatX = np.float64
+        else:
+            raise ValueError("The theano float type is set to '{}', which is unrecognized.".format(theano.config.floatX))
+    else:
+        if float(0.09) * 1e10 == 9e8:
+            # Evaluates to true on a 64-bit float, but not a 32-bit.
+            floatX = 'float64'
+        else:
+            floatX = 'float32'
+        cast_floatX = float
+
+    # Direct access to the floatX tolerance:
+    rel_tolerance = get_rel_tolerance(cast_floatX(1))
+    abs_tolerance = get_abs_tolerance(cast_floatX(1))
+
+set_floatX()
+
+
 

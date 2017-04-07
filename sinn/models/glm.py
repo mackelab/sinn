@@ -111,7 +111,7 @@ class GLM_exp_kernel(Model):
                 tslice = t[0]
             else:
                 # t is an array of times, but convolve wants a slice
-                tslice = sinn.array_to_slice(t)
+                tslice = self.JᕽAᐩI.time_array_to_slice(t)
         else:
             tslice = t
         return self.params.c * shim.exp(self.κ.convolve(self.JᕽAᐩI, tslice))

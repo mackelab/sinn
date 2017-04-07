@@ -22,7 +22,7 @@ import sinn.diskcache as diskcache
 logger = logging.getLogger('sinn')
 logger.setLevel(config.logLevel)
 _fh = logging.handlers.RotatingFileHandler(
-      os.path.basename(sys.argv[0]) + "_" + str(os.getpid()) + ".sinn.log", mode='w', maxBytes=5e7, backupCount=5)
+      os.path.basename(sys.argv[0]) + ".sinn.log", mode='a', maxBytes=5e7, backupCount=5)
     # ~50MB log files, keep at most 5
 _fh.setLevel(logging.DEBUG)
 _ch = logging.StreamHandler()
@@ -44,6 +44,18 @@ def clip_probabilities(prob_array,
         # Clipping a little bit within the interval [0,1] avoids problems
         # with likelihoods (which tend to blow up when p = 0 or 1)
 
+def isclose(a, b, rtol=None, atol=None, equal_nan=False):
+    """Wrapper around numpy.isclose, which uses the sinn.config tolerances."""
+    if rtol is None:
+        rtol = config.rel_tolerance  # floatX precision
+    if atol is None:
+        atol = config.abs_tolerance  # floatX precision
+    return np.isclose(a, b, config.rel_tolerance, config.abs_tolerance, equal_nan)
+
+def ismultiple(x, base, rtol=None, atol=None):
+    """Returns True if `x` is a multiple of `base`, up to the given numerical precision."""
+    return isclose(round(x/base) - x/base, 0, rtol, atol)
+
 def add_sibling_input(sibling, new_input):
     # TODO Move to Graph class
     for key, val in inputs.items():
@@ -58,21 +70,6 @@ def theano_reset():
         if not hist.locked:
             hist.theano_reset()
     #inputs = {}
-
-def array_to_slice(array):
-    """
-    Assumes the array is monotonous and evenly spaced.
-    """
-    dt = shim.abs(array[1] - array[0])
-    start = array[0]
-    stop = shim.ifelse(shim.lt(array[0], array[-1]),
-                       array[-1] + dt,
-                       array[-1] - dt)
-        # We add/subtract dt because the array upper bound is inclusive
-    step = shim.ifelse(shim.lt(array[0], array[-1]),
-                       1,
-                       -1)
-    return slice(start, stop, step)
 
 class Node:
     def __init__(self, name):

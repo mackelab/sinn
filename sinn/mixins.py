@@ -7,6 +7,7 @@ Author: Alexandre René
 import numpy as np
 
 import theano_shim as shim
+import sinn
 import sinn.common as com
 import sinn.config as config
 
@@ -147,14 +148,57 @@ class ConvolveMixin(CachedOperation):
 
         else:
             assert(isinstance(t, slice))
-            if t.step is None or t.step == 1:
-                start = history.t0idx if t.start is None else history.get_t_idx(t.start) - history.t0idx
-                stop = history.t0idx + len(history) if t.stop is None else history.get_t_idx(t.stop) - history.t0idx
+
+            # This is basically the same code as in histories.History.__getitem__
+            # but with automatic clipping of the padded sections
+            # NOTE: If you make changes to the logic here, check History.__getitem__
+            #       to see if they should be ported.
+            step = 1 if t.step is None else history.index_interval(t.step)
+                # Make sure we have an index step
+
+            if t.start is None:
+                start = shim.ifelse(shim.gt(step, 0),
+                                    history.t0idx,
+                                    history.t0idx + len(history) - 1 )
             else:
-                assert(t.step == -1)
-                start = history.t0idx if t.stop is None else history.get_t_idx(t.stop)- history.t0idx + 1
-                stop = history.t0idx + len(history) if t.start is None else history.get_t_idx(t.start) - history.t0idx + 1
-            output_tidx = slice(start, stop)
+                start = history.get_t_idx(t.start)
+                start = shim.ifelse(start >= 0,
+                                    start,
+                                    len(history._tarr) + start)
+            if t.stop is None:
+                stop = shim.ifelse(shim.get(step, 0),
+                                   history.t0idx + len(history),
+                                   history.t0idx - 1)
+            else:
+                stop = history.get_t_idx(t.stop)
+                stop = shim.ifelse(stop >= 0,
+                                   stop,
+                                   len(history._tarr) + stop)
+
+            # allow to select beyond the end, to be consistent
+            # with slicing conventions
+            earliest = shim.largest(history.t0idx, shim.smallest(start, stop - step))
+            latest = shim.smallest(history.t0idx + len(history),
+                                   shim.largest(start, stop - step))
+            shim.check(earliest >= 0)
+            shim.check(latest >= 0)
+
+            output_start = earliest - history.t0idx
+            output_stop = latest + 1 - history.t0idx
+                # add 1 because latest is inclusive
+                # it's +1 because the step filtering is done subsequently with output_filter
+            #output_start = history.t0idx if t.start is None else history.get_t_idx(t.start) - history.t0idx
+            #output_stop = history.t0idx + len(history) if t.stop is None else history.get_t_idx(t.stop) - history.t0idx
+
+            #else:
+            #    start = history.t0idx if t.stop is None else history.get_t_idx(t.stop)- history.t0idx + 1
+            #    stop = history.t0idx + len(history) if t.start is None else history.get_t_idx(t.start) - history.t0idx + 1
+            output_tidx = slice(output_start, output_stop, 1)
+            output_filter = None if t.step is None else slice(None, None, step)
+                # Separating output_filter allows to accept None as end points
+                # and still remain Theano-compatible
+
+                # We flip the data if step < 0, so also flip the step
             # We have to adjust the index because the 'valid' mode removes
             # time bins at the ends.
             # E.g.: assume kernel.idx_shift = 0. Then (convolution result)[0] corresponds
@@ -177,8 +221,12 @@ class ConvolveMixin(CachedOperation):
                 kernel.compute_up_to(kernel.t0idx + len(kernel) - 1)
 
             retval = self._conv_cache.ensureget(other, kernel_slice)[:,output_tidx]
-            if t.step == -1:
-                retval = retval[:, ::-1]
+            if output_filter is not None:
+                retval = retval[output_filter]
+            #if step != 1:
+            #    retval = retval[:, ::step]
+                # FIXED?: Negative step sizes might be offset, if they are more than one ?
+                #retval = retval[:, ::-1]
                   # extra ':' because ensureget returns the result wrapped in an extra dimension
         if output_scalar:
             # Caller only passed a single kernel slice, and so is not

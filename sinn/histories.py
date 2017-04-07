@@ -390,59 +390,115 @@ em
                               key,
                               len(self._tarr) + key)
                 # key = -1 returns last element
-            end = key
+            latest = key
+            key_filter = None
 
-        elif isinstance(key, slice) or shim.isarray(key):
-            if isinstance(key, slice):
-                start = key.start
-                stop = key.stop
-            else:
-                start = shim.min(key)
-                stop = self.get_t_idx(shim.max(key)) + 1
+        elif isinstance(key, slice):
+            # NOTE: If you make changes to the logic here, check mixins.convolve
+            #       to see if they should be ported.
 
-            if start is None:
-                start = 0
+            step = 1 if key.step is None else key.step
+            step = self.index_interval(step)
+                # Make sure we have an index step
+
+            if key.start is None:
+                start = shim.ifelse(shim.gt(step, 0),
+                                    0,
+                                    len(self._tarr) )
             else:
-                start = self.get_t_idx(start)
+                start = self.get_t_idx(key.start)
                 start = shim.ifelse(start >= 0,
-                                   start,
-                                   len(self._tarr) + start)
-
-            if stop is None:
-                stop = len(self._tarr)
+                                    start,
+                                    len(self._tarr) + start)
+            if key.stop is None:
+                stop = shim.ifelse(shim.gt(step, 0),
+                                   len(self._tarr),
+                                   -1)
             else:
-                stop = self.get_t_idx(stop)
+                stop = self.get_t_idx(key.stop)
                 stop = shim.ifelse(stop >= 0,
-                                   stop,
-                                   len(self._tarr) + start)
+                                    stop,
+                                    len(self._tarr) + stop)
 
-            shim.check(start < self.t0idx + len(self))
-            stop = shim.smallest(self.t0idx + len(self), stop)
-                # allow to select beyond the end, to be consistent
-                # with slicing conventions
-            end = shim.largest(start, stop - 1)
-                # `stop` is the first point beyond the array
 
-            key = slice(start, stop)
+            # allow to select beyond the end, to be consistent
+            # with slicing conventions
+            earliest = shim.largest(0, shim.smallest(start, stop - step))
+            latest = shim.smallest(len(self._tarr) - 1,
+                                   shim.largest(start, stop - step))
+            shim.check(earliest >= 0)
+            shim.check(latest >= 0)
+            # if step > 0:
+            #     start = shim.largest(start, 0)
+            #     stop = shim.smallest(stop, self.t0idx + len(self) + 1)
+            #     latest = stop - 1
+            #         # `latest` is the latest time we need to compute
+            # else:
+            #     start = shim.smallest(start, self.t0idx + len(self))
+            #     stop = shim.largest(stop, -1)
+            #     latest = start
+
+                # compute_up_to will try to compute to the end if this is false
+
+            key_filter = None if key.step is None else slice(None, None, step)
+            key = slice(earliest, latest + 1)
+                # applying the step 'filter' afterwards avoids the problem of times
+                # inadvertently being converted to negative indices
+                # +1 because 'latest' is always > earliest
+
+            # if isinstance(key, slice) and key.stop is None:
+            #     # key.stop can't be replaced by a numerical value if step < 0
+            #     # for non-slice types, negative values don't really make sense,
+            #     # so we treat them as 'None' (typically what happens here is that
+            #     # stop = -1
+            #     key = slice(start, None, step)
+            # else:
+            #     key = slice(start, stop, step)
+
+        elif shim.isarray(key):
+            #TODO: treat case where this gives a stop at -1
+            start = self.get_t_idx(key[0])
+            end = self.get_t_idx(key[-1])
+            earliest = shim.largest(0, shim.smallest(start, end))
+            latest = shim.smallest(len(self._tarr) - 1, shim.largest(start, end))
+            if len(key) == 1:
+                # It's a 1 element array – just set step to 1 and don't worry
+                step = 1
+            else:
+                # Set the step as the difference of the first two elements
+                step = key[1] - key[0]
+                # Make sure the entire indexing array has the same step
+                if not shim.is_theano_object(key):
+                    assert(np.all(sinn.isclose(key[1:] - key[:-1], step)))
+                step = self.index_interval(step)
+
+            key = slice(earliest, latest + 1)
+                # +1 because the latest bound is inclusive
+            key_filter = slice(None, None, step)
 
         else:
             raise ValueError("Trying to index using {} ({}). 'key' should be an "
                              "integer, a float, or a slice of integers and floats"
                              .format(key, type(key)))
 
-        if shim.is_theano_variable(end):
+        if shim.is_theano_variable(latest):
             # For theano variables, we don't really compute, but just save the
             # value up to which the later evaluation will need to go.
-            self.compute_up_to(end)
-        elif end > self._cur_tidx:
+            self.compute_up_to(latest)
+        elif latest > self._cur_tidx:
             if (self.use_theano
                 and self.compiled_history is not None
-                and self.compiled_history._cur_tidx >= end):
-                # RETURN FORK: If the history has already been computed to this point,
+                and self.compiled_history._cur_tidx >= latest):
+                # ***** RETURN FORK ******
+                # If the history has already been computed to this point,
                 # just return that.
-                return self.compiled_history[key]
+                result = self.compiled_history[key]
+                if key_filter is None:
+                    return result
+                else:
+                    return result[key_filter]
 
-            self.compute_up_to(end)
+            self.compute_up_to(latest)
 
 
         # Add `self` to list of inputs
@@ -450,7 +506,11 @@ em
         if self not in sinn.inputs:
             sinn.inputs[self] = set()
 
-        return self.retrieve(key)
+        result = self.retrieve(key)
+        if key_filter is None:
+            return result
+        else:
+            return result[key_filter]
 
     def clear(self):
         """
@@ -587,20 +647,36 @@ em
         return len(before_array), len(after_array)
 
     def compute_up_to(self, tidx):
-        """Compute the history up to `tidx` inclusive."""
+        """
+        Compute the history up to `tidx` inclusive.
+
+        Parameters
+        ----------
+        tidx: int, str
+            Index up to which we need to compute. Can also be the string
+            'end', in which the entire history (excluding subsequent padding)
+            is computed.
+            NOTE: The index must be positive. Negative indices are treated as
+            before 0, and lead to no computation. (I.e. negative indices are
+            not subtracted from the end.)
+        """
+
+        if tidx == 'end':
+            tidx = self.t0idx + len(self)
 
         shim.check(shim.istype(tidx, 'int'))
 
         start = self._cur_tidx + 1
-        end = shim.ifelse(tidx >= 0,
-                          tidx,
-                          len(self._tarr) + tidx)
+        end = tidx
+        #end = shim.ifelse(tidx >= 0,
+        #                  tidx,
+        #                  len(self._tarr) + tidx)
 
         #if shim.is_theano_object(tidx):
         if self.use_theano and (self._compiling
                                 or any(hist._compiling for hist in sinn.inputs)):
             # Don't actually compute: just store the current_idx we would need
-            # HACK The or line prevents any chaining of Theano graphs
+            # HACK The 'or' line prevents any chaining of Theano graphs
             # FIXME Allow chaining of Theano graphs when possible/specified
             self._theano_cur_tidx = shim.largest(end, self._theano_cur_tidx)
             return
@@ -658,7 +734,7 @@ em
             self.update(slice(start, stop),
                         self._compute_range(tarr[slice(start, stop)]))
 
-        # BEBUG: use_theano
+        # DEBUG: use_theano
         elif batch_computable:
             # Computation doesn't depend on history – just compute the whole thing in
             # one go
@@ -1121,6 +1197,24 @@ em
     # Utility functions
     ################################
 
+    def time_array_to_slice(self, time_array):
+        """
+        Assumes the time_array is monotonous and evenly spaced.
+        """
+        step = time_array[1] - time_array[0]
+        idxstart = self.get_t_idx(time_array[0])
+        if not shim.is_theano_object(time_array):
+            # Check that time_array is evenly spaced
+            assert(np.all(sinn.isclose(time_array[1:] - time_array[:-1], step)))
+        idxstep = self.index_interval(step)
+        idxstop = self.get_t_idx(time_array[-1]) + idxstep
+            # We add/subtract dt because the time_array upper bound is inclusive
+        if idxstop < 0:
+            idxstop = None
+
+        return slice(idxstart, idxstop, idxstep)
+
+
     def _is_batch_computable(self):
         """
         Returns true if the history can be computed at all time points
@@ -1311,6 +1405,7 @@ class Spiketimes(ConvolveMixin, History):
             Slice bounds may be specified as indices (int) or times (float).
             [:] is much more efficient than [0:] if you want all spike times, as
             it just returns the internal list without processing.
+            Note that the key's 'step' attribute will be ignored.
         '''
         if shim.istype(key, 'int') or shim.istype(key, 'float'):
             t = self.get_time(key)
@@ -1531,7 +1626,6 @@ class Series(ConvolveMixin, History):
             Arguments required by History and ConvolveMixin
         """
         if name is None:
-            import pdb; pdb.set_trace()
             name = "series{}".format(self.instance_counter + 1)
         # if shape is None:
         #     raise ValueError("'shape' is a required keyword "
