@@ -21,6 +21,7 @@ class HeatMap:
     def __init__(self, zlabel, data, param_axes, norm='linear'):
         self.zlabel = zlabel
         self.data = data
+        self.shape = data.shape
         self.axes = param_axes
         self.floor = -np.inf
         self.ceil = np.inf
@@ -54,6 +55,12 @@ class HeatMap:
         return self.data.max()
     def min(self):
         return self.data.min()
+    def argmax(self):
+        """Return the tuple of parameter values that correspond to
+        the heatmap's maximum.
+        """
+        index_tup = np.unravel_index(np.argmax(self.data), self.shape)
+        return tuple([ax.stops[idx] for ax, idx in zip(self.axes, index_tup)])
     def set_floor(self, floor):
         self.floor = floor
     def set_ceil(self, ceil):

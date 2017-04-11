@@ -35,7 +35,7 @@ ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
 logger.addHandler(ch)
 
-#sinn.config.load_theano()
+sinn.config.load_theano()
 #shim.theano.config.exception_verbosity='high'
 #shim.theano.config.optimizer='fast_compile'
 #shim.theano.config.optimizer='none'
@@ -44,9 +44,9 @@ def add_before_ext(s, suffix):
     name, ext = os.path.splitext(s)
     return name + suffix + ext
 
-theano_str = ""#"_theano" if sinn.config.use_theano() else ""
-_DEFAULT_DATAFILE = add_before_ext("2-pop-glm.dat", theano_str)
-_DEFAULT_LIKELIHOODFILE = add_before_ext(_DEFAULT_DATAFILE, "_loglikelihood" + theano_str)
+theano_str = "_theano" if sinn.config.use_theano() else ""
+_DEFAULT_DATAFILE = "2-pop-glm.dat"
+_DEFAULT_LIKELIHOODFILE = add_before_ext(_DEFAULT_DATAFILE, "_loglikelihood")
 
 def init_activity_model(activity_history=None, input_history=None):
     model_params = GLM.Parameters(
@@ -126,7 +126,8 @@ def generate(filename = _DEFAULT_DATAFILE, autosave=True):
             # In theory Ihist is computed along with Ahist, but it may e.g.
             # leave the last data point uncomputed if Ahist does not need it.
             # Ihist.set() here ensures that the input is also computed all the
-            # way to the end, which avoids when building the graph for the likelihood.
+            # way to the end, which avoids warnings when building the graph
+            # for the likelihood.
         t2 = time.perf_counter()
         logger.info("Data generation took {}s.".format((t2-t1)))
 
@@ -157,8 +158,11 @@ def plot_activity(model):
 
 
 def plot_likelihood(model_filename = _DEFAULT_DATAFILE,
-                   likelihood_filename = _DEFAULT_LIKELIHOODFILE):
+                    likelihood_filename = None):
     plt.style.use('../sinn/analyze/stylelib/mackelab_default.mplstyle')
+
+    if likelihood_filename is None:
+        likelihood_filename = add_before_ext(_DEFAULT_LIKELIHOODFILE, theano_str)
 
     target_dt = 0.002
         # The activity timestep we want to use.
@@ -195,7 +199,7 @@ def plot_likelihood(model_filename = _DEFAULT_DATAFILE,
 
 def compute_likelihood(target_dt,
                       activity_model = None,
-                      output_filename=_DEFAULT_LIKELIHOODFILE,
+                      output_filename= None,
                       ipp_url_file=None, ipp_profile=None):
     """
     […]
@@ -211,6 +215,9 @@ def compute_likelihood(target_dt,
     --------
     sinn.HeatMap
     """
+    if output_filename is None:
+        output_filename = add_before_ext(_DEFAULT_LIKELIHOODFILE, theano_str)
+
     if activity_model is None:
         try:
             # Try to load precomputed data
@@ -232,12 +239,14 @@ def compute_likelihood(target_dt,
     Ihist = activity_model.I
 
    # Construct the arrays of parameters to try
-    fineness = 10
+    fineness = 75
     burnin = 0.5
     data_len = 3.5
     param_sweep = sweep.ParameterSweep(activity_model)
-    J_sweep = sweep.linspace(-1, 10, fineness)
-    τ_sweep = sweep.logspace(0.0005, 0.5, fineness)
+    #J_sweep = sweep.linspace(-1, 10, fineness)          # wide
+    #τ_sweep = sweep.logspace(0.0005, 0.5, fineness)     # wide
+    J_sweep = sweep.linspace(3, 5, fineness)
+    τ_sweep = sweep.logspace(0.01, 0.6, fineness)
     param_sweep.add_param('J', idx=(0,0), axis_stops=J_sweep)
     param_sweep.add_param('τ', idx=(1,), axis_stops=τ_sweep)
 
@@ -298,13 +307,13 @@ def compute_likelihood(target_dt,
     return loglikelihood
 
 def main():
-    # activity_model = generate()
-    # if do_plots:
-    #     plt.ioff()
-    #     plt.figure()
-    #     plot_activity(activity_model)
-    # del activity_model
-    sinn.inputs.clear()
+    #activity_model = generate()
+    #if do_plots:
+    #    plt.ioff()
+    #    plt.figure()
+    #    plot_activity(activity_model)
+    #del activity_model
+    #sinn.inputs.clear()
     Ahist = histories.Series.from_raw(io.loadraw(add_before_ext(_DEFAULT_DATAFILE, '_A')))
     Ihist = histories.Series.from_raw(io.loadraw(add_before_ext(_DEFAULT_DATAFILE, '_I')))
     activity_model = init_activity_model(Ahist, Ihist)

@@ -221,8 +221,10 @@ class ConvolveMixin(CachedOperation):
                 kernel.compute_up_to(kernel.t0idx + len(kernel) - 1)
 
             retval = self._conv_cache.ensureget(other, kernel_slice)[:,output_tidx]
+                # The extra : is because ensureget returns its result wrapped in an
+                # extra dimension (one per kernel slice)
             if output_filter is not None:
-                retval = retval[output_filter]
+                retval = retval[:,output_filter]
             #if step != 1:
             #    retval = retval[:, ::step]
                 # FIXED?: Negative step sizes might be offset, if they are more than one ?

@@ -662,7 +662,7 @@ em
         """
 
         if tidx == 'end':
-            tidx = self.t0idx + len(self)
+            tidx = self.t0idx + len(self) - 1
 
         shim.check(shim.istype(tidx, 'int'))
 
@@ -1496,7 +1496,7 @@ class Spiketimes(ConvolveMixin, History):
 
         if source is None:
             # Default is to use series' own compute functions
-            self.compute_up_to(-1)
+            self.compute_up_to('end')
 
         elif callable(source):
             raise NotImplementedError
@@ -1943,7 +1943,7 @@ class Series(ConvolveMixin, History):
 
         if source is None:
             # Default is to use series' own compute functions
-            self.compute_up_to(-1)
+            self.compute_up_to('end')
 
         elif isinstance(source, History):
             raise NotImplemented
