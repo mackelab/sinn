@@ -166,7 +166,7 @@ class ConvolveMixin(CachedOperation):
                                     start,
                                     len(history._tarr) + start)
             if t.stop is None:
-                stop = shim.ifelse(shim.get(step, 0),
+                stop = shim.ifelse(shim.gt(step, 0),
                                    history.t0idx + len(history),
                                    history.t0idx - 1)
             else:

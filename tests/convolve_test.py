@@ -122,6 +122,42 @@ def spiketimes():
     convolve_test(data, data_fn,
                   kernel, true_conv)
 
+def spiketrain():
+
+    # test convolution: ∫_a^b e^{-s/τ} * spiketimes ds,
+    # where spiketimes is a uniformly sampled set of 50 spiketimes between 0 and 4
+
+    dt = 0.001 # We need dt <= τ/1000 to have at least single digit
+                # precision on binned spiketrains, but of course that slows
+                # down computations substantially.
+    τ = 0.1
+    np.set_printoptions(precision=8)
+
+    np.random.seed(314)
+    data = histories.Spiketrain(t0=0, tn=4, dt=dt, pop_sizes=(1,))
+    spiketrain_data = np.random.binomial(1, 25*dt, (len(data),1))
+    data.set(spiketrain_data)
+
+    #def data_fn(t):
+    #    return np.array([ True if t - (spike_list[np.searchsorted(spike_list, t)-1]) < dt else False
+    #                      for spike_list in spiketime_list ])
+
+
+    params = kernels.ExpKernel.Parameters(
+        height = 1,
+        decay_const = τ,
+        t_offset = 0
+        )
+    kernel = kernels.ExpKernel('κ', params=params, shape=(1,1))
+
+    def true_conv(t, a=0, b=np.inf):
+        """The analytical solution to the convolution"""
+        return np.array(
+            [ np.sum(kernel.eval(t-s) for i, s in enumerate(data._tarr[data.t0idx:]) if spiketrain_data[i]) ] )
+
+    convolve_test(data, None,#data_fn,
+                  kernel, true_conv)
+
 
 def convolve_test(data, data_fn, kernel, true_conv):
 
@@ -158,6 +194,8 @@ def convolve_test(data, data_fn, kernel, true_conv):
                               dtype=int)
             retval[tidcs] = 1/dis_kernel.dt # Dirac deltas
             return retval
+        if isinstance(histdata, histories.Spiketrain):
+            return histdata[:][:,from_idx] / dis_kernel.dt # Dirac deltas
         else:
             #dt = data.dt
             return histdata[:][:,from_idx]
@@ -310,16 +348,16 @@ kernel = kernels.ExpKernel('κ', 1, τ, 0)
     return uncached_timer, cached_timer
 
 if __name__ == '__main__':
-    convolve_test()
+    spiketrain()
 
-    n=50
-    uncached_timer, cached_timer = get_timers()
-    uncached_res = uncached_timer.timeit(50)
-    cached_res = cached_timer.timeit(50) / 5
+    # n=50
+    # uncached_timer, cached_timer = get_timers()
+    # uncached_res = uncached_timer.timeit(50)
+    # cached_res = cached_timer.timeit(50) / 5
 
-    print("\nExecution time, {} uncached convolutions:".format(n))
-    print(uncached_res)
-    print("\nExecution time, {} cached convolutions:".format(n))
-    print(cached_res)
-    print("\nSpeedup")
-    print(uncached_res / cached_res)
+    # print("\nExecution time, {} uncached convolutions:".format(n))
+    # print(uncached_res)
+    # print("\nExecution time, {} cached convolutions:".format(n))
+    # print(cached_res)
+    # print("\nSpeedup")
+    # print(uncached_res / cached_res)

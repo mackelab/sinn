@@ -7,6 +7,7 @@ Author: Alexandre René
 """
 
 import numpy as np
+import scipy as sp
 from collections import deque
 import itertools
 import operator
@@ -1273,6 +1274,9 @@ em
 
         return retval
 
+# Spiketimes is currently really slow for long data traces (> 5000 time bins)
+# Development efforts have been moved to Spiketrain; maybe in the future if we need
+# to track actual times, we will resurrect development of this class
 class Spiketimes(ConvolveMixin, History):
     """A class to store spiketrains.
     These are stored as times associated to each spike, so there is
@@ -1600,7 +1604,402 @@ class Spiketimes(ConvolveMixin, History):
         else:
             raise NotImplementedError
 
+class Spiketrain(ConvolveMixin, History):
+    """A class to store spiketrains.
+    These are stored in a sparse array where spikes are indicated by 1s.
+    The `shape` parameter doesn't exactly correspond to a timeslice; instead
+    it is used to indicate the number of neurons in each population.
+    These populations are flattened, such that a timeslice is always 2D array;
+    if the `shape` is `(N1, N2, N3)`, than the actual shape of a timeslice will
+    be `(1 x N1+N2+N3)`.
 
+    Currently we are using a csr array, as Theano only supports csc and csr.
+    This means that adding spikes is a relatively costly operation. It also
+    means that putting the update function inside a scan (for example to generate
+    a whole trace) might lead to a really nasty Theano graph (or maybe not?
+    I haven't tried, but the Theano docs warn against this). So in short,
+    this implementation is still at the 'just get it working' stage, and may need
+    to be changed in the future.
+    """
+
+    _strict_index_rounding = True
+
+    def __init__(self, hist=sinn._NoValue, name=None, *args, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
+                 pop_sizes=sinn._NoValue, **kwargs):
+        """
+        All parameters except `hist` are keyword parameters
+        `pop_sizes` is always required
+        If `hist` is not specified, `t0`, `tn`, `dt` must all be specified.
+        Parameters
+        ----------
+        hist: History instance
+            Optional. If passed, will used this history's parameters as defaults.
+        t0: float
+            Time at which the history starts
+        tn: float
+            Time at which the history ends
+        dt: float
+            Timestep
+        pop_sizes: integer tuple
+            Number if neurons in each population
+        **kwargs:
+            Extra keyword arguments are passed on to History's initializer
+        """
+        if name is None:
+            name = "spiketimes{}".format(self.instance_counter + 1)
+        try:
+            assert(pop_sizes is not sinn._NoValue)
+        except AssertionError:
+            raise ValueError("'pop_sizes' is a required parameter.")
+        try:
+            len(pop_sizes)
+        except TypeError:
+            pop_sizes = (pop_sizes,)
+        assert(all( shim.istype(s, 'int') for s in pop_sizes ))
+        self.pop_sizes = pop_sizes
+
+        shape = (np.sum(pop_sizes),)
+
+        kwshape = kwargs.pop('shape', None)
+        # kwargs should not have shape, as it's calculated
+        # Return an error if it's different from the calculated value
+        if kwshape is not None and kwshape != shape:
+            raise ValueError("Specifying a shape to Spiketimes is "
+                             "unecessary, as it's calculated from pop_sizes")
+
+        # self.pop_idcs is a 1D array with as many entries as there are units
+        # The value at each entry is that neuron's population index
+        self.pop_idcs = np.concatenate( [ [i]*size
+                                          for i, size in enumerate(pop_sizes) ] )
+
+        # self.pop_slices is a list of slices, such that
+        # self.data[i][ self.pop_slices[j] ] returns the set of neurons corresponding
+        # to population j at time bin i
+        self.pop_slices = []
+        i = 0
+        for pop_size in pop_sizes:
+            self.pop_slices.append(slice(i, i+pop_size))
+            i += pop_size
+
+        super().__init__(hist, name, t0=t0, tn=tn, dt=dt, shape=shape, **kwargs)
+
+        self.initialize()
+
+    def initialize(self, init_data=None):
+        """
+        This method is called without parameters at the end of the class
+        instantiation, but can be called again to change the initialization
+        of spike times.
+
+        Parameters
+        ----------
+        init_data: ndarray
+            n x N array, where n is arbitrary and N is the total number of units.
+            The first n time points will be initialized with the data from init_data
+            If not specified, the data is initialized to zero.
+            Note that the initialized data is set for the first n time indices,
+            so if padding is present, those will be before t0. Consequently, the
+            typical use is to use n equal to the padding length (i.e. t0idx).
+        """
+        # TODO: Allow either a nested or flattened list for init_data
+
+        nneurons = np.sum(self.pop_sizes)
+
+
+        if init_data is None:
+            self._data = shim.sparse.coo_matrix('spike train',
+                                                shape=(len(self._tarr), nneurons),
+                                                dtype='int8')
+            # We are just going to store 0s and 1s, so might as well use the smallest
+            # available int in Theano
+            # Tests have shown that coo_matrix is faster than lil_matrix for the use
+            # we make here
+
+        else:
+            shim.check(init_data.shape[1] == nneurons)
+            n = len(init_data)
+            csc_data = shim.sparse.csc_matrix('spike train',
+                                              shape=(len(self._tarr), nneurons),
+                                              dtype='int8')
+            csc_data[:n,:] = shim.sparse.csc_from_dense(init_data.astype('int8'))
+            # This may through an efficiency warning, but we can ignore it since
+            # self._data is empty
+            self._data = csc_data.tocoo()
+            # WARNING: This will break with Theano until/if we implement a
+            #          coo matrix interface in theano_shim.
+
+    def clear(self, init_data=None):
+        """Spiketrains shouldn't just be invalidated, since then multiple runs
+        would make them more and more dense."""
+        if self.locked:
+            raise RuntimeError("Tried to modify locked history {}."
+                               .format(self.name))
+        self.initialize(None)
+        super().clear()
+
+    def retrieve(self, key):
+        '''A function taking either an index or a splice and returning respectively
+        the time point or an interval from the precalculated history.
+        It does not check whether history has been calculated sufficiently far.
+
+        Parameters
+        ----------
+        key: int, float, or slice
+
+        Returns
+        -------
+        If `key` is int or float:
+            Returns a binary vector of same size as the total number of neurons, each
+            element representing a neuron (populations are flattened). Values are 1
+            if the neuron fired in this bin, 0 if it didn't fire.
+            If key is a float, it must match the bin time exactly. Generally using
+            bin indices should be more reliable than bin times.
+        If `key` is slice:
+            Returns the list of spike times, truncated to the bounds of the slice.
+            Slice bounds may be specified as indices (int) or times (float).
+        '''
+        if shim.istype(key, 'int') or shim.istype(key, 'float'):
+            tidx = self.get_t_idx(key)
+            return self._data[tidx]
+
+        elif isinstance(key, slice):
+            start = None if key.start is None else self.get_t_idx(key.start)
+            stop  = None if key.stop  is None else self.get_t_idx(key.stop)
+            step  = None if key.step  is None else self.index_interval(key.step)
+
+            return shim.asarray(self._data.tocsr()[slice(start, stop, step)].todense())
+                # We convert to csr to allow slicing. This is cheap and keeps a
+                # sparse representation
+                # Converting to dense after the slice avoids allocating a huge
+                # data matrix.
+                # We call asarray because otherwise the result is a matrix, which behaves
+                # differently (in particular, A[0,0].ndim = 2)
+
+        else:
+            raise ValueError("Key must be either an integer, float or a splice object.")
+
+    #was :  def update(self, t, pop_idx, spike_arr):
+    def update(self, tidx, neuron_idcs):
+        '''Add to each neuron specified in `value` the spiketime `tidx`.
+        Parameters
+        ----------
+        tidx: int, float
+            The time index of the spike(s). This is converted
+            to actual time and saved.
+            Can optionally also be a float, in which case no conversion is made.
+            Should not correspond to more than one bin ahead of _cur_tidx.
+        neuron_idcs: iterable
+            List of neuron indices that fired in this bin.
+        '''
+        if self.locked:
+            raise RuntimeError("Tried to modify locked history {}."
+                               .format(self.name))
+
+        newidx = self.get_t_idx(tidx)
+        shim.check(newidx <= self._cur_tidx + 1)
+        neuron_idcs = shim.asarray(neuron_idcs)
+
+        onevect = shim.ones(neuron_idcs.shape)
+            # vector of ones of the same length as the number of units which fired
+        self._data.data = shim.concatenate((self._data.data, onevect))
+        self._data.col = shim.concatenate((self._data.col, neuron_idcs))
+        self._data.row = shim.concatenate((self._data.row, tidx*onevect))
+
+        self._cur_tidx = newidx  # Set the cur_idx. If tidx was less than the current index,
+                                 # then the latter is *reduced*, since we no longer know
+                                 # whether later history is valid.
+
+    def pad(self, before, after=0):
+        '''Extend the time array before and after the history. If called
+        with one argument, array is only padded before. If necessary,
+        padding amounts are reduced to make them exact multiples of dt.
+        """
+        Parameters
+        ----------
+        before: float | int
+            Amount of time to add to before t0. If non-zero, all indices
+            to this data will be invalidated.
+        after: float | int (default 0)
+            Amount of time to add after tn.
+        '''
+        before_len, after_len = self.pad_time(before, after)
+        newshape = (len(self._tarr) + before_len + after_len, sum(self.shape))
+        self._data.row += before_len
+            # increment all time bins by the number that were added
+        self._data = sp.sparse.coo_matrix((self._data.data, (self._data.row, self._data.col)),
+                                          shape = newshape )
+
+    def set(self, source=None, tslice=None):
+        """Set the entire set of spiketimes in one go. `source` may be a list of arrays, a
+        function, or even another History instance. It's useful for
+        example if we've already computed history by some other means,
+        or we specified it as a function (common for inputs).
+
+        Accepted types for `source`: lists of iterables, functions (not implemented)
+        These are converted to a list of spike times.
+
+        If `tslice` is specified, only that portion of the data will be set.
+        Values later than the slice are discarded (not implemented)
+
+        If no source is specified, the series own update function is used,
+        provided it has been previously defined. Can be used to force
+        computation of the whole series.
+        """
+        if self.locked:
+            raise RuntimeError("Tried to modify locked history {}."
+                               .format(self.name))
+
+        tarr = self._tarr
+
+        if source is None:
+            # Default is to use series' own compute functions
+            self.compute_up_to('end')
+
+        elif callable(source):
+            raise NotImplementedError
+
+        else:
+            if tslice is None:
+                tidxslice = slice(None)
+                self._cur_tidx = len(self) - 1
+            else:
+                assert( tslice.step is None or tslice.step == 1)
+                tidxslice = slice(self.get_t_idx(tslice.start), self.get_t_idx(tslice.stop))
+                self._cur_tidx = tidxslice.stop - 1
+                shim.check(source.shape == tuple(tidxslice.stop - tidxslice.start, self.shape[1]))
+            csc_data = self._data.tocsc()
+            csc_data[tidxslice,:] = shim.sparse.csc_from_dense(source)
+            if tidxslice.stop is not None:
+                # Clear the invalidated data
+                csc_data[tidxslice.stop:, :] = 0
+                csc_data.eliminate_zeros()
+            self._data = csc_data.tocoo()
+
+        return self._data
+
+
+    def _convolve_op_single_t(self, discretized_kernel, tidx, kernel_slice):
+        '''Return the time convolution with the spike train, i.e.
+            ∫ spiketimes(t - s) * kernel(s) ds
+        with s ranging from -∞ to ∞  (normally there should be no spikes after t).
+
+        Since spikes are delta functions, effectively what we are doing is
+        sum( kernel(t-s) for s in spiketimes )
+
+        Parameters
+        ----------
+        kernel: class instance or callable
+            If a callable, should take time (float) as single input and return a float.
+            If a class instance, should have a method `.eval` which satisfies the function requirement.
+        tidx: index
+            Time index at which to evaluate the convolution
+        kernel_slice:
+
+        Returns
+        -------
+        ndarray of shape 'npops' x 'npops'.
+            It is indexed as result[from pop idx][to pop idx]
+
+        '''
+
+
+        # The setup of slicing is copied from Series._convolve_op_single_t
+        if kernel_slice.start == kernel_slice.stop:
+            return 0
+        tidx = self.get_t_idx(tidx)
+
+        kernel_slice = self.make_positive_slice(kernel_slice)
+        # Algorithm assumes an increasing kernel_slice
+        shim.check(kernel_slice.stop > kernel_slice.start)
+
+        hist_start_idx = tidx - kernel_slice.stop - discretized_kernel.idx_shift
+        hist_slice = slice(hist_start_idx, hist_start_idx + kernel_slice.stop - kernel_slice.start)
+        try:
+            shim.check(hist_slice.start >= 0)
+        except AssertionError:
+            raise AssertionError(
+                "When trying to compute the convolution at {}, we calculated "
+                "a starting point preceding the history's padding. Is it "
+                "possible you specified time as an integer instead of a float ? "
+                "Floats are treated as times, while integers are treated as time indices. "
+                .format(tidx))
+        hist_subarray = self._data.tocsc()[hist_slice]
+
+        shim.check( discretized_kernel.ndim <= 2 )
+        #shim.check( discretized_kernel.shape[0] == len(self.pop_sizes) )
+        #shim.check( len(discretized_kernel.shape) == 2 and discretized_kernel.shape[0] == discretized_kernel.shape[1] )
+
+        # To understand why the convolution is taken this way, consider
+        # 1) that sparse arrays are matrices, so * is actually matrix multiplication
+        #    (which is why we use the `multiply` method)
+        # 2) `multiply` only returns a sparse array if the argument is also 2D
+        # 3) that sparse arrays are always 2D, so A[0,0] is 2D, 1x1 matrix
+        if discretized_kernel.ndim == 2 and discretized_kernel.shape[0] == discretized_kernel.shape[1]:
+            # 2D discretized kernel: each population feeds into every other with a different kernel
+            shim.check(discretized_kernel.shape[0] == len(self.pop_sizes))
+            return shim.asarray(
+                shim.sparse.hstack (
+                    [ shim.sparse.vstack (
+                        [ hist_subarray[:,self.pop_slices[from_pop_idx]].multiply(
+                            discretized_kernel[kernel_slice][::-1, to_pop_idx, from_pop_idx:from_pop_idx+1] ).sum()
+                          for from_pop_idx in range(len(self.pop_sizes)) ] )
+                        for to_pop_idx in range(len(self.pop_sizes)) ] ).todense() )
+
+        elif discretized_kernel.ndim == 1 and discretized_kernel.shape[0] == len(self.pop_sizes):
+            # 1D discretized_kernel: populations only feed back into themselves
+            return shim.asarray( shim.sparse.vstack(
+                [ hist_subarray[:, self.pop_slices[from_pop_idx]].multiply(
+                    discretized_kernel[kernel_slice][::-1, from_pop_idx:from_pop_idx+1] )
+                  for from_pop_idx in range(len(self.pop_sizes)) ] ).todense() )
+
+        else:
+            raise NotImplementedError
+
+
+    def convolve(self, kernel, t=slice(None, None), kernel_slice=slice(None,None),
+                 *args, **kwargs):
+        """Small wrapper around ConvolveMixin.convolve. Discretizes the kernel and converts the kernel_slice into a slice of time indices. Also converts t into a slice of indices, so the
+        _convolve_op* methods can work with indices.
+        """
+        # This copied over from Series.convolve
+
+        # Run the convolution on a discretized kernel
+        # TODO: allow 'kernel' to be a plain function
+
+        if not isinstance(kernel_slice, slice):
+            raise ValueError("Kernel bounds must be specified as a slice.")
+
+        discretized_kernel = self.discretize_kernel(kernel)
+        sinn.add_sibling_input(self, discretized_kernel)
+            # This adds the discretized_kernel as an input to any history
+            # which already has `self` as an input. It's a compromise solution,
+            # because these don't necessarily involve this convolution, but
+            # the overeager association avoids the complicated problem of
+            # tracking exactly which histories now need `discretized_kernel`
+            # as an input.
+
+        def get_start_idx(t):
+            return 0 if t is None else discretized_kernel.get_t_idx(t)
+        def get_stop_idx(t):
+            return len(discretized_kernel._tarr) if t is None else discretized_kernel.get_t_idx(t)
+        try:
+            len(kernel_slice)
+        except TypeError:
+            kernel_slice = [kernel_slice]
+            single_kernel = True
+        else:
+            single_kernel = False
+
+        kernel_idx_slices = [ slice( get_start_idx(slc.start), get_stop_idx(slc.stop) )
+                              for slc in kernel_slice ]
+        tidx = self.get_t_idx(t)
+
+        result = super().convolve(discretized_kernel,
+                                  tidx, kernel_idx_slices, *args, **kwargs)
+        if single_kernel:
+            return result[0]
+        else:
+            return np.array(result)
 
 
 class Series(ConvolveMixin, History):
@@ -2063,9 +2462,9 @@ class Series(ConvolveMixin, History):
                     "Floats are treated as times, while integers are treated as time indices. "
                     .format(tidx))
             dim_diff = discretized_kernel.ndim - self.ndim
-            return self.dt * shim.lib.sum(discretized_kernel[kernel_slice][::-1]
-                                          * shim.add_axes(self[hist_slice], dim_diff, -self.ndim),
-                                          axis=0)
+            return self.dt * shim.sum(discretized_kernel[kernel_slice][::-1]
+                                      * shim.add_axes(self[hist_slice], dim_diff, -self.ndim),
+                                      axis=0)
                 # history needs to be augmented by a dimension to match the kernel
                 # Since kernels are [to idx][from idx], the augmentation has to be on
                 # the second-last axis for broadcasting to be correct.
