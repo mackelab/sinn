@@ -43,7 +43,7 @@ class GaussianWhiteNoise(Model):
             assert(t.ndim==1)
             outshape = shim.concatenate((t.shape, self.params.shape.get_value()))
                 # Shape is an array, not a tuple
-        return shim.lib.clip(self.rndstream.normal(avg  = 0,
+        return shim.clip(self.rndstream.normal(avg  = 0,
                                                    std  = self.params.std/np.sqrt(self.history.dt),
                                                    size = outshape),
                              -self.params.clip_limit.get_value(),

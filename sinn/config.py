@@ -3,7 +3,8 @@ import numpy as np
 
 import theano_shim as shim
 
-logLevel = logging.DEBUG # CRITICAL, INFO, WARNING, DEBUG, ERROR, FATAL
+#logLevel = logging.DEBUG # CRITICAL, INFO, WARNING, DEBUG, ERROR, FATAL
+logger = logging.getLogger('sinn.config')
 
 integration_precision = 1
 truncation_ratio = 0.001
@@ -24,6 +25,8 @@ rel_tolerance = 1e-5
 abs_tolerance = 1e-8
     # This just creates the floatX variables. They are actually initialized below.
 
+logging_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
 def load_librairies(library_list):
     global librairies, floatX, cast_floatX
 
@@ -31,7 +34,9 @@ def load_librairies(library_list):
     if 'theano' in library_set.difference(librairies):
         try:
             shim.load(load_theano=True, reraise=True)
-        except ImportError:
+        except ImportError as e:
+            logger.error("Unable to load Theano.")
+            logger.error(str(e))
             library_set.remove('theano')
 
     librairies.union(set(library_list))
@@ -58,7 +63,7 @@ def load_theano(flag=True):
 
 def use_theano():
     """Flag method: returns True if Theano is used."""
-    return shim.use_theano
+    return shim.config.use_theano
 
 
 ######################

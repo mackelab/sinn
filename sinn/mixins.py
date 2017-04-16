@@ -143,8 +143,8 @@ class ConvolveMixin(CachedOperation):
                     return self._convolve_op_single_t(other, t, slc)
                     #######################################
 
-            retval = shim.lib.stack( [ convolve_single_t(t, slc)
-                                       for slc in kernel_slice ] )
+            retval = shim.stack( [ convolve_single_t(t, slc)
+                                   for slc in kernel_slice ] )
 
         else:
             assert(isinstance(t, slice))
@@ -254,7 +254,7 @@ class ConvolveMixin(CachedOperation):
             history = other
             kernel = self
 
-        return shim.lib.stack( [self._convolve_op_single_t(other, t, kernel_slice)
+        return shim.stack( [self._convolve_op_single_t(other, t, kernel_slice)
                                 for t in history._tarr[history.t0idx: history.t0idx + len(history)]] )
 
 

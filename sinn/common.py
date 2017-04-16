@@ -20,18 +20,17 @@ import sinn.diskcache as diskcache
 # Configure logger
 # See e.g. https://docs.python.org/3/howto/logging-cookbook.html
 logger = logging.getLogger('sinn')
-logger.setLevel(config.logLevel)
-_fh = logging.handlers.RotatingFileHandler(
-      os.path.basename(sys.argv[0]) + ".sinn.log", mode='a', maxBytes=5e7, backupCount=5)
-    # ~50MB log files, keep at most 5
-_fh.setLevel(logging.DEBUG)
-_ch = logging.StreamHandler()
-_ch.setLevel(logging.WARNING)
-_logging_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-_fh.setFormatter(_logging_formatter)
-_ch.setFormatter(_logging_formatter)
-logger.addHandler(_fh)
-logger.addHandler(_ch)
+# logger.setLevel(config.logLevel)
+# _fh = logging.handlers.RotatingFileHandler(
+#       os.path.basename(sys.argv[0]) + ".sinn.log", mode='a', maxBytes=5e7, backupCount=5)
+#     # ~50MB log files, keep at most 5
+# _fh.setLevel(logging.DEBUG)
+# _ch = logging.StreamHandler()
+# _ch.setLevel(logging.WARNING)
+# _fh.setFormatter(config.logging_formatter)
+# _ch.setFormatter(config.logging_formatter)
+# logger.addHandler(_fh)
+# logger.addHandler(_ch)
 
 def clip_probabilities(prob_array,
                        min_prob = np.sqrt(config.abs_tolerance),
@@ -40,7 +39,7 @@ def clip_probabilities(prob_array,
     if not config.use_theano():
         if np.any(prob_array > max_prob) or np.any(prob_array < min_prob):
             logger.warning("Some probabilities were clipped.")
-    return shim.lib.clip(prob_array, min_prob, max_prob)
+    return shim.clip(prob_array, min_prob, max_prob)
         # Clipping a little bit within the interval [0,1] avoids problems
         # with likelihoods (which tend to blow up when p = 0 or 1)
 
@@ -77,13 +76,14 @@ class Node:
 
 class DependencyGraph(dict):
 
-    # DEBUG
     def __init__(self, name):
         self.name = name
         super().__init__()
 
     def add(self, obj):
         if obj not in self:
+            if obj.name == 'JᕽAᐩI':
+                pass
             self[obj] = set()
 
     def union(self, other):
@@ -226,7 +226,7 @@ class OpCache:
         # Don't use caching for Theano objects
         if ( (hasattr(self, 'use_theano') and self.use_theano)
                or (hasattr(other, 'use_theano') and other.use_theano)):
-            return shim.lib.stack( [ self.op(other, arg) for arg in args ] )
+            return shim.stack( [ self.op(other, arg) for arg in args ] )
 
         ################################################
 
@@ -264,7 +264,7 @@ class OpCache:
 
         if None in data_keys:
             # There are operations with new arguments we need to compute
-            new_data = shim.lib.stack( [
+            new_data = shim.stack( [
                 #shim.lib.convolve(self[:], dis_kernel[slc], mode='valid')
                 ###########################################
                 # CUSTOMIZATION: Here is the call to the custom operation we are caching
@@ -294,7 +294,7 @@ class OpCache:
                     assert(self.old_cache is None)
                     # Keep the old cache in memory, otherwise updates mechanism will break
                     self.old_cache[hash(other)] = self.cache[hash(other)].data
-                    self.cache[hash(other)].data = shim.lib.concatenate(
+                    self.cache[hash(other)].data = shim.concatenate(
                                 (self.old_cache[hash(other)], new_data) )
                     # This is a shared variable, so add to the updates list
                     shim.theano_updates[self.old_cache[hash(other)].data] = \
@@ -303,7 +303,7 @@ class OpCache:
                     # Since we aren't using Theano, we don't need to create old_cache
                     # and can allow reuse of cache memory
                     self.cache[hash(other)].data.set_value(
-                        shim.lib.concatenate(
+                        shim.concatenate(
                             (self.cache[hash(other)].data.get_value(), new_data), axis = 0 )
                     )
         return self.cache[hash(other)].data[data_keys]

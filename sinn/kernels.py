@@ -385,7 +385,7 @@ class ExpKernel(Kernel):
         elif self.last_conv is not None and self.last_hist is hist:
             if t > self.last_t:
                 Δt = t - self.last_t
-                result = ( self.shape_output(shim.lib.exp(-hist.time_interval(Δt)/self.params.decay_const), ())
+                result = ( self.shape_output(shim.exp(-hist.time_interval(Δt)/self.params.decay_const), ())
                            * self.last_conv
                            + hist.convolve(self, t,
                                            slice(hist.index_interval(self.memory_blind_time),

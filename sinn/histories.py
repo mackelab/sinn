@@ -53,7 +53,7 @@ em
         + lock             : Set the locked status
     A History may also define
         + _compute_range   : Function taking an array of consecutive times and returning
-                             an array-like object of the history at those times.
+                             an array-like object of the histhttps://gist.github.com/Newmu/acb738767acb4788bac3ory at those times.
                              NOTE: It is important that the times be consecutive (no skipping)
                              and increasing, as some implementations assume this.
 
@@ -333,7 +333,7 @@ em
         return raw
 
     @classmethod
-    def from_raw(cls, raw, update_function=sinn._NoValue, use_theano=sinn._NoValue):
+    def from_raw(cls, raw, update_function=sinn._NoValue, use_theano=sinn._NoValue, lock=True):
         """
         Parameters
         ----------
@@ -352,6 +352,8 @@ em
         hist._unpadded_length = int(raw['_unpadded_length'])
         hist._cur_tidx = int(raw['_cur_tidx'])
         hist.locked = bool(raw['locked'])
+            # Could probably be removed, since we set a lock status later, but
+            # ensures the history is first loaded in the same state
         hist._data = raw['_data']
         hist._tarr = raw['_tarr']
         # Decide whether to wrap the history in another Theano history
@@ -361,9 +363,15 @@ em
             hist.name = str(raw['name']) + " (compiled)"
             theano_hist = cls(hist, name=str(raw['name']), use_theano=True)
             theano_hist.compiled_history = hist
-            return theano_hist
+            rethist = theano_hist
         else:
-            return hist
+            rethist = hist
+        if lock:
+            rethist.lock()
+        else:
+            rethist.unlock()
+
+        return rethist
 
 
     def __getitem__(self, key):
@@ -420,7 +428,6 @@ em
                 stop = shim.ifelse(stop >= 0,
                                     stop,
                                     len(self._tarr) + stop)
-
 
             # allow to select beyond the end, to be consistent
             # with slicing conventions
@@ -1075,6 +1082,7 @@ em
 
     def compile(self, inputs=None):
 
+        assert(not self._compiling)
         self._compiling = True
 
         if not self.use_theano:
@@ -1090,8 +1098,8 @@ em
         # each history on which this one depends must be calculated. This is used to
         # precompute each dependent history, (this is not done automatically because we
         # need to use the raw data structure).
-        t_idx = shim.T.scalar('t_idx', dtype='int32')
-        assert(len(shim.theano_updates) == 0)
+        t_idx = shim.getT().scalar('t_idx', dtype='int32')
+        assert(len(shim.config.theano_updates) == 0)
         output_res_idx = self._update_function(t_idx)
             # This should populate shim.theano_updates if there are shared variable
             # It might also trigger the creation of some intermediary histories,
@@ -1114,11 +1122,11 @@ em
 
         try:
             # TODO? Put this try clause on every theano.function call ?
-            update_f_idx = shim.theano.function(inputs=[t_idx] + input_list + input_self,
+            update_f_idx = shim.gettheano().function(inputs=[t_idx] + input_list + input_self,
                                                 outputs=output_res_idx,
-                                                updates=shim.theano_updates,
+                                                updates=shim.config.theano_updates,
                                                 on_unused_input='warn')
-        except shim.theano.gof.fg.MissingInputError as e:
+        except shim.gettheano().gof.fg.MissingInputError as e:
             err_msg = e.args[0].split('\n')[0] # Remove the stack trace
             raise RuntimeError("\nYou seem to be missing some inputs for compiling the history {}. "
                                "Don't forget that all histories on which {} depends "
@@ -1128,7 +1136,7 @@ em
                                + err_msg)
 
         output_tidcs_idx = [get_required_tidx(hist) for hist in input_histories]
-        get_tidcs_idx = shim.theano.function(inputs=[t_idx] + input_list,
+        get_tidcs_idx = shim.gettheano().function(inputs=[t_idx] + input_list,
                                              outputs=output_tidcs_idx,
                                              on_unused_input='ignore') # No need for duplicate warnings
 
@@ -1138,16 +1146,16 @@ em
             # Clear the updates stored in shim.theano_updates
 
         # Now compile for floats
-        t_float = shim.T.scalar('t', dtype=sinn.config.floatX)
-        assert(len(shim.theano_updates) == 0)
+        t_float = shim.getT().scalar('t', dtype=sinn.config.floatX)
+        assert(len(shim.config.theano_updates) == 0)
         output_res_float = self._update_function(t_float)
             # This should populate shim.theano_updates if there are shared variable
-        update_f_float = shim.theano.function(inputs=[t_float] + input_list + input_self,
+        update_f_float = shim.gettheano().function(inputs=[t_float] + input_list + input_self,
                                               outputs=output_res_float,
-                                              updates=shim.theano_updates,
+                                              updates=shim.config.theano_updates,
                                               on_unused_input='warn')
         output_tidcs_float = [get_required_tidx(hist) for hist in input_histories]
-        get_tidcs_float = shim.theano.function(inputs=[t_float] + input_list,
+        get_tidcs_float = shim.gettheano().function(inputs=[t_float] + input_list,
                                                outputs=output_tidcs_float,
                                                on_unused_input='ignore')
         for hist in input_histories:
@@ -2043,7 +2051,7 @@ class Series(ConvolveMixin, History):
             # (as they would be with NumPy)
             data_tensor_broadcast = tuple(
                 [False] + [True if d==1 else 0 for d in self.shape] )
-            self.DataType = shim.T.TensorType(sinn.config.floatX,
+            self.DataType = shim.getT().TensorType(sinn.config.floatX,
                                               data_tensor_broadcast)
             #self._data = shim.T.zeros(self._tarr.shape + self.shape, dtype=config.floatX)
             self._data = self.DataType(self.name + ' data')
@@ -2053,8 +2061,8 @@ class Series(ConvolveMixin, History):
                                      borrow=True)
 
         self._original_data = None
-            # Stores a Theano update dictionary. This value can only be
-            # changed once.
+            # Stores a handle to the original data variable, which will appear
+            # as an input in the Theano graph
 
     def retrieve(self, key):
         '''A function taking either an index or a splice and returning
@@ -2113,22 +2121,24 @@ class Series(ConvolveMixin, History):
             if not shim.is_theano_object(value):
                 logger.warning("Updating a Theano array ({}) with a Python value. "
                                "This is likely an error.".format(self.name))
-            if self._original_data is not None or shim.theano_updates != {}:
+            #if self._original_data is not None or shim.config.theano_updates != {}:
+            if ( self._original_data is not None
+                 and self._original_data in shim.config.theano_updates):
                 raise RuntimeError("You can only update data once within a "
                                    "Theano computational graph. If you need "
                                    "multiple updates, compile a single "
                                    "update as a function, and call that "
                                    "function repeatedly.")
             assert(shim.is_theano_variable(self._data))
-                # This should be guaranteed by self.use_theano=False
-            self._original_data = self._data
-                # Persistently store the current _data
-                # It's important not to reuse variables after they've
-                # been used in set_subtensor, but they must remain
-                # in memory.
-            self._data = shim.set_subtensor(self._original_data[tidx], value)
+                # This should be guaranteed by self.use_theano=True
+            tmpdata = self._data
+            if self._original_data is None:
+                self._original_data = self._data
+                    # Persistently store the current _data, because that's the handle
+                    # to the input that will be used when compiling the function
+            self._data = shim.set_subtensor(tmpdata[tidx], value)
             if updates is not None:
-                shim.theano_updates.update(updates)
+                shim.config.theano_updates.update(updates)
                     #.update is a dictionary method
 
             self._theano_cur_tidx = shim.largest(self._theano_cur_tidx, end)
@@ -2193,6 +2203,10 @@ class Series(ConvolveMixin, History):
                       + [(0, 0) for i in range(len(self.shape))] )
 
         if self.use_theano:
+            if self._original_data is None:
+                self._original_data = self._data
+                    # Persistently store the current _data, because that's the handle
+                    # to the input that will be used when compiling the function
             self._data = shim.pad(self._data, previous_tarr_shape + self.shape,
                                   pad_width, **kwargs)
         else:
@@ -2248,11 +2262,14 @@ class Series(ConvolveMixin, History):
 
         if self.use_theano:
             if mode == 'all':
-                self._data = shim.T.zeros(self._data.shape)
+                self._data = shim.getT().zeros(self._data.shape)
             else:
-                self._original_data = self._data
-                self._data = shim.set_subtensor(self._original_data[mode_slice],
-                                                shim.T.zeros(self._data.shape[mode_slice]))
+                if self._original_data is None:
+                    self._original_data = self._data
+                      # Persistently store the current _data: it's the handle
+                      # to the input that will be used when compiling the function
+                self._data = shim.set_subtensor(self._data[mode_slice],
+                                                shim.geT().zeros(self._data.shape[mode_slice]))
         else:
             new_data = self._data.get_value(borrow=True)
             new_data[mode_slice] = np.zeros(self._data.shape[mode_slice])
@@ -2392,8 +2409,11 @@ class Series(ConvolveMixin, History):
         `new_data` should not be a complex type, like the result of a `scan`
         """
         if new_data is not None:
-            self._data.set_value(new_data, borrow=True)
-        self._original_data = None
+            if shim.is_shared(self._data):
+                self._data.set_value(new_data, borrow=True)
+            else:
+                self._data = new_data
+        #self._original_data = None
         super().theano_reset()
 
     def convolve(self, kernel, t=slice(None, None), kernel_slice=slice(None,None),
@@ -2488,6 +2508,9 @@ class Series(ConvolveMixin, History):
             # E.g.: assume kernel.idx_shift = 0. Then (convolution result)[0] corresponds
             # to the convolution evaluated at tarr[kernel.stop + kernel_idx_shift]. So to get the result
             # at tarr[tidx], we need (convolution result)[tidx - kernel.stop - kernel_idx_shift].
+
+            #DEBUG
+            sinn.flag = True
 
             domain_start = self.t0idx - kernel_slice.stop - discretized_kernel.idx_shift
             domain_slice = slice(domain_start, domain_start + len(self))

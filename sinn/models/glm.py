@@ -207,6 +207,7 @@ class GLM_exp_kernel(Model):
         # Sanity check – it's easy to forget to clear histories in an interactive session
         uncleared_histories = []
         # HACK Shouldn't need to combine sinn.inputs
+        # TODO Make separate function, so that it can be called within loglikelihood instead
         for hist in self.history_inputs.union(sinn.inputs):
             if ( not hist.locked and ( ( hist.use_theano and hist.compiled_history is not None
                                          and hist.compiled_history._cur_tidx >= hist.t0idx )
