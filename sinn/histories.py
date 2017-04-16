@@ -154,7 +154,8 @@ em
     instance_counter = 0
 
     def __init__(self, hist=sinn._NoValue, name=None, *args, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
-                 shape=sinn._NoValue, f=sinn._NoValue, iterative=sinn._NoValue, use_theano=sinn._NoValue):
+                 shape=sinn._NoValue, f=sinn._NoValue, iterative=sinn._NoValue, use_theano=False):
+        # TODO: Change `use_theano` to `pure_theano` or something
         """
         Initialize History object.
         Instead of passing the parameters, another History instance may be passed as
@@ -250,14 +251,6 @@ em
             # When this is True, the history is not allowed to be changed
         ############
 
-        if self.use_theano and not sinn.config.use_theano():
-            raise ValueError("You are attempting to construct a series with Theano "
-                             "but it is not loaded. Run `sinn.config.load_theano()` "
-                             "before constructing this series.")
-        elif self.use_theano:
-            self.compiled_history = None
-            self._theano_cur_tidx = -1
-
         self.name = name
         self.shape = shape
             # shape at a single time point, or number of elements
@@ -268,6 +261,17 @@ em
         self._cur_tidx = -1
             # Tracker for the latest time bin for which we
             # know history.
+        if self.use_theano and not sinn.config.use_theano():
+            raise ValueError("You are attempting to construct a series with Theano "
+                             "but it is not loaded. Run `sinn.config.load_theano()` "
+                             "before constructing this history.")
+        elif self.use_theano:
+            self.compiled_history = None
+        self._theano_cur_tidx = shim.shared(np.array(-1, dtype='int64'),
+                                            name = 't idx (' + name + ')')
+            # TODO: Merge with _cur_tidx, the same way _data does both theano and non-theano
+        self._original_tidx = self._theano_cur_tidx
+
         if f is sinn._NoValue:
             # TODO Find way to assign useful error message to a missing f, that
             #      works for histories derived from others (i.e. is recognized as the
@@ -286,7 +290,7 @@ em
                                self.tn + self.dt - config.abs_tolerance,
                                self.dt)
         # 'self.tn+self.dt' ensures the upper bound is inclusive,
-        # -config.abs_tolerance avoids numerical rounding errors including an extra bin
+        # -config.abs_tolerance avoids including an extra bin because of rounding errors
 
         self.t0idx = 0       # the index associated to t0
         self.tn = self._tarr[-1] # remove risk of rounding errors
@@ -354,7 +358,7 @@ em
         hist.locked = bool(raw['locked'])
             # Could probably be removed, since we set a lock status later, but
             # ensures the history is first loaded in the same state
-        hist._data = raw['_data']
+
         hist._tarr = raw['_tarr']
         # Decide whether to wrap the history in another Theano history
         if use_theano is sinn._NoValue:
@@ -365,7 +369,9 @@ em
             theano_hist.compiled_history = hist
             rethist = theano_hist
         else:
+            hist.name = str(raw['name'])
             rethist = hist
+        rethist._data = shim.shared(raw['_data'], name = rethist.name + " data")
         if lock:
             rethist.lock()
         else:
@@ -531,7 +537,9 @@ em
         if self.locked:
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))
+        self._original_tidx.set(self.t0idx - 1)
         self._cur_tidx = self.t0idx - 1
+            # TODO: When merged with _theano_cur_tidx, put some kind of conditional here
 
         if self.use_theano and self.compiled_history is not None:
             self.compiled_history.clear()
@@ -650,7 +658,9 @@ em
                                 self._tarr[self.t0idx:self.t0idx+len(self)],
                                 after_array))
         self.t0idx = len(before_array)
+        self._original_tidx.set_value( self._original_tidx.get_value() + len(before_array) )
         self._cur_tidx += len(before_array)
+            # TODO: When merged with _theano_cur_tidx, put some kind of conditional
 
         return len(before_array), len(after_array)
 
@@ -679,6 +689,11 @@ em
         #end = shim.ifelse(tidx >= 0,
         #                  tidx,
         #                  len(self._tarr) + tidx)
+
+        if self.locked:
+            if not shim.is_theano_object(self._cur_tidx, end):
+                assert self._cur_tidx <= end
+            return
 
         #if shim.is_theano_object(tidx):
         if self.use_theano and (self._compiling
@@ -719,7 +734,7 @@ em
         stop = end + 1  # exclusive upper bound
         # Construct a time array that will work even for Theano tidx
         if shim.is_theano_object(start) or shim.is_theano_object(end):
-            tarr = shim.theano.shared(self._tarr, borrow=True)
+            tarr = shim.gettheano().shared(self._tarr, borrow=True)
             printlogs = False
         else:
             tarr = self._tarr
@@ -849,7 +864,7 @@ em
                 logger.error("Δt: {}, dt: {}".format(Δt, self.dt) )
                 raise ValueError("Tried to convert t=" + str(Δt) + " to an index interval "
                                  "but its not a multiple of dt.")
-            return int( rquotient )
+            return shim.cast_int16( rquotient )
 
     def get_time(self, t):
         """
@@ -940,7 +955,7 @@ em
                                .format(self.name))
 
         try:
-            self._theano_cur_tidx = self.t0idx - 1
+            self._theano_cur_tidx = self._original_tidx
         except AttributeError:
             raise RuntimeError("You are calling `theano_reset` on a non-Theano history.")
 
@@ -989,10 +1004,11 @@ em
             #full_idx_len = memory_idx_len + idx_shift
             #    # `memory_time` is the amount of time before t0
             dis_name = ("dis_" + kernel.name + " (" + self.name + ")")
-            if shim.is_theano_object(kernel.eval(0)):
-                use_theano=True
-            else:
-                use_theano=False
+            # if shim.is_theano_variable(kernel.eval(0)):
+            #     use_theano=True
+            # else:
+            #     use_theano=False
+            use_theano=False
             dis_kernel = Series(t0=t0,
                                 tn=t0 + memory_idx_len*self.dt,
                                 dt=self.dt,
@@ -1210,16 +1226,21 @@ em
         """
         Assumes the time_array is monotonous and evenly spaced.
         """
-        step = time_array[1] - time_array[0]
+        step = shim.largest(time_array[1] - time_array[0], self.dt)
         idxstart = self.get_t_idx(time_array[0])
-        if not shim.is_theano_object(time_array):
+        if not shim.is_theano_object(time_array) and len(time_array) > 1:
             # Check that time_array is evenly spaced
             assert(np.all(sinn.isclose(time_array[1:] - time_array[:-1], step)))
         idxstep = self.index_interval(step)
         idxstop = self.get_t_idx(time_array[-1]) + idxstep
             # We add/subtract dt because the time_array upper bound is inclusive
-        if idxstop < 0:
-            idxstop = None
+
+        # Ensure that idxstop is not negative. This would require replacing it by
+        # None, and doing that in a Theano graph, if possible at all, is clumsy.
+        # Since negative idxstop is an unnecessary corner case, we rather not support
+        # it than add cruft to the Theano graph.
+        if not shim.is_theano_object(idxstop):
+            assert(idxstop >= 0)
 
         return slice(idxstart, idxstop, idxstep)
 
@@ -2058,7 +2079,8 @@ class Series(ConvolveMixin, History):
             #self.inf_bin = shim.lib.zeros(self.shape, dtype=config.floatX)
         else:
             self._data = shim.shared(np.zeros(self._tarr.shape + self.shape, dtype=config.floatX),
-                                     borrow=True)
+                                     name = self.name + " data",
+                                     borrow = True)
 
         self._original_data = None
             # Stores a handle to the original data variable, which will appear
@@ -2091,8 +2113,8 @@ class Series(ConvolveMixin, History):
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))
 
-        assert(not shim.is_theano_object(tidx))
-            # time indices must not be variables
+        # assert(not shim.is_theano_object(tidx))
+        #     # time indices must not be variables <-- Should be safe now
 
         # Check if value includes an update dictionary.
         if isinstance(value, tuple):
@@ -2107,7 +2129,8 @@ class Series(ConvolveMixin, History):
         # Adaptations depending on whether tidx is a single bin or a slice
         if shim.istype(tidx, 'int'):
             end = tidx
-            shim.check(tidx <= self._cur_tidx + 1)
+            if not shim.is_theano_object(tidx):
+                assert(tidx <= self._cur_tidx + 1)
                 # Ensure that we update at most one step in the future
         else:
             assert(isinstance(tidx, slice))
@@ -2117,20 +2140,20 @@ class Series(ConvolveMixin, History):
             shim.check(tidx.start <= self._cur_tidx + 1)
                 # Ensure that we update at most one step in the future
 
-        if self.use_theano:
+        if shim.is_theano_object(self._data):
             if not shim.is_theano_object(value):
                 logger.warning("Updating a Theano array ({}) with a Python value. "
                                "This is likely an error.".format(self.name))
             #if self._original_data is not None or shim.config.theano_updates != {}:
-            if ( self._original_data is not None
-                 and self._original_data in shim.config.theano_updates):
-                raise RuntimeError("You can only update data once within a "
-                                   "Theano computational graph. If you need "
-                                   "multiple updates, compile a single "
-                                   "update as a function, and call that "
-                                   "function repeatedly.")
-            assert(shim.is_theano_variable(self._data))
-                # This should be guaranteed by self.use_theano=True
+            # if ( self._original_data is not None
+            #      and self._original_data in shim.config.theano_updates):
+            #     raise RuntimeError("You can only update data once within a "
+            #                        "Theano computational graph. If you need "
+            #                        "multiple updates, compile a single "
+            #                        "update as a function, and call that "
+            #                        "function repeatedly.")
+            # assert(shim.is_theano_variable(self._data))
+            #     # This should be guaranteed by self.use_theano=True
             tmpdata = self._data
             if self._original_data is None:
                 self._original_data = self._data
@@ -2138,19 +2161,26 @@ class Series(ConvolveMixin, History):
                     # to the input that will be used when compiling the function
             self._data = shim.set_subtensor(tmpdata[tidx], value)
             if updates is not None:
-                shim.config.theano_updates.update(updates)
-                    #.update is a dictionary method
+                shim.add_updates(updates)
 
             self._theano_cur_tidx = shim.largest(self._theano_cur_tidx, end)
 
+            if shim.isshared(self._original_data):
+                shim.add_updates(
+                      ((self._original_data, self._data),
+                       (self._original_tidx, self._theano_cur_tidx)))
+
         else:
-            if shim.is_theano_variable(value):
+            if shim.is_theano_object(value):
                 raise ValueError("You are trying to update a pure numpy series ({}) "
                                  "with a Theano variable. You need to make the "
                                  "series a Theano variable as well."
                                  .format(self.name))
-            assert(shim.is_shared_variable(self._data))
-                # This should be guaranteed by self.use_theano=False
+            if shim.is_theano_object(tidx):
+                raise ValueError("You are trying to update a pure numpy series ({}) "
+                                 "with a time idx that is a Theano variable. You need "
+                                 "to make the series a Theano variable as well."
+                                 .format(self.name))
 
             dataobject = self._data.get_value(borrow=True)
 
@@ -2272,7 +2302,7 @@ class Series(ConvolveMixin, History):
                                                 shim.geT().zeros(self._data.shape[mode_slice]))
         else:
             new_data = self._data.get_value(borrow=True)
-            new_data[mode_slice] = np.zeros(self._data.shape[mode_slice])
+            new_data[mode_slice] = np.zeros(self._data.get_value(borrow=True).shape[mode_slice])
             self._data.set_value(new_data, borrow=True)
 
         self.clear()

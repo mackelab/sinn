@@ -61,6 +61,9 @@ def add_sibling_input(sibling, new_input):
         if sibling in val:
             inputs[key].add(new_input)
 
+def get_updates():
+    return shim.get_updates()
+
 def theano_reset():
     global inputs
     for hist in inputs:
@@ -69,6 +72,7 @@ def theano_reset():
         if not hist.locked:
             hist.theano_reset()
     #inputs = {}
+    shim.reset_updates()
 
 class Node:
     def __init__(self, name):
@@ -210,9 +214,20 @@ class OpCache:
         No-op if `arg` is hashable.
         """
         if isinstance(arg, slice):
-            return (arg.start, arg.stop)
+            assert( not any(shim.is_theano_object(x)
+                            for x in [arg.start, arg.stop, arg.step]) )
+            return (arg.start, arg.stop, arg.step)
         else:
+            assert( not shim.is_theano_object(x) )
             return arg
+
+    # def _get_value(self, x):
+    #     def gv(x): # get value
+    #         return x if not shim.isshared(x) else x.get_value()
+    #     if isinstance(x, slice):
+    #         return slice(gv(x.start), gv(x.stop), gv(x.step))
+    #     else:
+    #         return gv(x.start)
 
     def get(self, other, arg):
         """Will raise KeyError if operation not cached."""
@@ -221,14 +236,22 @@ class OpCache:
 
     def ensureget(self, other, args):
         """Will compute and cache the operation if it isn't already."""
+        # TODO: Make the cached data a plain Numpy array, since we never
+        #       use Theano shared arrays.
 
         ###############################################
-        # Don't use caching for Theano objects
-        if ( (hasattr(self, 'use_theano') and self.use_theano)
-               or (hasattr(other, 'use_theano') and other.use_theano)):
+        # Don't use caching when compiling a Theano function
+        # – Theano does its own optimization
+        # if ( (hasattr(self, 'use_theano') and self.use_theano)
+        #      or (hasattr(other, 'use_theano') and other.use_theano)
+        #      or any(shim.is_theano_variable(arg) for arg in args) ):
+        if config.use_theano():
             return shim.stack( [ self.op(other, arg) for arg in args ] )
 
         ################################################
+
+        # Replace shared variables by their 
+        args = [arg for arg in args]
 
         # Create a set of keys for the cache dictionary
         arg_keys = [self.sanitize(arg) for arg in args]
@@ -246,6 +269,15 @@ class OpCache:
                     pass
         else:
             # Check to see if this operation is in the disk cache
+            # FIXME: I'm not sure on-disk caches will work if they contain
+            #        theano objects (which can happened if the data is a
+            #        shared variable). Currently we just deactivate the cache
+            #        since we don't have a strong rationale to use it.
+            # FIXME: There needs to be some mechanism to prevent the disk cache
+            #        from blowing up. When doing a multi-dim sweep it makes sense
+            #        to cache previous operations, but in other cases it doesn't
+            #        (e.g. millions of iterations during training). Currently it's
+            #        just deactivate to avoid issues.
             try:
                 self.cache[hash(other)] = diskcache.load(
                     _OpTupleCache.get_hash_val(other, self.op))
@@ -272,9 +304,31 @@ class OpCache:
                 ###########################################
                 for arg, cache_idx in zip(args, data_keys)
                 if cache_idx is None ] )
+            if shim.is_theano_object(new_data):
+                # It only makes since for a cache to store real numbers (i.e. Numpy variables)
+                # So we will try to evaluate it – if it only depends on shared variables
+                # (as it should), then this will work.
+                # FIXME: The theano graph involved here should not involve any updates,
+                #        but is there any way to ensure that ?
+                try:
+                    new_new_data = new_data.eval()
+                except shim.getT().gof.fg.MissingInputError as e:
+                    raise  # DEBUG
+                    logger.warning("Unable to precompute a cached op between {} and {}. "
+                                   "Typically this is because there are inputs in the graph; "
+                                   "you likely want to replace those inputs by shared variables.\n\n"
+                                   "The error raised by theano was {}."
+                                   .format(self.source.name, other.name, str(e)))
+                    # Abort caching. This is not fatal, but the user should fix the code
+                    # to avoid ending up here.
+                    return new_data
+                else:
+                    new_data = new_new_data
+
             if self.cache[hash(other)].data is None:
                 # First time we cache data – create a new structure
-                self.cache[hash(other)].data = shim.shared(new_data)
+                self.cache[hash(other)].data = shim.ShimmedShared(new_data)
+                    # TODO: Just replace by a normal Numpy array
                 for i, akey in enumerate(arg_keys):
                     data_keys[i] = i
                     self.cache[hash(other)].index_list[akey] = i
@@ -297,8 +351,8 @@ class OpCache:
                     self.cache[hash(other)].data = shim.concatenate(
                                 (self.old_cache[hash(other)], new_data) )
                     # This is a shared variable, so add to the updates list
-                    shim.theano_updates[self.old_cache[hash(other)].data] = \
-                                self.cache[hash(other)].data
+                    shim.add_update(self.old_cache[hash(other)].data,
+                                    self.cache[hash(other)].data)
                 else:
                     # Since we aren't using Theano, we don't need to create old_cache
                     # and can allow reuse of cache memory
@@ -338,7 +392,7 @@ def define_parameters(param_dict):
 
 def params_are_equal(params1, params2):
     def get_value(param):
-        if shim.is_shared_variable(param):
+        if shim.isshared(param):
             return param.get_value()
         else:
             return param
@@ -422,7 +476,7 @@ def set_parameters(target, source):
         assert( set(target._fields) == set(source._fields) )
         for field in target._fields:
             val = getattr(source, field)
-            if shim.is_shared_variable(val):
+            if shim.isshared(val):
                 val = val.get_value()
             getattr(target, field).set_value( val )
     else:
@@ -430,7 +484,7 @@ def set_parameters(target, source):
         assert( set(target._fields) == set(source.keys()) )
         for field in target._fields:
             val = source[field]
-            if shim.is_shared_variable(val):
+            if shim.isshared(val):
                 val = val.get_value()
             getattr(target, field).set_value( val )
 
@@ -473,7 +527,7 @@ class ParameterMixin:
         param_dict = {}
         for key in self.Parameters._fields:
             val = getattr(params, key)
-            if shim.is_shared_variable(val) or shim.is_theano_object(val):
+            if shim.isshared(val) or shim.is_theano_object(val):
                 # HACK We just assume that val has already been properly casted. We do this
                 #      to keep the reference to the original variable
                 param_dict[key] = val

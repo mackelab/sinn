@@ -110,24 +110,37 @@ def get_rel_tolerance(var):
 # TODO: Rewrite these functions so they always check the value of floatX
 #       That way we can change the cast precision by just changing floatX
 
-def set_floatX():
+def set_floatX(floatX_str = None):
+    """
+    Set the floatX attribute to be equal to theano.config.floatX
+    If floatX_str is specified, then instead both the sinn and theano floatX
+    are set to that value.
+    """
     global floatX, cast_floatX, rel_tolerance, abs_tolerance
 
-    if 'theano' in librairies:
-        floatX = theano.config.floatX
-        if floatX == 'float32':
-            cast_floatX = np.float32
-        elif floatX == 'float64':
-            cast_floatX = np.float64
+    if floatX_str is None:
+        if 'theano' in librairies:
+            floatX = theano.config.floatX
+            assert(floatX in ['float64', 'float32'])
+            # if floatX == 'float32':
+            #     cast_floatX = np.float32
+            # elif floatX == 'float64':
+            #     cast_floatX = np.float64
+            # else:
+            #     raise ValueError("The theano float type is set to '{}', which is unrecognized.".format(theano.config.floatX))
         else:
-            raise ValueError("The theano float type is set to '{}', which is unrecognized.".format(theano.config.floatX))
+            if float(0.09) * 1e10 == 9e8:
+                # Evaluates to true on a 64-bit float, but not a 32-bit.
+                floatX = 'float64'
+            else:
+                floatX = 'float32'
     else:
-        if float(0.09) * 1e10 == 9e8:
-            # Evaluates to true on a 64-bit float, but not a 32-bit.
-            floatX = 'float64'
-        else:
-            floatX = 'float32'
-        cast_floatX = float
+        assert(floatX_str in ['float64', 'float32'])
+        theano.config.floatX = floatX_str
+        floatX = floatX_str
+
+    cast_floatX = lambda x: shim.cast(x, floatX)
+
 
     # Direct access to the floatX tolerance:
     rel_tolerance = get_rel_tolerance(cast_floatX(1))

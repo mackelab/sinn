@@ -293,9 +293,9 @@ class ExpKernel(Kernel):
     """An exponential kernel, of the form κ(s) = c exp(-(s-t0)/τ).
     """
 
-    Parameter_info = OrderedDict( ( ( 'height'     , (config.cast_floatX, None, True) ),
-                                    ( 'decay_const', (config.cast_floatX, None, True) ),
-                                    ( 't_offset'   , (config.cast_floatX, None, True) ) ) )
+    Parameter_info = OrderedDict( ( ( 'height'     , (config.floatX, None, True) ),
+                                    ( 'decay_const', (config.floatX, None, True) ),
+                                    ( 't_offset'   , (config.floatX, None, True) ) ) )
     Parameters = com.define_parameters(Parameter_info)
 
     @checkcache

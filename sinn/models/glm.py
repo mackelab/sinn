@@ -32,8 +32,6 @@ class ExpK(ModelKernelMixin, kernels.ExpKernel):
             decay_const = model_params.τ,
             t_offset = 0)
 
-
-
 class GLM_exp_kernel(Model):
 
     # Entries to Parameter_info: ( 'parameter name',
@@ -43,10 +41,10 @@ class GLM_exp_kernel(Model):
     # consistent with kernel methods which assume inputs which are at least 2d
     # The last two options can be omitted; default flag is 'False'
     # Typically if a parameter will be used inside a kernel, shape_flag should be True.
-    Parameter_info = OrderedDict( ( ( 'N', np.int ),
-                                    ( 'c', config.cast_floatX ),
-                                    ( 'J', (config.cast_floatX, None, True) ),
-                                    ( 'τ', (config.cast_floatX, None, True) )) )
+    Parameter_info = OrderedDict( ( ( 'N', 'int32' ),
+                                    ( 'c', config.floatX ),
+                                    ( 'J', (config.floatX, None, True) ),
+                                    ( 'τ', (config.floatX, None, True) )) )
     Parameters = sinn.define_parameters(Parameter_info)
 
     def __init__(self, params, activity_history, input_history,
@@ -106,12 +104,12 @@ class GLM_exp_kernel(Model):
 
     def ρ_fn(self, t):
         if not shim.isscalar(t):
-            if len(t) == 1:
-                # t is just a singe time, wrapped in an array
-                tslice = t[0]
-            else:
-                # t is an array of times, but convolve wants a slice
-                tslice = self.JᕽAᐩI.time_array_to_slice(t)
+            tslice = self.JᕽAᐩI.time_array_to_slice(t) 
+            # assert(t.ndim == 1)  # No support for multiple time slices at the moment
+            # tslice = shim.ifelse( shim.eq(t.shape[0], 1),
+            #                       t[0], # t is just a singe time, wrapped in an arra
+            #                       self.JᕽAᐩI.time_array_to_slice(t) )
+            #                           # t is an array of times, but convolve wants a slice
         else:
             tslice = t
         return self.params.c * shim.exp(self.κ.convolve(self.JᕽAᐩI, tslice))
@@ -254,7 +252,7 @@ class GLM_exp_kernel(Model):
         input_vals = []
         # HACK Shouldn't need to combine sinn.inputs
         for hist in self.history_inputs.union(sinn.inputs):
-            if shim.is_theano_variable(hist._data):
+            if shim.is_theano_variable(hist._original_data):
                 shape = hist._tarr.shape + hist.shape
                 if hist._original_data is not None:
                     # The graph triggered an update of the variable. The input to the
