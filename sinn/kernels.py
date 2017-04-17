@@ -106,7 +106,8 @@ class Kernel(ConvolveMixin, ParameterMixin):
 
         self.name = name
         assert(shape is not None)
-        self.shape = shape
+        self.shape = tuple(np.int16(s) for s in shape)
+            # It can be useful (e.g. in conditionals) to have a known type
         self.ndim = len(shape)
         self.t0 = t0
 
@@ -179,13 +180,34 @@ class Kernel(ConvolveMixin, ParameterMixin):
         return hist._convolve_op_single_t(self, t, kernel_slice)
 
     def shape_output(self, output, tshape):
-        assert(isinstance(tshape, tuple))
-        if len(tshape) == 0:
-            final_shape = self.shape
+        if not shim.is_theano_object(tshape):
+            assert(isinstance(tshape, tuple))
+        # tshape is expected to be a tuple, but could be a Theano object
+        # in that case it always has at least dimension 1 (but its shape may be 0)
+
+        #tshapearr = shim.asarray(tshape, dtype='int8')
+        if hasattr(tshape, 'ndim'):
+            shapedims = tshape.ndim
         else:
-            assert(len(tshape)==1)
-            final_shape = tshape + self.shape
-        return output.reshape(final_shape)
+            shapedims = len(tshape)
+        if shapedims == 0:
+            # tshape is in fact a scalar - no time dimension
+            final_shape = self.shape
+            ndim = len(self.shape)
+        else:
+            # add a time dimension
+            assert(shapedims == 1)
+            ndim = 1 + len(self.shape)
+            final_shape = shim.concatenate( (tshape, self.shape) )
+            # final_shape = shim.ifelse( shim.eq(tshapearr.shape[0], 0),
+            #                            shim.asarray( (1,) + self.shape,
+            #                                            dtype = self.shape.dtype,
+            #                                            broadcastable=(False,)*(ndim) ),
+            #                            shim.concatenate( (tshapearr, self.shape) ) )
+            # ndim = shim.ifelse( shim.eq(tshapearr.shape[0], 0),
+            #                     len(self.shape),
+            #                     1 + len(self.shape) )
+        return shim.reshape(output, final_shape, ndim=ndim)
 
     # TODO Deprecate the following
     def old_shape_output(self, output, tshape):

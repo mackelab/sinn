@@ -103,10 +103,15 @@ class Model(com.ParameterMixin):
             len(rngs)
         except TypeError:
             rngs = [rngs]
-        if ( any( outhist._cur_tidx < len(outhist) - 1 for outhist in outputs )
+
+        if any( not shim.isshared(outhist._data) for outhist in outputs ):
+            # Bypass test for Theano data
+            return
+
+        if ( any( outhist._cur_tidx.get_value() < len(outhist) - 1 for outhist in outputs )
              and any( rng is None for rng in rngs) ) :
             raise ValueError("Cannot generate {} without the required random number generator(s).".format(str([outhist.name for outhist in outputs])))
-        elif ( all( outhist._cur_tidx < len(outhist) - 1 for outhist in outputs )
+        elif ( all( outhist._cur_tidx.get_value() < len(outhist) - 1 for outhist in outputs )
              and all( rng is None for rng in rngs) ) :
             logger.warning("Your random number generator(s) will be unused, "
                            "since your data is already generated.")

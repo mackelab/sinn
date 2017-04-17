@@ -53,7 +53,7 @@ def isclose(a, b, rtol=None, atol=None, equal_nan=False):
 
 def ismultiple(x, base, rtol=None, atol=None):
     """Returns True if `x` is a multiple of `base`, up to the given numerical precision."""
-    return isclose(round(x/base) - x/base, 0, rtol, atol)
+    return isclose(shim.round(x/base) - x/base, 0, rtol, atol)
 
 def add_sibling_input(sibling, new_input):
     # TODO Move to Graph class
