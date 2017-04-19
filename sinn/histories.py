@@ -291,9 +291,9 @@ em
         # 'self.tn+self.dt' ensures the upper bound is inclusive,
         # -config.abs_tolerance avoids including an extra bin because of rounding errors
 
-        self.t0idx = 0       # the index associated to t0
-        self.tn = self._tarr[-1] # remove risk of rounding errors
-        self._unpadded_length = len(self._tarr)  # Save this, because _tarr might change with padding
+        self.t0idx = shim.cast(0, self._cur_tidx.dtype)       # the index associated to t0
+        self.tn = self._tarr[-1]                              # remove risk of rounding errors
+        self._unpadded_length = len(self._tarr)     # Save this, because _tarr might change with padding
 
     def __len__(self):
         return self._unpadded_length
@@ -404,6 +404,9 @@ em
             return shim.ifelse(shim.eq(key.shape[0], 0),
                                self._data[0:0], # Empty time slice
                                self._getitem_internal(key))
+        else:
+            raise RuntimeError("Unrecognized key {} of type {}. (history: {})"
+                               .format(key, type(key), self.name))
 
     def _getitem_internal(self, key):
         """Does the actual work of __getitem__; the latter just excludes special
@@ -500,6 +503,10 @@ em
                 # +1 because the latest bound is inclusive
             key_filter = slice(None, None, step)
 
+            # DEBUG
+            for x in shim.core._expand_args(key):
+                shim.print(x, "key debug", 'eval')
+
         else:
             raise ValueError("Trying to index using {} ({}). 'key' should be an "
                              "integer, a float, or a slice of integers and floats"
@@ -525,7 +532,6 @@ em
                     return result[key_filter]
 
             self.compute_up_to(latest)
-
 
         # Add `self` to list of inputs
         #if self.use_theano and self not in sinn.inputs:
@@ -909,7 +915,7 @@ em
                 # Print a warning, just in case.
                 # print("Called get_t_idx on an integer ({}). Assuming this to be an INDEX".format(t)
                 #       + " (rather than a time) and returning unchanged.")
-                return t
+                return shim.cast( t, dtype = self._cur_tidx.dtype )
             else:
                 try:
                     shim.check(t >= self._tarr[0])
@@ -935,12 +941,13 @@ em
                                      .format(t, self._tarr[0], t - self._tarr[0], t_idx, self.dt) )
                         raise ValueError("Tried to obtain the time index of t=" +
                                         str(t) + ", but it does not seem to exist.")
-                    return shim.cast_int32(r_t_idx)
+                    return shim.cast(r_t_idx, dtype = self._cur_tidx.dtype)
 
                 else:
                     # Allow t to take any value, and round down to closest
                     # multiple of dt
-                    return int( (t - self._tarr[0]) // self.dt )
+                    return shim.cast( (t - self._tarr[0]) // self.dt,
+                                      dtype = self._cur_tidx.dtype )
 
         if isinstance(t, slice):
             start = self.t0idx if t.start is None else _get_tidx(t.start)
@@ -948,13 +955,6 @@ em
             return slice(start, stop, t.step)
         else:
             return _get_tidx(t)
-
-    def tarr_to_slice(self, tarr):
-        """Convert a consecutive array of times into a slice"""
-        # TODO: assert that all times are consecutive (no skipping)
-        # TODO: assert that times are increasing
-        # (make these asserts conditional on a 'check_all' flag
-        return slice(self.get_t_idx(tarr[0]), self.get_t_idx(tarr[-1]) + 1)
 
     def make_positive_slice(self, slc):
         def flip(idx):
@@ -1251,13 +1251,26 @@ em
         """
         Assumes the time_array is monotonous and evenly spaced.
         """
-        step = shim.largest(time_array[1] - time_array[0], self.dt)
-        idxstart = self.get_t_idx(time_array[0])
+        # We need to be careful here, because time_array could be empty, and then
+        # indexing it with time_array[0] or time_array[-1] would trigger an error
+        empty_array = shim.eq( shim.min(time_array.shape), 0 )
+
+        step = shim.ifelse(empty_array,
+                           self.dt,
+                           shim.largest(time_array[1] - time_array[0], self.dt))
+
+        idxstart = shim.ifelse(empty_array,
+                               shim.cast(0, dtype=self._cur_tidx.dtype),
+                               self.get_t_idx(time_array[0]))
         if not shim.is_theano_object(time_array) and len(time_array) > 1:
             # Check that time_array is evenly spaced
             assert(np.all(sinn.ismultiple(time_array[1:] - time_array[:-1], step)))
+
         idxstep = self.index_interval(step)
-        idxstop = self.get_t_idx(time_array[-1]) + idxstep
+
+        idxstop = shim.ifelse(empty_array,
+                              shim.cast(0, dtype=self._cur_tidx.dtype),
+                              self.get_t_idx(time_array[-1]) + idxstep)
             # We add/subtract dt because the time_array upper bound is inclusive
 
         # Ensure that idxstop is not negative. This would require replacing it by
@@ -2614,11 +2627,11 @@ class Series(ConvolveMixin, History):
         new_series = Series(self)
         if b is None:
             new_series.set_update_function(lambda t: op(self[t]))
-            new_series.set_range_update_function(lambda tarr: op(self[self.tarr_to_slice(tarr)]))
+            new_series.set_range_update_function(lambda tarr: op(self[self.time_array_to_slice(tarr)]))
             new_series.add_input(self)
         else:
             new_series.set_update_function(lambda t: op(self[t], b))
-            new_series.set_range_update_function(lambda tarr: op(self[self.tarr_to_slice(tarr)], b))
+            new_series.set_range_update_function(lambda tarr: op(self[self.time_array_to_slice(tarr)], b))
             new_series.add_input([self, b])
         return new_series
 
