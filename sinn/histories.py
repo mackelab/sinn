@@ -402,7 +402,7 @@ em
             return self._getitem_internal(key)
         elif shim.isarray(key):
             return shim.ifelse(shim.eq(key.shape[0], 0),
-                               self._data[0:0], # Empty time slice
+                               self._original_data[0:0], # Empty time slice
                                self._getitem_internal(key))
         else:
             raise RuntimeError("Unrecognized key {} of type {}. (history: {})"
@@ -502,10 +502,6 @@ em
             key = slice(earliest, latest + 1)
                 # +1 because the latest bound is inclusive
             key_filter = slice(None, None, step)
-
-            # DEBUG
-            for x in shim.core._expand_args(key):
-                shim.print(x, "key debug", 'eval')
 
         else:
             raise ValueError("Trying to index using {} ({}). 'key' should be an "
@@ -704,7 +700,7 @@ em
 
         shim.check(shim.istype(tidx, 'int'))
 
-        start = self._cur_tidx + 1
+        start = self._original_tidx + 1
         end = tidx
         #end = shim.ifelse(tidx >= 0,
         #                  tidx,
@@ -974,7 +970,7 @@ em
 
         try:
             if not shim.isshared(self._cur_tidx):
-                # The only way for _cur_tidx to be a shared variable is if it's
+                # The only way for _cur_tidx not to be a shared variable is if it's
                 # been transformed in a theano graph
                 self._cur_tidx = self._original_tidx
             else:
@@ -1531,8 +1527,10 @@ class Spiketimes(ConvolveMixin, History):
         # Set the cur_idx. If tidx was less than the current index, then the latter
         # is *reduced*, since we no longer know whether later history is valid.
         self._cur_tidx = newidx
-        if shim.is_theano_variable(self._cur_tidx):
+        if shim.is_theano_variable(self._original_tidx):
             shim.add_update(self._original_tidx, self._cur_tidx)
+        else:
+            self._original_tidx = self._cur_tidx
 
     def pad(self, before, after=0):
         '''Extend the time array before and after the history. If called
@@ -1881,8 +1879,10 @@ class Spiketrain(ConvolveMixin, History):
         # Set the cur_idx. If tidx was less than the current index, then the latter
         # is *reduced*, since we no longer know whether later history is valid.
         self._cur_tidx = newidx
-        if shim.is_theano_variable(self._cur_tidx):
+        if shim.is_theano_variable(self._original_tidx):
             shim.add_update(self._original_tidx, self._cur_tidx)
+        else:
+            self._original_tidx = self._cur_tidx
 
     def pad(self, before, after=0):
         '''Extend the time array before and after the history. If called
@@ -2218,9 +2218,13 @@ class Series(ConvolveMixin, History):
             self._cur_tidx = shim.largest(self._cur_tidx, end)
 
             if shim.is_theano_object(self._original_data):
-                shim.add_updates(
-                      ((self._original_data, self._data),
-                       (self._original_tidx, self._cur_tidx)))
+                shim.add_update(self._original_data, self._data)
+            else:
+                self._original_data = self._data
+            if shim.is_theano_object(self._original_tidx):
+                shim.add_update(self._original_tidx, self._cur_tidx)
+            else:
+                self._original_tidx = self._cur_tidx
 
         else:
             if shim.is_theano_object(value):
@@ -2597,9 +2601,6 @@ class Series(ConvolveMixin, History):
             # E.g.: assume kernel.idx_shift = 0. Then (convolution result)[0] corresponds
             # to the convolution evaluated at tarr[kernel.stop + kernel_idx_shift]. So to get the result
             # at tarr[tidx], we need (convolution result)[tidx - kernel.stop - kernel_idx_shift].
-
-            #DEBUG
-            sinn.flag = True
 
             domain_start = self.t0idx - kernel_slice.stop - discretized_kernel.idx_shift
             domain_slice = slice(domain_start, domain_start + len(self))
