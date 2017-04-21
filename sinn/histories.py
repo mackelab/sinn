@@ -42,6 +42,8 @@ em
         + locked           : bool. Whether modifications to history are allowed. Modify through method
         + _tarr            : float ndarray. Ordered array of all time bins
         + _cur_tidx        : int. Tracker for the latest time bin for which we know history.
+        + _original_tidx   : For Numpy histories, same as _cur_tidx. For Theano histories, a handle to
+                             to the tidx variable, which is to be updated with the new value of _cur_tidx
         + _update_function : Function taking a time and returning the history
                              at that time
         + compiled_history : (Theano histories only) Another History instance of same
@@ -60,7 +62,9 @@ em
     Classes deriving from History **must** provide the following attributes:
         + _strict_index_rounding : (bool) True => times are only converted
                                    to indices if they are multiples of dt.
-        + _data            : Where the actual data is stored. Type can be anything.
+        + _data            : Where the actual data is stored. The type can be any numpy variable, but
+                             must be wrapped as a shim.shared variable.
+        + _original_data   : As _original_tidx, a handle to the original data variable
 
     and implement the following methods:
 
@@ -324,7 +328,7 @@ em
                    'dt': self.dt,
                    't0idx': self.t0idx,
                    '_unpadded_length': self._unpadded_length,
-                   '_cur_tidx': self._cur_tidx.get_value(),
+                   '_cur_tidx': self._original_tidx.get_value(),
                    'shape': self.shape,
                    'ndim': self.ndim,
                    '_tarr': self._tarr,
@@ -369,8 +373,9 @@ em
         else:
             hist.name = str(raw['name'])
             rethist = hist
-        rethist._cur_tidx = shim.shared( np.array(int(raw['_cur_tidx']), dtype='int64'),
-                                         name = 't idx (' + rethist.name + ')' )
+        rethist._original_tidx = shim.shared( np.array(int(raw['_cur_tidx']), dtype='int64'),
+                                              name = 't idx (' + rethist.name + ')' )
+        rethist._cur_tidx = rethist._original_tidx
         rethist._data = shim.shared(raw['_data'], name = rethist.name + " data")
         if lock:
             rethist.lock()
@@ -562,24 +567,25 @@ em
         except AttributeError:
             pass
 
-    def lock(self):
+    def lock(self, warn=True):
         """
         Lock the history to prevent modifications.
         Raises a warning if the history has not been set up to its end
-        (since once locked, it can no longer be updated).
+        (since once locked, it can no longer be updated). This can be disabled
+        by setting `warn` to False.
         """
         if shim.is_theano_variable(self._cur_tidx):
             raise RuntimeError("You are trying to lock the history {}, which "
                                "in the midst of building a Theano graph. Reset "
                                "it first".format(self.name))
-        if (self._cur_tidx.get_value() < self.t0idx + len(self) - 1
-            and (not self.use_theano
-                 or self.compiled_history is None)):
+        if warn and (self._original_tidx.get_value() < self.t0idx + len(self) - 1
+                     and (not self.use_theano
+                          or self.compiled_history is None)):
             # Only trigger for Theano histories if their compiled histories are unset
             # (If they are set, they will do their own check)
             logger.warning("You are locking the unfilled history {}. Trying to "
                            "evaluate it beyond {} will trigger an error."
-                           .format(self.name, self._tarr[self._cur_tidx.get_value()]))
+                           .format(self.name, self._tarr[self._original_tidx.get_value()]))
         self.locked = True
         if self.use_theano and self.compiled_history is not None:
             self.compiled_history.lock()
@@ -675,8 +681,15 @@ em
                                 self._tarr[self.t0idx:self.t0idx+len(self)],
                                 after_array))
         self.t0idx = len(before_array)
-        self._original_tidx.set_value( self._original_tidx.get_value() + len(before_array) )
-        self._cur_tidx += len(before_array)
+
+        # Update the current time index
+        if self._cur_tidx == self._original_tidx:
+            self._original_tidx.set_value( self._original_tidx.get_value() + len(before_array) )
+            self._cur_tidx = self._original_tidx
+        else:
+            # _cur_tidx is already a transformed variable, so don't link it to _original_tidx
+            self._original_tidx.set_value( self._original_tidx.get_value() + len(before_array) )
+            self._cur_tidx += len(before_array)
 
         return len(before_array), len(after_array)
 
@@ -707,8 +720,10 @@ em
         #                  len(self._tarr) + tidx)
 
         if self.locked:
-            if not shim.is_theano_object(self._cur_tidx, end):
-                assert self._cur_tidx <= end
+            if not shim.is_theano_object(end):
+                assert(self._original_tidx.get_value() >= end)
+                if not shim.is_theano_object(self._cur_tidx):
+                    assert(self._cur_tidx <= end)
             return
 
         #if shim.is_theano_object(tidx):
@@ -747,7 +762,7 @@ em
         #########
         # Did not abort the computation => now let's do the computation
 
-        stop = end + 1  # exclusive upper bound
+        stop = end + 1    # exclusive upper bound
         # Construct a time array that will work even for Theano tidx
         if shim.is_theano_object(start) or shim.is_theano_object(end):
             tarr = shim.gettheano().shared(self._tarr, borrow=True)
@@ -809,7 +824,8 @@ em
             - False (default)   : do not include padding
         """
 
-        if not shim.isshared(self._cur_tidx):
+        #if not shim.isshared(self._cur_tidx):
+        if not self._cur_tidx == self._original_tidx:
             raise RuntimeError("You are in the midst of constructing a Theano graph. "
                                "Reset history {} before trying to obtain its time array."
                                .format(self.name))
@@ -968,15 +984,8 @@ em
             raise RuntimeError("Cannot modify the locked history {}."
                                .format(self.name))
 
-        try:
-            if not shim.isshared(self._cur_tidx):
-                # The only way for _cur_tidx not to be a shared variable is if it's
-                # been transformed in a theano graph
-                self._cur_tidx = self._original_tidx
-            else:
-                self._original_tidx = self._cur_tidx
-        except AttributeError:
-            raise RuntimeError("You are calling `theano_reset` on a non-Theano history.")
+        self._cur_tidx = self._original_tidx
+        self._data = self._original_data
 
         try:
             super().theano_reset()
@@ -1512,8 +1521,8 @@ class Spiketimes(ConvolveMixin, History):
                                .format(self.name))
 
         newidx = self.get_t_idx(tidx)
-        if not theano.is_theano_variable(newidx, self._cur_tidx):
-            assert(newidx <= self._cur_tidx.get_value() + 1)
+        if not theano.is_theano_variable(newidx):
+            assert(newidx <= self._original_tidx.get_value() + 1)
 
         time = self.get_time(tidx)
         for neuron_idx in neuron_idcs:
@@ -1527,7 +1536,7 @@ class Spiketimes(ConvolveMixin, History):
         # Set the cur_idx. If tidx was less than the current index, then the latter
         # is *reduced*, since we no longer know whether later history is valid.
         self._cur_tidx = newidx
-        if shim.is_theano_variable(self._original_tidx):
+        if shim.is_theano_object(self._original_tidx):
             shim.add_update(self._original_tidx, self._cur_tidx)
         else:
             self._original_tidx = self._cur_tidx
@@ -1866,8 +1875,8 @@ class Spiketrain(ConvolveMixin, History):
                                .format(self.name))
 
         newidx = self.get_t_idx(tidx)
-        if not shim.is_theano_variable(newidx, self._cur_tidx):
-            assert(newidx <= self._cur_tidx.get_value() + 1)
+        if not shim.is_theano_variable(newidx):
+            assert(newidx <= self._original_tidx.get_value() + 1)
         neuron_idcs = shim.asarray(neuron_idcs)
 
         onevect = shim.ones(neuron_idcs.shape)
@@ -2180,18 +2189,19 @@ class Series(ConvolveMixin, History):
         # Adaptations depending on whether tidx is a single bin or a slice
         if shim.istype(tidx, 'int'):
             end = tidx
-            if not shim.is_theano_object(tidx, self._cur_tidx):
-                assert(tidx <= self._cur_tidx.get_value() + 1)
+            if not shim.is_theano_object(tidx):
+                assert(tidx <= self._original_tidx.get_value() + 1)
                 # Ensure that we update at most one step in the future
         else:
             assert(isinstance(tidx, slice))
             assert(shim.istype(tidx.start, 'int') and shim.istype(tidx.stop, 'int'))
             shim.check(tidx.stop > tidx.start)
             end = tidx.stop - 1
-            if not shim.is_theano_object(tidx, self._cur_tidx):
-                assert(tidx.start <= self._cur_tidx.get_value() + 1)
+            if not shim.is_theano_object(tidx):
+                assert(tidx.start <= self._original_tidx.get_value() + 1)
                     # Ensure that we update at most one step in the future
 
+        end = end
         if shim.is_theano_object(self._data):
             if not shim.is_theano_object(value):
                 logger.warning("Updating a Theano array ({}) with a Python value. "
@@ -2254,7 +2264,8 @@ class Series(ConvolveMixin, History):
             #self._data = shim.set_subtensor(self._data[tidx], value)
             #self._data[tidx] = value
 
-            self._cur_tidx = end
+            self._original_tidx.set_value(end)
+            self._cur_tidx = self._original_tidx
                 # If we updated in the past, this will reduce _cur_tidx
                 # – which is what we want
 
@@ -2492,22 +2503,10 @@ class Series(ConvolveMixin, History):
 
             self._data.set_value(data, borrow=True)
 
-        self._cur_tidx.set_value(self.t0idx + len(tarr) - 1)
-        self._original_tidx = self._cur_tidx
+        self._original_tidx.set_value(self.t0idx + len(tarr) - 1)
+        self._cur_tidx = self._original_tidx
 
         return self._data
-
-    def theano_reset(self, new_data=None):
-        """Refresh data to allow a new call returning theano variables.
-        `new_data` should not be a complex type, like the result of a `scan`
-        """
-        if new_data is not None:
-            if shim.is_shared(self._data):
-                self._data.set_value(new_data, borrow=True)
-            else:
-                self._data = new_data
-        #self._original_data = None
-        super().theano_reset()
 
     def convolve(self, kernel, t=slice(None, None), kernel_slice=slice(None,None),
                  *args, **kwargs):
