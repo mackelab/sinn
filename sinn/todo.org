@@ -1,0 +1,6 @@
+* TODO Deprecate `use_theano` attribute and parameter in History
+  _data should always be a shared variable
+* TODO Parameter replace function for models
+  Would take graph, parameter, new name, "to" and "from" conversion functions (e.g. 10** and log)
+  Would then take care of cloning the graph, replacing with the "to" converted new parameter
+  and setting the value of the shared parameter with the "from" conversion

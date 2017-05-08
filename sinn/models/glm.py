@@ -230,8 +230,9 @@ class GLM_exp_kernel(Model):
                     logL = model.loglikelihood(*args, **kwargs)
                         # Calling logL sets the sinn.inputs, which we need
                         # before calling get_input_list
-                    with open("logL_graph", 'w') as f:
-                        theano.printing.debugprint(logL, file=f)
+                    # DEBUG
+                    # with open("logL_graph", 'w') as f:
+                    #     theano.printing.debugprint(logL, file=f)
                     input_list, input_vals = self.get_input_list()
                     self.compiled['loglikelihood'] = {
                         'function': theano.function(input_list, logL,

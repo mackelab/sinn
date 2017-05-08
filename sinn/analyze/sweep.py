@@ -53,8 +53,8 @@ def logspace(low, high, fineness):
     def pow10(x):
         return 10**x
     return AxisStops(np.logspace(np.log10(low), np.log10(high),
-                                 num=int((np.log10(high)-np.log10(low)))
-                                 * 5*fineness/np.log10(10),
+                                 num=int((np.log10(high)-np.log10(low))
+                                         * 5*fineness/np.log10(10)),
                                      #5*fineness per decade
                                  base=10,
                                  dtype=sinn.config.floatX),
@@ -194,9 +194,9 @@ class ParameterSweep:
             if sinn.config.use_theano():
                 ippclient[:].execute("sinn.config.load_theano()")
                 ippclient[:].execute("shim.theano.config.exception_verbosity = '{}'"
-                                     .format(shim.theano.config.exception_verbosity))
+                                     .format(shim.gettheano().config.exception_verbosity))
                 ippclient[:].execute("shim.theano.config.optimizer = '{}'"
-                                     .format(shim.theano.config.optimizer))
+                                     .format(shim.gettheano().config.optimizer))
 
             ippclient[:].scatter('idnum', ippclient.ids, flatten=True, block=True)
 

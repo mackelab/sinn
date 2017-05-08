@@ -499,9 +499,11 @@ em
                                # It's a 1 element array – just set step to 1 and don't worry
                                np.int16(1),  # int16 is the return type of index_interval
                                # Set the step as the difference of the first two elements
-                               self.index_interval(key[1] - key[0]) )
+                               shim.LazyEval(lambda key: self.index_interval(key[1] - key[0]), (key,) ))
+	                           # `LazyEval` prevents Python from greedily executing key[1]
+                                   # even when key has length 1
             # Make sure the entire indexing array has the same step
-            if not shim.is_theano_object(key):
+            if not shim.is_theano_object(key) and key.shape[0] > 1:
                 assert(np.all(sinn.isclose(key[1:] - key[:-1], key[1]-key[0])))
 
             key = slice(earliest, latest + 1)
