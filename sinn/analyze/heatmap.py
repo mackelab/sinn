@@ -5,7 +5,7 @@ Created Sat Feb 25 2017
 author: Alexandre René
 """
 
-from copy import copy
+import copy
 import operator
 import numpy as np
 import matplotlib.colors as colors
@@ -27,6 +27,9 @@ class HeatMap:
         self.ceil = np.inf
         self.set_norm(norm)
         self.cmap = 'viridis'
+
+        self._marginals = None
+        self._normalized_data = None
 
     def raw(self):
         # The raw format is meant for data longevity, and so should
@@ -87,11 +90,19 @@ class HeatMap:
         else:
             raise RuntimeError("What are we doing here ?")
 
+    def __getitem__(self, key):
+        assert(len(key) == len(self.axes))
+        key = tuple( com.get_index_slice(ax, k) for ax, k in zip(self.axes, key) )
+        return self.data[key]
+
     def slice(self, ax_slices):
         assert(len(ax_slices) == len(self.axes))
-        new_map = copy(self)
+        ax_slices = [ com.get_index_slice(ax, slc)
+                      for ax, slc in zip(self.axes, ax_slices) ]
+            # Converts value slices to indices
+        new_map = copy.deepcopy(self)
         for i, slc in enumerate(ax_slices):
-            new_map.axes[i] = new_map.axes[i]._replace(self.axes[i].stops[slc])
+            new_map.axes[i] = new_map.axes[i]._replace(stops=self.axes[i].stops[slc])
 
         if len(ax_slices) == 1:
             new_map.data = self.data[ax_slices[0]]
@@ -102,14 +113,56 @@ class HeatMap:
         else:
             raise NotImplementedError
 
-    #####################################################
-    # Operator definitions
-    #####################################################
-    # TODO: Operations with two heat maps ?
+        return new_map
+
+    def get_normalized_data(self, recompute=False):
+        if self._normalized_data is None or recompute:
+            self._normalized_data = self.data / self.sum()
+        return self._normalized_data
+
+    def get_marginals(self, recompute=False):
+        """
+        Compute the marginals. These are cached, so subsequent calls are cheap.
+        The cache can be recomputed (which one would want to do if the data has
+        changed) by setting recompute=True
+        """
+        if self._marginals is None or recompute:
+            p = self.get_normalized_data()
+            dimlist = tuple( range(len(self.axes)) )
+            self._marginals = [p.sum(axis=dimlist[:i] + dimlist[i+1:])
+                               for i in range(len(dimlist))]
+        return self._marginals
+
+    def mean(self):
+        """Compute the mean along each axis. Data does not need to be normalized."""
+        estμ = np.array([(pm * ax.stops).sum()
+                         for pm, ax in zip(self.get_marginals(), self.axes)])
+        return estμ
+
+    def cov(self):
+        """Compute the empirical covariance matrix."""
+        # TODO: use np.cov for speed
+        estμ = self.mean()
+        p = self.get_normalized_data()
+        estdiagΣ = [ (pm * (ax.stops - μ)**2).sum()
+                     for pm, ax, μ in zip(self.get_marginals(), self.axes, estμ) ]
+        estΣ = np.diag(estdiagΣ)
+        for i in range(len(self.axes)):
+            for j in range(i+1, len(self.axes)):
+                estΣ[i,j] = (p * np.outer( (self.axes[i].stops - estμ[i]),
+                                           (self.axes[j].stops - estμ[j]) ) ).sum()
+                estΣ[j,i] = estΣ[i,j]
+        return estΣ
 
     def sum(self, axis=None, dtype=None, out=None):
         # This allows calling np.sum() on a heat map.
         return np.sum(self.data, axis=axis, dtype=dtype, out=out)
+
+
+    #####################################################
+    # Operator definitions
+    #####################################################
+    # TODO: Operations with two heat maps ?
 
     def apply_op(self, new_label, op, b=None):
         if b is None:

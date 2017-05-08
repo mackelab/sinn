@@ -16,6 +16,7 @@ import scipy as sp
 logger = logging.getLogger('sinn.analyze')
 
 try:
+    import matplotlib as mpl
     import matplotlib.pyplot as plt
 except ImportError:
     logger.warning("Unable to import matplotlib. Plotting functions "
@@ -174,7 +175,7 @@ def plot(data, **kwargs):
         cb = plt.colorbar()
         cb.set_label(data.zlabel)
 
-        color_scheme = color_schemes.map[data.cmap]
+        color_scheme = color_schemes.cmaps[data.cmap]
         ax.tick_params(axis='both', which='both', color=color_scheme.white,
                        top='on', right='on', bottom='on', left='on',
                        direction='in')
@@ -185,6 +186,33 @@ def plot(data, **kwargs):
         cb.outline.set_visible(False)
 
         return ax, cb
+
+def plot_stddev_ellipse(data, width):
+    """
+    Add an ellipse to a plot denoting a heatmap's spread. This function
+    is called after plotting the data, and adds the
+    ellipse to the current axis.
+
+    Parameters
+    ----------
+    data:  heatmap_like
+        A data object which provides a .cov method
+    width: float
+        Amount of data to include in the ellipse, in units of standard
+        deviations. A width of 2 will draw the contour corresponding
+        to 2 standard deviations.
+    """
+    # TODO: Deal with higher than 2D heatmaps
+    eigvals, eigvecs = np.linalg.eig(data.cov())
+    ax = plt.gca()
+    w = width * np.sqrt(eigvals[0])
+    h = width * np.sqrt(eigvals[1])
+    color_scheme = color_schemes.cmaps[data.cmap]
+    e = mpl.patches.Ellipse(xy=data.mean(), width=w, height=h,
+                            angle=np.arctan2(eigvecs[0][1], eigvecs[0][0]),
+                            fill=False, color=color_scheme.accent)
+    ax.add_artist(e)
+    e.set_clip_box(ax.bbox)
 
 
 def get_axes(param_axes):

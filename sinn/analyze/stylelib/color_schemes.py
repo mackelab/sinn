@@ -6,9 +6,10 @@ property_cycles = {
 
 
 HeatmapColorScheme = namedtuple('HeatmapColorScheme',
-                                ['white', 'black'])
-map = {
+                                ['white', 'black', 'accent'])
+cmaps = {
     'viridis': HeatmapColorScheme(
-                 white = '#F9DFFF',
-                 black = '#4f6066')
+                 white  = '#F9DFFF',
+                 black  = '#4f6066',
+                 accent = '#EC093D')
     }

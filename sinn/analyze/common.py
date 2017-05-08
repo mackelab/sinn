@@ -7,6 +7,32 @@ from collections import namedtuple
 ParameterAxis = namedtuple('ParameterAxis', ['name', 'stops', 'idx', 'scale', 'linearize_fn', 'inverse_linearize_fn'])
   #TODO Could probably just use 'scale', and have a lookup for the linearize functions
 
+def get_index(axis, idx):
+    if idx is None or isinstance(idx, int):
+        return idx
+    else:
+        assert( isinstance(idx, float) )
+        return np.searchsorted(axis.stops, idx)
+
+def get_index_slice(axis, slc):
+    """
+    Return a slice of indices. Integer components of slc are left untouched, whereas
+    float components are assumed to refer to stop values and are converted to an index.
+    `slc` may also be a scalar (int or float), in which case a scalar index is returned.
+
+    Parameters
+    ----------
+    axis:   ParameterAxis instance
+    slc:  slice or scalar
+    """
+    # TODO: Something useful with slc.step
+
+    if isinstance(slc, slice):
+        return slice(get_index(axis, slc.start), get_index(axis, slc.stop), slc.step)
+    else:
+        assert( isinstance(slc, (int, float)) )
+        return get_index(axis, slc)
+
 # ==================================
 # Axis scales
 
