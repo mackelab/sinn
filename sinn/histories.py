@@ -1571,6 +1571,12 @@ class Spiketimes(ConvolveMixin, History):
         If no source is specified, the series' own update function is used,
         provided it has been previously defined. Can be used to force
         computation of the whole series.
+
+        The history is returned, to allow chaining operations.
+
+        Returns
+        -------
+        This history instance
         """
         if self.locked:
             raise RuntimeError("Tried to modify locked history {}."
@@ -1592,7 +1598,7 @@ class Spiketimes(ConvolveMixin, History):
 
         self._original_tidx.set_value(self.t0idx + len(self) - 1)
         self._cur_tidx = self._original_tidx
-        return self._data
+        return self
 
 
     def _convolve_op_single_t(self, kernel, t, kernel_slice):
@@ -1930,6 +1936,12 @@ class Spiketrain(ConvolveMixin, History):
         If no source is specified, the series own update function is used,
         provided it has been previously defined. Can be used to force
         computation of the whole series.
+
+        The history is returned, to allow chaining operations.
+
+        Returns
+        -------
+        This history instance
         """
         if self.locked:
             raise RuntimeError("Tried to modify locked history {}."
@@ -1966,7 +1978,7 @@ class Spiketrain(ConvolveMixin, History):
                 csc_data.eliminate_zeros()
             self._data = csc_data.tocoo()
 
-        return self._data
+        return self
 
 
     def _convolve_op_single_t(self, discretized_kernel, tidx, kernel_slice):
@@ -2452,6 +2464,12 @@ class Series(ConvolveMixin, History):
         If no source is specified, the series own update function is used,
         provided it has been previously defined. Can be used to force
         computation of the whole series.
+
+        This history is returned to allow chaining operations.
+
+        Returns
+        -------
+        This history instance
         """
         if self.locked:
             raise RuntimeError("Tried to modify locked history {}."
@@ -2508,7 +2526,7 @@ class Series(ConvolveMixin, History):
         self._original_tidx.set_value(self.t0idx + len(tarr) - 1)
         self._cur_tidx = self._original_tidx
 
-        return self._data
+        return self
 
     def convolve(self, kernel, t=slice(None, None), kernel_slice=slice(None,None),
                  *args, **kwargs):
