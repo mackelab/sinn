@@ -10,7 +10,9 @@ author: Alexandre René
 __all__ = ['smooth', 'subsample', 'plot', 'get_axes', 'get_axis_labels']
 
 import logging
+import collections
 from collections import namedtuple
+import itertools
 import numpy as np
 import scipy as sp
 logger = logging.getLogger('sinn.analyze')
@@ -138,7 +140,15 @@ def plot(data, **kwargs):
         - Spiketimes: produces a raster plot (not implemented)
 
     **kwargs: keyword arguments
-        These will be forwarded to the underlying plotting function.
+        These will be forwarded to the underlying plotting function;
+        all are optional. The following keywords are preprocessed:
+        - `label`
+          Can be specified as a single string or a list of strings.
+          In the former case, a subscript is added to indicate components;
+          in the latter,  strings are used as-is and the list should be of
+          the same length as the number of components.
+          If not specified, the data's `name` attribute is used, with
+          components indicated as a subscript.
     Returns
     -------
     A list of the created axes.
@@ -151,8 +161,32 @@ def plot(data, **kwargs):
                 raise ValueError("You need to compile a Theano history before plotting it.")
             data = data.compiled_history
 
+        label = kwargs.pop('label', None)
+        comp_list = list( itertools.product(*[range(s) for s in data.shape]) )
+        if label is None or isinstance(label, str):
+            name = label if label is not None else data.name
+            # Loop over the components
+            def cleanname(_name):
+                s = _name.strip('$')
+                # wrap underscored elements with brackets
+                s_els = s.split('_')
+                s = s_els[0] + ''.join(['_{' + el + '}' for el in s_els[1:]])
+                # wrap the whole string in brackets, to allow underscore with component
+                return '{' + s + '}'
+            if len(comp_list) > 1:
+                labels = [ "${}_{{{}}}$".format(cleanname(name), str(comp).strip('(),'))
+                           for comp in comp_list ]
+            else:
+                labels = [ "${}$".format(cleanname(data.name)) ]
+        else:
+            assert(isinstance(label, collections.Iterable))
+            labels = label
+
         ax = plt.gca()
-        plt.plot(data.get_time_array(), data.get_trace(), **kwargs)
+        # Loop over the components, plotting each separately
+        # Plotting separately allows to assign a label to each
+        for comp, label in zip(comp_list, labels):
+            plt.plot(data.get_time_array(), data.get_trace(comp), label=label, **kwargs)
         return ax
 
     elif isinstance(data, heatmap.HeatMap):
