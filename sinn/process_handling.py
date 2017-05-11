@@ -45,10 +45,10 @@ def get_ipp_client(ipp_profile=None, ipp_url_file=None, wait=2):
     except ImportError:
         return None # IPyParallel is not installed, so there's definitely no process running
 
-    # timeout ipp.Client after 2 seconds
+    # timeout ipp.Client after `wait` seconds
     if ipp_url_file is not None:
         try:
-            with timeout(2):
+            with timeout(wait):
                 ippclient = ipp.Client(url_file=ipp_url_file)
         except TimeoutError:
             logger.info("Unable to connect to ipyparallel controller.")
@@ -57,7 +57,7 @@ def get_ipp_client(ipp_profile=None, ipp_url_file=None, wait=2):
             logger.info("Connected to ipyparallel controller.")
     elif ipp_profile is not None:
         try:
-            with timeout(2):
+            with timeout(wait):
                 ippclient = ipp.Client(profile=ipp_profile)
         except TimeoutError:
             logger.info("Unable to connect to ipyparallel controller with "

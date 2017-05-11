@@ -8,6 +8,7 @@ Author: Alexandre René
 
 import numpy as np
 import scipy as sp
+import collections
 from collections import deque
 import itertools
 import operator
@@ -1061,14 +1062,13 @@ em
 
         if isinstance(variable, str):
             # Not sure why a string would be an input, but it guards against the next line
-            sinn.inputs[self].add(x)
+            sinn.inputs[self].add(variable)
             #self._inputs.add(variable)
-        try:
+        if isinstance(variable, (com.HistoryBase, com.KernelBase)):
+            sinn.inputs[self].add(variable)
+        elif isinstance(variable, collections.Iterable):
             for x in variable:
                 sinn.inputs[self].add(x)
-        except TypeError:
-            # variable is not iterable
-            sinn.inputs[self].add(x)
     add_inputs = add_input
         # Synonym to add_input
 
@@ -1262,9 +1262,13 @@ em
         # indexing it with time_array[0] or time_array[-1] would trigger an error
         empty_array = shim.eq( shim.min(time_array.shape), 0 )
 
+        if not shim.is_theano_object(time_array):
+            assert(abs(time_array[1] - time_array[0]) >= self.dt - sinn.config.abs_tolerance)
+
         step = shim.ifelse(empty_array,
                            self.dt,
-                           shim.largest(time_array[1] - time_array[0], self.dt))
+                           time_array[1] - time_array[0])
+                           #shim.largest(time_array[1] - time_array[0], self.dt))
 
         idxstart = shim.ifelse(empty_array,
                                shim.cast(0, dtype=self._cur_tidx.dtype),
@@ -2652,7 +2656,10 @@ class Series(ConvolveMixin, History):
         else:
             new_series.set_update_function(lambda t: op(self[t], b))
             new_series.set_range_update_function(lambda tarr: op(self[self.time_array_to_slice(tarr)], b))
-            new_series.add_input([self, b])
+            if isinstance(b, com.HistoryBase) or shim.is_theano_variable(b):
+                new_series.add_input([self, b])
+            else:
+                new_series.add_input(self)
         return new_series
 
     def __abs__(self):

@@ -104,7 +104,7 @@ class GLM_exp_kernel(Model):
 
     def ρ_fn(self, t):
         if not shim.isscalar(t):
-            tslice = self.JᕽAᐩI.time_array_to_slice(t) 
+            tslice = self.JᕽAᐩI.time_array_to_slice(t)
             # assert(t.ndim == 1)  # No support for multiple time slices at the moment
             # tslice = shim.ifelse( shim.eq(t.shape[0], 1),
             #                       t[0], # t is just a singe time, wrapped in an arra

@@ -147,6 +147,9 @@ inputs = DependencyGraph('sinn.inputs')
     # Whenever a history's __getitem__ method is called, it adds itself
     # to this dictionary
 
+# HistoryBase and KernelBase are mostly provided for type-checking
+# (otherwise one needs to import e.g. histories.py, which can
+#  lead to circular imports)
 
 class HistoryBase:
 
@@ -160,6 +163,9 @@ class HistoryBase:
 
     def get_t_idx(self, t):
         raise NotImplementedError
+
+class KernelBase:
+    pass
 
 class _OpTupleCache:
     """OpCache is essentially a collection of _OpTupleCache's, one for each
