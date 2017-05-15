@@ -225,6 +225,9 @@ class SGD:
             # From this point on we should not need to call `transform`, but we
             # keep it in case we do.
 
+        # If the ground truth of `variable` was set, compute that of `newvar`
+        self._augment_ground_truth_with_transforms()
+
     def compile(self, fitparams, **kwds):
 
         # Create the Theano `replace` parameter from self.substitutions
@@ -316,6 +319,17 @@ class SGD:
         # else:
         #     assert(len(trueparams) == len(self.fitparams))
         self.trueparams = { param: param.get_value() for param in trueparams }
+        self._augment_ground_truth_with_transforms()
+
+    def _augment_ground_truth_with_transforms(self):
+        """Add to the dictionary of ground truth parameters the results of transformed variables."""
+        if self.trueparams is None:
+            return
+        for param, transformedparaminfo in self.substitutions.items():
+            if param in self.trueparams:
+                transformedparam = transformedparaminfo[0]
+                transform = transformedparaminfo[2]
+                self.trueparams[transformedparam] = transform(self.trueparams[param])
 
     def initialize(self, new_params=None):
         """
@@ -484,7 +498,7 @@ class SGD:
                         for idx in get_indices(param)])
                         #for i in range(param.get_value().shape[0])
                         #for j in range(param.get_value().shape[0])])
-            plt.gca().set_color_cycle(None)
+            plt.gca().set_prop_cycle(None)
             if self.trueparams is not None:
                 if param in self.trueparams:
                     plt.plot( [ self.trueparams[param].flatten()
@@ -494,14 +508,21 @@ class SGD:
                     logger.warning("Although ground truth parameters have been set, "
                                    "the value of '{}' was not.".format(param.name))
 
-    def plot_param_evol_overlay(self, basedata):
+    def plot_param_evol_overlay(self, basedata, evol=None):
         """
         Parameters
         ----------
         basedata: Heatmap or […]
             The sinn data object on top of which to draw the overlay. Currently
             only heatmaps are supported.
+        evol: dictionary, as returned from `get_evol()`
+            The evolution of parameters, as returned from this instance's `get_evol`
+            method. If not specified, `get_evol` is called to retrieve the latest
+            parameter evolution.
         """
+
+        if evol is None:
+            evol = self.get_evol()
 
         if isinstance(basedata, anlz.heatmap.HeatMap):
             if len(basedata.axes) == 1:
@@ -522,7 +543,7 @@ class SGD:
                             found = True
                             # Get the parameter evolution
                             if shim.isscalar(param):
-                                plotcoords.append(np.array([p for p in self.param_evol[param]]))
+                                plotcoords.append(evol[param])
                             else:
                                 idx = list(ax.idx)
                                 # Indexing for the heat map might neglect 1-element dimensions
@@ -533,9 +554,11 @@ class SGD:
                                         if s == 1 and len(idx) < param.ndim:
                                             idx.insert(i, 0)
                                     assert(len(idx) == param.ndim)
-                                idx = tuple(idx)
 
-                                plotcoords.append(np.array([p[idx] for p in self.param_evol[param]]))
+                                idx.insert(0, slice(None)) # First axis is time: grab all of those
+                                idx = tuple(idx)           # Indexing won't work with a list
+
+                                plotcoords.append(evol[param][idx])
 
                     if not found:
                         for param in self.substitutions:
@@ -543,8 +566,9 @@ class SGD:
                             if param.name == ax.name:
                                 found = True
                                 transformedparam = self.substitutions[param][0]
+                                inversetransform = self.substitutions[param][1]
                                 if shim.isscalar(param):
-                                    coords = np.array([p for p in self.param_evol[transformedparam]])
+                                    plotcoords.append(inversetransform( evol[transformedparam] ))
                                 else:
                                     idx = list(ax.idx)
                                     # Indexing for the heat map might neglect 1-element dimensions
@@ -555,10 +579,11 @@ class SGD:
                                             if s == 1 and len(idx) < param.ndim:
                                                 idx.insert(i, 0)
                                         assert(len(idx) == param.ndim)
-                                    idx = tuple(idx)
 
-                                    coords = np.array([p[idx] for p in self.param_evol[transformedparam]])
-                                plotcoords.append(self.substitutions[param][1](coords))
+                                    idx.insert(0, slice(None))  # First axis is time: grab all of those
+                                    idx = tuple(idx)            # Indexing won't work with a list
+
+                                    plotcoords.append(inversetransform( evol[transformedparam][idx] ))
 
                     if not found:
                         raise ValueError("The base data has a parameter '{}', which "
