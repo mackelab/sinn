@@ -222,8 +222,8 @@ class SGD:
 
         # Save the transform
         self.substitutions[variable] = (newvar, inverse_transform, transform)
-            # From this point on we should not need to call `transform`, but we
-            # keep it in case we do.
+            # From this point on the inverse_transform is more likely to be used,
+            # but in some cases we still need the original transform
 
         # If the ground truth of `variable` was set, compute that of `newvar`
         self._augment_ground_truth_with_transforms()
@@ -331,17 +331,85 @@ class SGD:
                 transform = transformedparaminfo[2]
                 self.trueparams[transformedparam] = transform(self.trueparams[param])
 
-    def initialize(self, new_params=None):
+    def get_param(self, name):
+        for param in self.fitparams:
+            if param.name == name:
+                return param
+        for param in self.substitutions:
+            if param.name == name:
+                return param
+
+        raise KeyError("No parameter has the name '{}'".format(name))
+
+    def set_param_values(self, new_params, mask=None):
+        """
+        Update parameter values.
+
+        Parameters
+        ----------
+        new_params: dictionary
+            Dictionary where keys are model parameters, and
+            values are the new values they should take. It is possible to
+            specify only a subset of parameters to update.
+        mask: dictionary
+            (Optional) Only makes sense to specify this option along with
+            `new_params`. If given, only variable components corresponding
+            to where the mask is True are updated.
+        """
+        for param, val in new_params.items():
+            # Get the corresponding parameter mask, if specified
+            parammask = None
+            if mask is not None:
+                if param in mask:
+                    parammask = mask[param]
+                else:
+                    # Also check the list of substituted parameters
+                    for subp, subinfo in self.substitutions.items():
+                        if subp is param and subinfo[0] in mask:
+                            parammask = mask[subinfo[0]]
+                        elif subinfo[0] is param and subp in mask:
+                            parammask = mask[subp]
+
+            if shim.isshared(val):
+                val = val.get_value()
+            val = np.array(val, dtype=param.dtype)
+
+            if parammask is not None:
+                val = np.array([ newval if m else oldval
+                                for newval, oldval, m in zip(val.flat,
+                                                             param.get_value().flat,
+                                                             parammask.flat) ])
+
+            val = val.reshape(param.get_value().shape)
+            param.set_value(val)
+
+            # TODO: move to separate method, that can also be called e.g. after gradient descent
+            # See if this parameter appears in the substitutions
+            for subp, subinfo in self.substitutions.items():
+                if param is subp:
+                    # This parameter was substituted by another; update the new parameter
+                    subinfo[0].set_value(subinfo[2](val))
+                elif param is subinfo[0]:
+                    # This parameter substitutes another; update the original
+                    subp.set_value(subinfo[1](val))
+
+    def initialize(self, new_params=None, mask=None):
         """
         Clear the likelihood and parameter histories.
-        If new_params is provided, use it to update the parameter values.
+
+        Parameters
+        ----------
+        new_params: dictionary
+            (Optional) Dictionary where keys are model parameters, and
+            values are the new values they should take. It is possible to
+            specify only a subset of parameters to update.
+        mask: dictionary
+            (Optional) Only makes sense to specify this option along with
+            `new_params`. If given, only variable components corresponding
+            to where the mask is True are updated.
         """
         if new_params is not None:
-            for param, val in new_params.items():
-                if shim.isshared(val):
-                    val = val.get_value()
-                val = np.array(val, dtype=param.dtype).reshape(param.get_value().shape)
-                param.set_value(val)
+            self.set_param_values(new_params, mask)
 
         self.param_evol = {param: deque([param.get_value()])
                            for param in self.fitparams}
