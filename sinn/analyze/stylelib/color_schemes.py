@@ -1,5 +1,6 @@
 from collections import namedtuple
 from cycler import cycler
+import matplotlib as mpl
 
 property_cycles = {
     'dark pastel': ['#1e6ea7', '#9d3a11']
@@ -10,7 +11,16 @@ property_cycles = {
 # Instead of populating this directly, we will generate a data dictionary, to allow some
 # manipulation first
 HeatmapColorScheme = namedtuple('HeatmapColorScheme',
-                                ['white', 'black', 'accent1', 'accent1_cycle', 'accent2', 'accent2_cycle'])
+                                ['white', 'black', 'min', 'max', 'accent1', 'accent1_cycle', 'accent2', 'accent2_cycle'])
+    # white: colour to use instead of white (typically an off-white colour that complements the colour map)
+    # black: colour to use instead of black
+    # min:   colour corresponding to the low end of the colour map
+    # max:   colour corresponding to the high end of the colour map
+    # accent1: first colour of accent1_cycle. Provides good contrast with the colour map
+    # accent1_cycle: variations on accent1 to provide a cycle of associated colours
+    # accent2: different accent colour from colour 1; typically less contrasts less with the colour map
+    # accent2_cycle: variations on accent2
+
 # accent1 color list: First colour is 'bright' base. Subsequent have same hue and lightness, but decrease saturation by 10% / step
 _cmaps_data = {
     'viridis': { 'white'   : '#F9DFFF',
@@ -29,6 +39,8 @@ for key, values in _cmaps_data.items():
     cmaps[key] = HeatmapColorScheme(
         white   = values['white'],
         black   = values['black'],
+        min     = mpl.colors.to_hex(mpl.cm.get_cmap('viridis').colors[0]),
+        max     = mpl.colors.to_hex(mpl.cm.get_cmap('viridis').colors[-1]),
         accent1 = values['accent1_list'][0],
         accent1_cycle = cycler('color', values['accent1_list']),
         accent2 = values['accent2_list'][0],
