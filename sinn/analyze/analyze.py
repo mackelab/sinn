@@ -221,7 +221,7 @@ def plot(data, **kwargs):
 
         return ax, cb
 
-def plot_stddev_ellipse(data, width):
+def plot_stddev_ellipse(data, width, **kwargs):
     """
     Add an ellipse to a plot denoting a heatmap's spread. This function
     is called after plotting the data, and adds the
@@ -235,16 +235,21 @@ def plot_stddev_ellipse(data, width):
         Amount of data to include in the ellipse, in units of standard
         deviations. A width of 2 will draw the contour corresponding
         to 2 standard deviations.
+    **kwargs:
+        Keyword arguments passed to maptplotlib.patches.Ellipse
     """
     # TODO: Deal with higher than 2D heatmaps
     eigvals, eigvecs = np.linalg.eig(data.cov())
     ax = plt.gca()
     w = width * np.sqrt(eigvals[0])
     h = width * np.sqrt(eigvals[1])
-    color_scheme = color_schemes.cmaps[data.cmap]
+    color = kwargs.pop('color', None)
+    if color is None:
+        color_scheme = color_schemes.cmaps[data.cmap]
+        color = color_scheme.accent2  # Leave more salient accent1 for user
     e = mpl.patches.Ellipse(xy=data.mean(), width=w, height=h,
                             angle=np.arctan2(eigvecs[0][1], eigvecs[0][0]),
-                            fill=False, color=color_scheme.accent)
+                            fill=False, color=color)
     ax.add_artist(e)
     e.set_clip_box(ax.bbox)
 
