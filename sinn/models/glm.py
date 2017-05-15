@@ -149,6 +149,15 @@ class GLM_exp_kernel(Model):
             self.JᕽAᐩI.locked = False
         super().update_params(new_params)
 
+    def get_t_idx(self, t):
+        """
+        Returns the time index corresponding to t such that it is compatible
+        with loglikelihood.
+        """
+        return self.A.get_t_idx(t)
+    def index_interval(self, Δt):
+        return self.A.index_interval(Δt)
+
     def loglikelihood(self, start=None, stop=None):
 
         hist_type_msg = ("To compute the loglikelihood, you need to use a NumPy "
@@ -250,6 +259,7 @@ class GLM_exp_kernel(Model):
 
     def get_input_list(self):
         # TODO: move to Models
+        # TODO: get rid of entirely and use theano.gof.graph.inputs
         input_list = []
         input_vals = []
         # HACK Shouldn't need to combine sinn.inputs

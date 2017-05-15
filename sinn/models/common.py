@@ -67,7 +67,7 @@ class Model(com.ParameterMixin):
         """
         super().__init__(params=params)
         self.kernel_list = []
-        #self.history_list = []
+        self.history_set = set()
         self.history_inputs = sinn.DependencyGraph('model.history_inputs')
         self.compiled = {}
 
@@ -134,6 +134,7 @@ class Model(com.ParameterMixin):
 
     def add_history(self, hist):
         assert(isinstance(hist, sinn.histories.History))
+        self.history_set.add(hist)
         if hist not in self.history_inputs:
             self.history_inputs.add(hist)
     def add_kernel(self, kernel):
@@ -204,9 +205,25 @@ class Model(com.ParameterMixin):
         self.clear_unlocked_histories()
 
     def clear_unlocked_histories(self):
+        """Clear all histories that have not been explicitly locked."""
         for hist in self.history_inputs.union(sinn.inputs):
             if not hist.locked:
                 self.clear_history(hist)
+    def clear_other_histories(self):
+        """
+        Clear unlocked histories that are not explicitly part of this model
+        (but may be inputs.
+        """
+        # Implemented as a wrapper around clear_unlocked_histories:
+        # first lock of this model's histories, clear histories, and then
+        # revert to the original locked/unlocked status
+        old_status = {hist: hist.locked for hist in self.history_set}
+        for hist in self.history_set:
+            hist.lock()
+        self.clear_unlocked_histories()
+        for hist, status in old_status:
+            if status == False:
+                hist.unlock()
 
     def clear_history(self, history):
         # Clear the history, and remove any cached operations related to it

@@ -49,7 +49,7 @@ def checkcache(init):
 
 # No cache decorator for generic kernels: f might be changed after the initialization,
 # and any kernel with f=None might hit the same cache.
-class Kernel(ConvolveMixin, ParameterMixin):
+class Kernel(ConvolveMixin, ParameterMixin, com.KernelBase):
     """Generic Kernel class. All kernels should derive from this.
     Kernels associated to histories with shape (M,) should have shape (M,M),
     with indexing following kernel[to idx][from idx]. (See below for caveats.)
