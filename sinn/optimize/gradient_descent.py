@@ -298,7 +298,7 @@ class SGD:
         if len(replace) > 0:
             logL = theano.clone(logL, replace)
 
-        self.logL = theano.function([], -logL)
+        self.logL = theano.function([], logL)
 
         self.model.theano_reset()  # clean the graph after compilation
 
@@ -312,12 +312,6 @@ class SGD:
         ----------
         trueparams: Iterable of shared variables
         """
-        # try:
-        #     self.fitparams
-        # except AttributeError:
-        #     pass
-        # else:
-        #     assert(len(trueparams) == len(self.fitparams))
         self.trueparams = { param: param.get_value() for param in trueparams }
         self._augment_ground_truth_with_transforms()
 
@@ -413,7 +407,7 @@ class SGD:
 
         self.param_evol = {param: deque([param.get_value()])
                            for param in self.fitparams}
-        self.logL_evol = deque([np.inf])
+        self.logL_evol = deque([-np.inf])
 
         self.step_i = 0
         self.curtidx = self.burnin_idx
@@ -520,12 +514,12 @@ class SGD:
         -------
         dictionary:
              The log likelihood evolution is associated the string key 'logL'.
-             Parameter evolutions are keyed by the parameters themselves.
+             Parameter evolutions are keyed by the parameter names.
              Each evolution is stored as an ndarray, with the first dimension
              corresponding to epochs.
         """
-        evol = {param: np.array([val for val in self.param_evol[param]])
-                for param in self.fitparams}
+        evol = { param.name: np.array([val for val in self.param_evol[param]])
+                 for param in self.fitparams }
         evol['logL'] = np.array([val for val in self.logL_evol])
         return evol
 
@@ -536,16 +530,19 @@ class SGD:
                 'average time per iteration (ms)': self.tot_time / self.step_i * 1000,
                 'time spent stepping (%)': self.cum_step_time / (self.tot_time) * 100}
 
-    def plot_logL_evol(self):
-        plt.title("Minimization of likelihood")
-        plt.plot(self.get_evol()['logL'])
+    def plot_logL_evol(self, evol=None):
+        if evol is None:
+            evol = self.get_evol()
+        plt.title("Maximization of likelihood")
+        plt.plot(evol['logL'])
         plt.xlabel("epoch")
-        plt.ylabel("log L")
+        plt.ylabel("$\log L$")
 
-    def plot_param_evol(self, ncols=3):
+    def plot_param_evol(self, ncols=3, evol=None):
 
         nrows = int(np.ceil(len(self.fitparams) / ncols))
-        evol = self.get_evol()
+        if evol is None:
+            evol = self.get_evol()
 
         # if self.trueparams is None:
         #     trueparams = [None] * len(self.fitparams)
@@ -558,7 +555,7 @@ class SGD:
 
         for i, param in enumerate(self.fitparams, start=1):
             plt.subplot(nrows,ncols,i)
-            plt.plot(evol[param].reshape(len(evol[param]), -1))
+            plt.plot(evol[param.name].reshape(len(evol[param.name]), -1))
                 # Flatten the parameter values
             plt.title(param.name)
             plt.xlabel("epoch")
@@ -570,23 +567,27 @@ class SGD:
             if self.trueparams is not None:
                 if param in self.trueparams:
                     plt.plot( [ self.trueparams[param].flatten()
-                                for i in range(len(evol[param])) ],
+                                for i in range(len(evol[param.name])) ],
                               linestyle='dashed' )
                 else:
                     logger.warning("Although ground truth parameters have been set, "
                                    "the value of '{}' was not.".format(param.name))
 
-    def plot_param_evol_overlay(self, basedata, evol=None):
+    def plot_param_evol_overlay(self, basedata, evol=None, **kwds):
         """
         Parameters
         ----------
         basedata: Heatmap or […]
             The sinn data object on top of which to draw the overlay. Currently
             only heatmaps are supported.
+
         evol: dictionary, as returned from `get_evol()`
             The evolution of parameters, as returned from this instance's `get_evol`
             method. If not specified, `get_evol` is called to retrieve the latest
             parameter evolution.
+
+        **kwds:
+            Additional keyword arguments are passed to `plt.plot`
         """
 
         if evol is None:
@@ -611,7 +612,7 @@ class SGD:
                             found = True
                             # Get the parameter evolution
                             if shim.isscalar(param):
-                                plotcoords.append(evol[param])
+                                plotcoords.append(evol[param.name])
                             else:
                                 idx = list(ax.idx)
                                 # Indexing for the heat map might neglect 1-element dimensions
@@ -626,7 +627,7 @@ class SGD:
                                 idx.insert(0, slice(None)) # First axis is time: grab all of those
                                 idx = tuple(idx)           # Indexing won't work with a list
 
-                                plotcoords.append(evol[param][idx])
+                                plotcoords.append(evol[param.name][idx])
 
                     if not found:
                         for param in self.substitutions:
@@ -636,7 +637,7 @@ class SGD:
                                 transformedparam = self.substitutions[param][0]
                                 inversetransform = self.substitutions[param][1]
                                 if shim.isscalar(param):
-                                    plotcoords.append(inversetransform( evol[transformedparam] ))
+                                    plotcoords.append(inversetransform( evol[transformedparam.name] ))
                                 else:
                                     idx = list(ax.idx)
                                     # Indexing for the heat map might neglect 1-element dimensions
@@ -651,7 +652,7 @@ class SGD:
                                     idx.insert(0, slice(None))  # First axis is time: grab all of those
                                     idx = tuple(idx)            # Indexing won't work with a list
 
-                                    plotcoords.append(inversetransform( evol[transformedparam][idx] ))
+                                    plotcoords.append(inversetransform( evol[transformedparam.name][idx] ))
 
                     if not found:
                         raise ValueError("The base data has a parameter '{}', which "

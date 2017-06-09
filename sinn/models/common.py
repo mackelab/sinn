@@ -246,6 +246,86 @@ class Model(com.ParameterMixin):
                                      "op {}. This may indicate a memory leak."
                                      .format(history.name, str(op)))
 
+    def make_loglikelihood_binomial(self, n, N, p, approx=None):
+        """
+        Parameters
+        ----------
+        n: History
+            Number of successful samples
+        N: array of ints:
+            Total number of samples.
+            Must have n.shape == N.shape
+        p: History
+            Probability of success; first dimension is time.
+            Must have n.shape == p.shape and len(n) == len(p).
+        approx: str
+            (Optional) If specified, one of:
+            - 'low p': The probability is always very low; the Stirling approximation
+              is used for the contribution from (1-p) to ensure numerical stability
+            - 'high p': The probability is always very high; the Stirling approximation
+              is used for the contribution from (p) to ensure numerical stability
+            - 'Stirling': Use the Stirling approximation for both the contribution from
+              (p) and (1-p) to ensure numerical stability.
+            - 'low n' or `None`: Don't use any approximation. Make sure `n` is really low
+              (n < 20) to avoid numerical issues.
+        """
+
+        def loglikelihood(start=None, stop=None):
+
+            hist_type_msg = ("To compute the loglikelihood, you need to use a NumPy "
+                             "history for the {}, or compile the history beforehand.")
+            if n.use_theano:
+                if n.compiled_history is None:
+                    raise RuntimeError(hist_type_msg.format("events"))
+                else:
+                    nhist = n.compiled_history
+            else:
+                nhist = n
+
+            phist = p
+            # We deliberately use times here (instead of indices) for start/
+            # stop so that they remain consistent across different histories
+            if start is None:
+                start = nhist.t0
+            else:
+                start = nhist.get_time(start)
+            if stop is None:
+                stop = nhist.tn
+            else:
+                stop = nhist.get_time(stop)
+
+            n_arr_floats = nhist[start:stop]
+            p_arr = phist[start:stop]
+
+            if shim.isshared(n_arr_floats):
+                n_arr_floats = n_arr_floats.get_value()
+            if shim.isshared(p_arr):
+                p_arr = p_arr.get_value()
+
+            if not shim.is_theano_object(n_arr_floats):
+                assert(sinn.ismultiple(n_arr_floats, 1).all())
+            n_arr = shim.cast(n_arr_floats, 'int32')
+
+            # loglikelihood: -log n! - log (N-n)! + n log p + (N-n) log (1-p) + cst
+
+            if approx == 'low p':
+                # We use the Stirling approximation for the second log
+                l = shim.sum( -shim.log(shim.factorial(n_arr, exact=False))
+                              -(N-n_arr)*shim.log(N - n_arr) + N-n_arr + n_arr*shim.log(p_arr)
+                              + (N-n_arr)*shim.log(1-p_arr) )
+                    # with exact=True, factorial is computed only once for whole array
+                    # but n_arr must not contain any elements greater than 20, as
+                    # 21! > int64 (NumPy is then forced to cast to 'object', which
+                    # does not play nice with numerical ops)
+            else:
+                raise NotImplementedError
+
+            return l
+
+        return loglikelihood
+
+
+
 
 class ModelKernelMixin:
     """

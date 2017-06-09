@@ -4,3 +4,20 @@
   Would take graph, parameter, new name, "to" and "from" conversion functions (e.g. 10** and log)
   Would then take care of cloning the graph, replacing with the "to" converted new parameter
   and setting the value of the shared parameter with the "from" conversion
+* TODO Uniform kernel
+* TODO Allow combinations of kernels (e.g. uniform + exp)
+* TODO Allow setting portions of a history
+* TODO Lag method for histories
+  Return the value of a history at some lag
+  - Allows using index for time and float for lag, or vice-versa
+  - Allows using a different lag for each component
+  - Don't require evaluation beyond the latest lag
+  - Idea: implement a HistoryView, which allows indexing of histories
+    at lagged times. So call could be `A.lag(3)[t]`
+* TODO Memory-less Series (i.e. variable)
+  - Include 'get_value' method for easy sequential updating
+  - Only update once per t
+  - Only update to next t
+  - Cannot update to past t
+* TODO Attach list of inputs to history
+* TODO Don't allow negative integer indices for histories

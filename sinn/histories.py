@@ -16,6 +16,7 @@ import logging
 logger = logging.getLogger("sinn.history")
 
 import theano_shim as shim
+import theano_shim.sparse
 import sinn
 import sinn.common as com
 import sinn.config as config
@@ -95,11 +96,13 @@ em
 
         Parameters
         ----------
-        tidx: int
-            The time index at which to store the value.
-            Should not correspond to more than one bin ahead of _cur_tidx.
+        tidx: int or 1D array
+            The time index at which to store the value, or an array of such
+            time indices. No index should not correspond to more than one
+            bin ahead of _cur_tidx.
         value: timeslice
-            The timeslice to store.
+            The timeslice to store. Format is that same as that returned by
+            self._update_function
         '''
         if self.locked:
             raise RuntimeError("Tried to modify locked history {}."
@@ -311,9 +314,17 @@ em
             raise TypeError("'Lesser than' comparison is not supported between objects of type History and {}."
                             .format(type(other)))
 
-    def raw(self):
+    def raw(self, **kwds):
         # The raw format is meant for data longevity, and so should
         # seldom, if ever, be changed
+        """
+        Parameters
+        ----------
+        **kwds:
+            Passed keywords will be added to the raw structure, or replace
+            an existing keyword if it is already included.
+            This argument exists to allow specialization in derived classes.
+        """
 
         if self.use_theano:
             if self.compiled_history is not None:
@@ -323,25 +334,28 @@ em
                                      "histories is undefined.")
             raw['name'] = self.name # Replace with non-compiled name
         else:
-            raw = {'name': self.name,
-                   't0': self.t0,
-                   'tn': self.tn,
-                   'dt': self.dt,
-                   't0idx': self.t0idx,
-                   '_unpadded_length': self._unpadded_length,
-                   '_cur_tidx': self._original_tidx.get_value(),
-                   'shape': self.shape,
-                   'ndim': self.ndim,
-                   '_tarr': self._tarr,
-                   '_data': self._data.get_value(),
-                   #'use_theano': self.use_theano,
-                   '_iterative': self._iterative,
-                   'locked': self.locked
-            }
+            # We do it this way in case kwd substitutions are there to
+            # avoid an error (such as _data not having a .get_value() method)
+            raw = {}
+            raw['name'] = kwds.pop('name') if 'name' in kwds else self.name
+            raw['t0'] = kwds.pop('t0') if 't0' in kwds else self.t0
+            raw['tn'] = kwds.pop('tn') if 'tn' in kwds else self.tn
+            raw['dt'] = kwds.pop('dt') if 'dt' in kwds else self.dt
+            raw['t0idx'] = kwds.pop('t0idx') if 't0idx' in kwds else self.t0idx
+            raw['_unpadded_length'] = kwds.pop('_unpadded_length') if '_unpadded_length' in kwds else self._unpadded_length
+            raw['_cur_tidx'] = kwds.pop('_cur_tidx') if '_cur_tidx' in kwds else self._cur_tidx.get_value()
+            raw['shape'] = kwds.pop('shape') if 'shape' in kwds else self.shape
+            raw['ndim'] = kwds.pop('ndim') if 'ndim' in kwds else self.ndim
+            raw['_tarr'] = kwds.pop('_tarr') if '_tarr' in kwds else self._tarr
+            raw['_data'] = kwds.pop('_data') if '_data' in kwds else self._data.get_value()
+            raw['_iterative'] = kwds.pop('_iterative') if '_iterative' in kwds else self._iterative
+            raw['locked'] = kwds.pop('locked') if 'locked' in kwds else self.locked
+
+            raw.update(kwds)
         return raw
 
     @classmethod
-    def from_raw(cls, raw, update_function=sinn._NoValue, use_theano=False, lock=True):
+    def from_raw(cls, raw, update_function=sinn._NoValue, use_theano=False, lock=True, **kwds):
         """
         Parameters
         ----------
@@ -349,13 +363,17 @@ em
             If True, a second Theano history will be constructed, and the loaded
             one attached as its `compiled_history` attribute.
             If unspecified, the behaviour is the same as for the History initializer.
+        **kwds:
+            Will be passed along to the class constructor
+            Exists to allow specialization in derived classes.
         """
         hist =  cls(name = str(raw['name']),
                     t0 = float(raw['t0']), tn = float(raw['tn']), dt = float(raw['dt']),
                     shape = tuple(raw['shape']),
                     f = update_function,
                     iterative = bool(raw['_iterative']),
-                    use_theano = False)
+                    use_theano = False,
+                    **kwds)
         hist.t0idx = int(raw['t0idx'])
         hist._unpadded_length = int(raw['_unpadded_length'])
         hist.locked = bool(raw['locked'])
@@ -417,6 +435,7 @@ em
     def _getitem_internal(self, key):
         """Does the actual work of __getitem__; the latter just excludes special
         cases, like empty keys."""
+
         if shim.isscalar(key):
             key = self.get_t_idx(key)
                 # If `key` is a negative integer, returns as is
@@ -664,11 +683,13 @@ em
         for t in (before, after):
             if shim.is_theano_object(t):
                 raise ValueError("Times must be NumPy or pure Python variables. ")
-        if isinstance(before, int):
+        if shim.istype(before, 'int'):
+            # before should not be a Theano object here, but we need the condition
+            # to return True for both Python and NumPy ints – shim.istype does this
             before_idx_len = before
         else:
             before_idx_len = int(np.ceil(before / self.dt))
-        if isinstance(after, int):
+        if shim.istype(after, 'int'):
             after_idx_len = after
         else:
             after_idx_len = int(np.ceil(after / self.dt))
@@ -680,10 +701,11 @@ em
                                 self.tn + self.dt - config.abs_tolerance + after,
                                 self.dt)
             # Use of _tarr ensures we don't add more padding than necessary
+
         self._tarr = np.hstack((before_array,
-                                self._tarr[self.t0idx:self.t0idx+len(self)],
+                                self._tarr,#[self.t0idx:self.t0idx+len(self)],
                                 after_array))
-        self.t0idx = len(before_array)
+        self.t0idx += len(before_array)
 
         # Update the current time index
         if self._cur_tidx == self._original_tidx:
@@ -786,7 +808,7 @@ em
             # A specialized function for computing multiple time points
             # has been defined – use it.
             if printlogs:
-                logger.info("Computing {} up to {}. Using custom batch operation."
+                logger.monitor("Computing {} up to {}. Using custom batch operation."
                             .format(self.name, tarr[tidx]))
             self.update(slice(start, stop),
                         self._compute_range(tarr[slice(start, stop)]))
@@ -795,7 +817,7 @@ em
             # Computation doesn't depend on history – just compute the whole thing in
             # one go
             if printlogs:
-                logger.info("Computing {} from {} to {}. Computing all times simultaneously."
+                logger.monitor("Computing {} from {} to {}. Computing all times simultaneously."
                             .format(self.name, tarr[start], tarr[stop-1]))
             self.update(slice(start,stop),
                         self._update_function(tarr[slice(start,stop)][::-1])[::-1])
@@ -804,17 +826,17 @@ em
                 # are triggered, they will also batch update.
         else:
             assert(not shim.is_theano_object(tarr))
-            logger.info("Iteratively computing {} from {} to {}."
+            logger.monitor("Iteratively computing {} from {} to {}."
                         .format(self.name, tarr[start], tarr[stop-1]))
             old_percent = 0
             for i in np.arange(start, stop):
                 percent = (i*100)//stop
                 if percent > old_percent:
-                    logger.info("{}%".format(percent))
+                    logger.monitor("{}%".format(percent))
                     old_percent = percent
                 self.update(i, self._update_function(tarr[i]))
 
-        logger.info("Done computing {}.".format(self.name))
+        logger.monitor("Done computing {}.".format(self.name))
 
     def get_time_array(self, time_slice=slice(None, None), include_padding=False):
         """Return the time array.
@@ -885,6 +907,8 @@ em
         If Δt is an index (int), do nothing.
         OPTIMIZATION NOTE: This is a slower routine than its inverse `time_interval`.
         Avoid it in code that is called repeatedly, unless you know that Δt is an index.
+
+        FIXME: Make this work with array arguments
         """
         if shim.istype(Δt, 'int'):
             return Δt
@@ -1071,6 +1095,11 @@ em
                 sinn.inputs[self].add(x)
     add_inputs = add_input
         # Synonym to add_input
+
+    def clear_inputs(self):
+        if self not in sinn.inputs:
+            sinn.inputs[self] = set()
+        sinn.inputs[self].clear()
 
     def get_input_list(self, inputs=None):
         if inputs is None:
@@ -1458,7 +1487,7 @@ class Spiketimes(ConvolveMixin, History):
                                  for neuron_idx in range(np.sum(self.pop_sizes)) ]
 
     def clear(self, init_data=-np.inf):
-        """Spiketrains can't just be invalidated, they really have to be cleared."""
+        """Spiketimes can't just be invalidated, they really have to be cleared."""
         if self.locked:
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))
@@ -1738,9 +1767,7 @@ class Spiketrain(ConvolveMixin, History):
         """
         if name is None:
             name = "spiketimes{}".format(self.instance_counter + 1)
-        try:
-            assert(pop_sizes is not sinn._NoValue)
-        except AssertionError:
+        if pop_sizes is sinn._NoValue:
             raise ValueError("'pop_sizes' is a required parameter.")
         try:
             len(pop_sizes)
@@ -1772,9 +1799,40 @@ class Spiketrain(ConvolveMixin, History):
             self.pop_slices.append(slice(i, i+pop_size))
             i += pop_size
 
+        # Default to all-to-all connectivity; users should call the set_connectivity
+        # method after initialization if they need to change this
+        self.set_connectivity(np.ones(shape*2))
+
         super().__init__(hist, name, t0=t0, tn=tn, dt=dt, shape=shape, **kwargs)
 
         self.initialize()
+
+    def raw(self):
+        return super().raw(_data = self._data,
+                           pop_sizes = self.pop_sizes)
+
+    @classmethod
+    def from_raw(cls, raw, update_function=sinn._NoValue, use_theano=False, lock=True):
+        """See History.from_raw"""
+        retval = super().from_raw(raw, update_function, use_theano, lock,
+                                  pop_sizes=raw['pop_sizes'])
+        # data was wrapped with a scalar array then further with shim.shared.
+        # This line recovers the original
+        retval._data = retval._data.get_value()[()]
+
+    def set_connectivity(self, w):
+        """
+        Parameters
+        ----------
+        w: ndarray
+           Rectangular connectivity matrix: Npops x Nneurons. If w[i,j]
+           is non zero, than neuron j projects to population i.
+        """
+        self.conn_mats = [ [ (w[to_pop_slice, from_pop_slice])
+                             for from_pop_slice in self.pop_slices ]
+                           for to_pop_slice in self.pop_slices ]
+            #nonzero returns a tuple (one element per dimension - here there is only one dimension)
+            #so we need to index with [0] to have just the array of non-zero columns
 
     def initialize(self, init_data=None):
         """
@@ -1851,14 +1909,14 @@ class Spiketrain(ConvolveMixin, History):
         '''
         if shim.istype(key, 'int') or shim.istype(key, 'float'):
             tidx = self.get_t_idx(key)
-            return self._data[tidx]
+            return self._data.tocsr()[tidx].todense().A
 
         elif isinstance(key, slice):
             start = None if key.start is None else self.get_t_idx(key.start)
             stop  = None if key.stop  is None else self.get_t_idx(key.stop)
             step  = None if key.step  is None else self.index_interval(key.step)
 
-            return shim.asarray(self._data.tocsr()[slice(start, stop, step)].todense())
+            return self._data.tocsr()[slice(start, stop, step)].todense().A
                 # We convert to csr to allow slicing. This is cheap and keeps a
                 # sparse representation
                 # Converting to dense after the slice avoids allocating a huge
@@ -1874,10 +1932,9 @@ class Spiketrain(ConvolveMixin, History):
         '''Add to each neuron specified in `value` the spiketime `tidx`.
         Parameters
         ----------
-        tidx: int, float
-            The time index of the spike(s). This is converted
-            to actual time and saved.
-            Can optionally also be a float, in which case no conversion is made.
+        tidx: int, float or 1D array of int, float
+            The time index of the spike(s). Can optionally also be a float,
+            in which case it is converted to the corresponding bin.
             Should not correspond to more than one bin ahead of _cur_tidx.
         neuron_idcs: iterable
             List of neuron indices that fired in this bin.
@@ -1886,20 +1943,51 @@ class Spiketrain(ConvolveMixin, History):
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))
 
+        neuron_idcs = shim.asarray(neuron_idcs)
+        if neuron_idcs.ndim == 0:
+            raise ValueError("Indices of neurons to update must be given as an array.")
+
         newidx = self.get_t_idx(tidx)
+        if shim.isscalar(newidx):
+            latestidx = newidx
+            if neuron_idcs.ndim > 1:
+                raise ValueError("Indices of neurons to update specified as a {}d array. "
+                                 "Flatten the array before passing to `update`"
+                                 .format(neuron_idcs.ndim))
+        else:
+            latestidx = shim.max(newidx)
+            if neuron_idcs.ndim == 1:
+                raise ValueError("You are attempting to update a range of time points, "
+                                 "but specified the indices of neurons to update as only "
+                                 "a 1d array. It must be 2d, where the first axis is time.")
+            elif neuron_idcs.ndim > 2:
+                raise ValueError("Indices of neurons to update specified as a {}d array. "
+                                 "Flatten the array before passing to `update`"
+                                 .format(neuron_idcs.ndim))
         if not shim.is_theano_variable(newidx):
             assert(newidx <= self._original_tidx.get_value() + 1)
-        neuron_idcs = shim.asarray(neuron_idcs)
+            if newidx.ndim > 0:
+                assert(newidx.shape[0] == neuron_idcs.shape[0])
 
-        onevect = shim.ones(neuron_idcs.shape)
+        onevect = shim.ones(neuron_idcs.shape, dtype='int8')
             # vector of ones of the same length as the number of units which fired
-        self._data.data = shim.concatenate((self._data.data, onevect))
-        self._data.col = shim.concatenate((self._data.col, neuron_idcs))
-        self._data.row = shim.concatenate((self._data.row, tidx*onevect))
+        self._data.data = shim.concatenate((self._data.data, onevect.flatten()))
+            # Add as many 1 entries as there are new spikes
+        self._data.col = shim.concatenate((self._data.col, neuron_idcs.flatten()))
+            # Assign those spikes to neurons (col idx corresponds to neuron index)
+        self._data.row = shim.concatenate((self._data.row,
+                                           (shim.add_axes(tidx, 1, 'after')*onevect).flatten()))
+            # Assign the spike times (row idx corresponds to time index)
 
         # Set the cur_idx. If tidx was less than the current index, then the latter
         # is *reduced*, since we no longer know whether later history is valid.
-        self._cur_tidx = newidx
+        if not shim.is_theano_object(self._cur_tidx, latestidx):
+            if latestidx < self._cur_tidx.get_value():
+                logger.warning("Moving the current time index of a Spiketrain "
+                               "backwards. Invalidated data is NOT cleared.")
+            self._cur_tidx.set_value( latestidx )
+        else:
+            self._cur_tidx = latestidx
         if shim.is_theano_variable(self._original_tidx):
             shim.add_update(self._original_tidx, self._cur_tidx)
         else:
@@ -1989,7 +2077,7 @@ class Spiketrain(ConvolveMixin, History):
         '''Return the time convolution with the spike train, i.e.
             ∫ spiketimes(t - s) * kernel(s) ds
         with s ranging from -∞ to ∞  (normally there should be no spikes after t).
-
+        The result is a 1d array of length Nneurons.
         Since spikes are delta functions, effectively what we are doing is
         sum( kernel(t-s) for s in spiketimes )
 
@@ -2004,11 +2092,12 @@ class Spiketrain(ConvolveMixin, History):
 
         Returns
         -------
-        ndarray of shape 'npops' x 'npops'.
+        1d ndarray of length Nneurons.
             It is indexed as result[from pop idx][to pop idx]
 
+        FIXME: Need to keep contributions from each pop separate, by returning
+               a 2d ndarray of size Nneurons x Npops
         '''
-
 
         # The setup of slicing is copied from Series._convolve_op_single_t
         if kernel_slice.start == kernel_slice.stop:
@@ -2040,24 +2129,34 @@ class Spiketrain(ConvolveMixin, History):
         # 1) that sparse arrays are matrices, so * is actually matrix multiplication
         #    (which is why we use the `multiply` method)
         # 2) `multiply` only returns a sparse array if the argument is also 2D
+        #    (But sometimes still returns a dense array ?)
         # 3) that sparse arrays are always 2D, so A[0,0] is 2D, 1x1 matrix
+        # 4) The .A attribute of a matrix returns the underlying array
         if discretized_kernel.ndim == 2 and discretized_kernel.shape[0] == discretized_kernel.shape[1]:
             # 2D discretized kernel: each population feeds into every other with a different kernel
             shim.check(discretized_kernel.shape[0] == len(self.pop_sizes))
+            # TODO: remove useless asarray
             return shim.asarray(
-                shim.sparse.hstack (
-                    [ shim.sparse.vstack (
-                        [ hist_subarray[:,self.pop_slices[from_pop_idx]].multiply(
-                            discretized_kernel[kernel_slice][::-1, to_pop_idx, from_pop_idx:from_pop_idx+1] ).sum()
-                          for from_pop_idx in range(len(self.pop_sizes)) ] )
-                        for to_pop_idx in range(len(self.pop_sizes)) ] ).todense() )
+                np.concatenate (
+                    [ sum (
+                          self.conn_mats[to_pop_idx][from_pop_idx].dot(
+                            hist_subarray[:, self.pop_slices[from_pop_idx]].multiply(
+                                discretized_kernel[kernel_slice][::-1, to_pop_idx, from_pop_idx:from_pop_idx+1]
+                            ).sum(axis=0).A.T )  # .T makes a column vector
+                          for from_pop_idx in range(len(self.pop_sizes)) )[:,0] # column vec -> 1d array
+                      for to_pop_idx in range(len(self.pop_sizes)) ],
+                    axis = 0 ) )
 
         elif discretized_kernel.ndim == 1 and discretized_kernel.shape[0] == len(self.pop_sizes):
             # 1D discretized_kernel: populations only feed back into themselves
-            return shim.asarray( shim.sparse.vstack(
-                [ hist_subarray[:, self.pop_slices[from_pop_idx]].multiply(
-                    discretized_kernel[kernel_slice][::-1, from_pop_idx:from_pop_idx+1] )
-                  for from_pop_idx in range(len(self.pop_sizes)) ] ).todense() )
+            return shim.asarray( np.concatenate(
+                [ self.conn_mats[from_pop_idx][from_pop_idx].dot(
+                    hist_subarray[:, self.pop_slices[from_pop_idx]].multiply(
+                        discretized_kernel[kernel_slice][::-1, from_pop_idx:from_pop_idx+1]
+                    ).sum(axis=0).A.T  # .T makes a column vector
+                  )[:,0]  # column vec -> 1d array
+                  for from_pop_idx in range(len(self.pop_sizes)) ],
+                axis = 0 ) )
 
         else:
             raise NotImplementedError
@@ -2107,6 +2206,42 @@ class Spiketrain(ConvolveMixin, History):
             return result[0]
         else:
             return np.array(result)
+
+    # TODO: Implement pop_xxx functions as operator methods
+    #       This would involve also implementing operators which return a Spiketrain
+    def pop_add(self, neuron_term, summand):
+        if not shim.is_theano_object(neuron_term, summand):
+            assert(len(self.pop_slices) == len(summand))
+            return shim.concatenate([neuron_term[pop_slice] + sum_el
+                                    for pop_slice, sum_el in zip(self.pop_slices, summand)],
+                                    axis=0)
+        else:
+            raise NotImplementedError
+
+    def pop_radd(self, summand, neuron_term):
+        return self.pop_add(neuron_term, summand)
+
+    def pop_mul(self, neuron_term, multiplier):
+        if not shim.is_theano_object(neuron_term, multiplier):
+            assert(len(self.pop_slices) == len(multiplier))
+            return shim.concatenate([neuron_term[pop_slice] * mul_el
+                                    for pop_slice, mul_el in zip(self.pop_slices, multiplier)],
+                                    axis=0)
+        else:
+            raise NotImplementedError
+
+    def pop_rmul(self, multiplier, neuron_term):
+        return self.pop_mul(neuron_term, multiplier)
+
+    def pop_div(self, neuron_term, divisor):
+        if not shim.is_theano_object(neuron_term, divisor):
+            assert(len(self.pop_slices) == len(divisor))
+            return shim.concatenate( [ neuron_term[pop_slice] * div_el
+                                    for pop_slice, div_el in zip(self.pop_slices, divisor)],
+                                    axis = 0)
+        else:
+            raise NotImplementedError
+
 
 
 class Series(ConvolveMixin, History):
@@ -2434,20 +2569,28 @@ class Series(ConvolveMixin, History):
             raise ValueError("include_padding should be one of {}.".format(padding_vals))
 
         assert(self._cur_tidx.get_value() >= stop - 1)
+
         if component is None:
             #return self[start:stop]
             return self._data.get_value()[start:stop]
-        elif shim.istype(component, 'int'):
+        elif isinstance(component, int):
             #return self[start:stop, component]
             return self._data.get_value()[start:stop, component]
-        elif len(component) == 1:
-            #return self[start:stop, component[0]]
-            return self._data.get_value()[start:stop, component]
-        elif len(component) == 2:
-            #return self[start:stop, component[0], component[1]]
-            return self._data.get_value()[start:stop, component]
+        elif isinstance(component, collections.Iterable):
+            tslice = slice(start, stop)
+            idx = (tslice,) + tuple(component)
+            return self._data.get_value()[idx]
+        # elif len(component) == 1:
+        #     #return self[start:stop, component[0]]
+        #     return self._data.get_value()[start:stop, component]
+        # elif len(component) == 2:
+        #     #return self[start:stop, component[0], component[1]]
+        #     return self._data.get_value()[start:stop, component]
+        # else:
+        #     raise NotImplementedError("Really, you used more than 2 data dimensions in a series array ? Ok, well let me know and I'll implement that.")
         else:
-            raise NotImplementedError("Really, you used more than 2 data dimensions in a series array ? Ok, well let me know and I'll implement that.")
+            raise ValueError("Unrecognized series component '{}' of type '{}'"
+                             .format(component, type(component)))
 
     def set(self, source=None):
         """Set the entire series in one go. `source` may be an array, a

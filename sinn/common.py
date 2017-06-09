@@ -8,6 +8,7 @@ import os
 import sys
 import logging
 import logging.handlers
+from enum import IntEnum
 import numpy as np
 from collections import namedtuple, deque
 
@@ -17,20 +18,32 @@ from . import config
 #import sinn.config as config
 import sinn.diskcache as diskcache
 
+#########################
 # Configure logger
-# See e.g. https://docs.python.org/3/howto/logging-cookbook.html
+
+# Add custom logger levels
+# https://stackoverflow.com/a/22586200
+class DebugLevels(IntEnum):
+    MONITOR = 17
+
+class SinnLogger(logging.getLoggerClass()):
+    def __init__(self, name, level=logging.NOTSET):
+        super().__init__(name, level)
+        logging.addLevelName(DebugLevels.MONITOR, "MONITOR")
+
+    def monitor(self, msg, *args, **kwargs):
+        if self.isEnabledFor(DebugLevels.MONITOR):
+            self._log(DebugLevels.MONITOR, msg, args, **kwargs)
+
+logging.setLoggerClass(SinnLogger)
+    # Make sure that the logger class is set before constructing
+    # any logging instance
+
+# Create logging instance for this module
 logger = logging.getLogger('sinn')
-# logger.setLevel(config.logLevel)
-# _fh = logging.handlers.RotatingFileHandler(
-#       os.path.basename(sys.argv[0]) + ".sinn.log", mode='a', maxBytes=5e7, backupCount=5)
-#     # ~50MB log files, keep at most 5
-# _fh.setLevel(logging.DEBUG)
-# _ch = logging.StreamHandler()
-# _ch.setLevel(logging.WARNING)
-# _fh.setFormatter(config.logging_formatter)
-# _ch.setFormatter(config.logging_formatter)
-# logger.addHandler(_fh)
-# logger.addHandler(_ch)
+
+###########################
+# Utility functions
 
 def clip_probabilities(prob_array,
                        min_prob = np.sqrt(config.abs_tolerance),
@@ -45,15 +58,23 @@ def clip_probabilities(prob_array,
 
 def isclose(a, b, rtol=None, atol=None, equal_nan=False):
     """Wrapper around numpy.isclose, which uses the sinn.config tolerances."""
-    if rtol is None:
-        rtol = config.rel_tolerance  # floatX precision
-    if atol is None:
-        atol = config.abs_tolerance  # floatX precision
-    return np.isclose(a, b, config.rel_tolerance, config.abs_tolerance, equal_nan)
+    if shim.is_theano_object(a, b):
+        logger.warning("Called `sinn.isclose` on a Theano object. This always returns True.")
+        return True
+    else:
+        if rtol is None:
+            rtol = config.rel_tolerance  # floatX precision
+        if atol is None:
+            atol = config.abs_tolerance  # floatX precision
+        return np.isclose(a, b, config.rel_tolerance, config.abs_tolerance, equal_nan)
 
 def ismultiple(x, base, rtol=None, atol=None):
     """Returns True if `x` is a multiple of `base`, up to the given numerical precision."""
-    return isclose(shim.round(x/base) - x/base, 0, rtol, atol)
+    if shim.is_theano_object(x, base):
+        logger.warning("Called `sinn.ismultiple` on a Theano object. This always returns True.")
+        return True
+    else:
+        return isclose(shim.round(x/base) - x/base, 0, rtol, atol)
 
 def add_sibling_input(sibling, new_input):
     # TODO Move to Graph class

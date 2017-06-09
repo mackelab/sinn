@@ -129,6 +129,14 @@ def subsample(series, amount):
 # ==================================
 # Plotting
 
+def cleanname(_name):
+    s = _name.strip('$')
+    # wrap underscored elements with brackets
+    s_els = s.split('_')
+    s = s_els[0] + ''.join(['_{' + el + '}' for el in s_els[1:]])
+    # wrap the whole string in brackets, to allow underscore with component
+    return '{' + s + '}'
+
 def plot(data, **kwargs):
     """
     Parameters
@@ -143,36 +151,80 @@ def plot(data, **kwargs):
         These will be forwarded to the underlying plotting function;
         all are optional. The following keywords are preprocessed:
         - `label`
+          Defined for: Series
           Can be specified as a single string or a list of strings.
           In the former case, a subscript is added to indicate components;
           in the latter,  strings are used as-is and the list should be of
           the same length as the number of components.
           If not specified, the data's `name` attribute is used, with
           components indicated as a subscript.
+        - `component`
+          Defined for: Series
+          Restrict plotting to the specified components.
+          TODO: Implement for Heatmap
     Returns
     -------
     A list of the created axes.
     """
 
-    if isinstance(data, histories.Series):
+    if isinstance(data, np.ndarray):
+        comp_list = kwargs.pop('component', None)
+        label = kwargs.pop('label', None)
+
+        if comp_list is None:
+            if len(data.shape) > 1:
+                comp_list = list( itertools.product(*[range(s) for s in data.shape[1:]]) )
+        else:
+            # Component list must be a list of tuples
+            if not isinstance(comp_list, collections.Iterable):
+                comp_list = [(comp_list,)]
+            elif not isinstance(comp_list[0], collections.Iterable):
+                if isinstance(comp_list, list):
+                    comp_list = [tuple(c) for c in comp_list]
+                elif isinstance(comp_list, tuple):
+                    comp_list = [comp_list]
+                else:
+                    comp_list = [tuple(c) for c in comp_list]
+
+        if len(comp_list) is not None:
+            if label is None or isinstance(label, str):
+                name = label if label is not None else "y"
+                # Loop over the components
+                if len(comp_list) > 1:
+                    labels = [ "${}_{{{}}}$".format(cleanname(name), str(comp).strip('(),'))
+                               for comp in comp_list ]
+                else:
+                    labels = [ "${}$".format(cleanname(data.name)) ]
+            else:
+                assert(isinstance(label, collections.Iterable))
+                labels = label
+
+        ax = plt.gca()
+        # Loop over the components, plotting each separately
+        # Plotting separately allows to assign a label to each
+        for comp, label in zip(comp_list, labels):
+            idx = (slice(None),) + comp
+            plt.plot(np.arange(len(data)), data[idx], label=label, **kwargs)
+        return ax
+
+    elif isinstance(data, histories.Series):
         if data.use_theano:
             assert(hasattr(data, 'compiled_history'))
             if data.compiled_history is None:
                 raise ValueError("You need to compile a Theano history before plotting it.")
             data = data.compiled_history
 
+        comp_list = kwargs.pop('component', None)
+        if comp_list is None:
+            comp_list = list( itertools.product(*[range(s) for s in data.shape]) )
+        else:
+            if not isinstance(comp_list, collections.Iterable):
+                comp_list = [comp_list]
+
         label = kwargs.pop('label', None)
-        comp_list = list( itertools.product(*[range(s) for s in data.shape]) )
         if label is None or isinstance(label, str):
             name = label if label is not None else data.name
             # Loop over the components
-            def cleanname(_name):
-                s = _name.strip('$')
-                # wrap underscored elements with brackets
-                s_els = s.split('_')
-                s = s_els[0] + ''.join(['_{' + el + '}' for el in s_els[1:]])
-                # wrap the whole string in brackets, to allow underscore with component
-                return '{' + s + '}'
             if len(comp_list) > 1:
                 labels = [ "${}_{{{}}}$".format(cleanname(name), str(comp).strip('(),'))
                            for comp in comp_list ]
@@ -221,6 +273,10 @@ def plot(data, **kwargs):
 
         return ax, cb
 
+    else:
+        logger.warning("Plotting of {} data is not currently supported."
+                       .format(type(data)))
+
 def plot_stddev_ellipse(data, width, **kwargs):
     """
     Add an ellipse to a plot denoting a heatmap's spread. This function
@@ -246,7 +302,7 @@ def plot_stddev_ellipse(data, width, **kwargs):
     color = kwargs.pop('color', None)
     if color is None:
         color_scheme = color_schemes.cmaps[data.cmap]
-        color = color_scheme.accent2  # Leave more salient accent1 for user
+        color = color_scheme.accents[1]  # Leave more salient accents[0] for user
     e = mpl.patches.Ellipse(xy=data.mean(), width=w, height=h,
                             angle=np.arctan2(eigvecs[0][1], eigvecs[0][0]),
                             fill=False, color=color)

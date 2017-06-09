@@ -50,14 +50,18 @@ def checkcache(init):
 # No cache decorator for generic kernels: f might be changed after the initialization,
 # and any kernel with f=None might hit the same cache.
 class Kernel(ConvolveMixin, ParameterMixin, com.KernelBase):
-    """Generic Kernel class. All kernels should derive from this.
+    """
+    WARNING: Currently the `shape` is not used as below, but should simply be
+    the shape of the result after application of the kernel.
+
+    Generic Kernel class. All kernels should derive from this.
     Kernels associated to histories with shape (M,) should have shape (M,M),
     with indexing following kernel[to idx][from idx]. (See below for caveats.)
 
     Derived kernels must implement `_eval_f`. They should NOT implement `eval`.
     They should probably also implement `__init__` and `_convolve_single_t`.
 
-    IMPORTANT OPTIMIZATION NOTE:
+    Optimization note:
     If you only need the diagonal of the kernel (because it only depends
     on the 'from' population), then it doesn't need to be MxM. Typical
     options then for the 'shape':
@@ -119,6 +123,9 @@ class Kernel(ConvolveMixin, ParameterMixin, com.KernelBase):
             #    raise ValueError("The result of kernel functions should be "
             #                     "2-dimensional (1 or both of which may be flat.")
 
+        assert(memory_time is not None)
+        self.memory_time = memory_time
+
         self.evalndim = self.eval(0).ndim
             # even with a Theano function, this returns a Python scalar
 
@@ -134,9 +141,7 @@ class Kernel(ConvolveMixin, ParameterMixin, com.KernelBase):
                                 "The kernel's output has shape {}, but "
                                 "you've set it to be reshaped to {}."
                                 .format(self.eval(0).shape, self.shape))
-        # TODO: add set_eval method, and make memory_time optional here
-        assert(memory_time is not None)
-        self.memory_time = memory_time
+        # TODO: add set_eval method
 
     def get_parameter_subset(self, params):
         """Given a set of parameters, return the subset which applies
@@ -145,6 +150,11 @@ class Kernel(ConvolveMixin, ParameterMixin, com.KernelBase):
         return sinn.get_parameter_subset(self, params)
 
     def eval(self, t, from_idx=slice(None,None)):
+        """
+        Returns 0 for t < t0 or t >= t0 + memory_time.
+        The asymmetric bounds ensure that if e.g. memory_time = 4Δt,
+        than exactly 4 time bins will have a non-zero value.
+        """
         if not shim.isscalar(t):
             tshape = t.shape
             #t = shim.add_axes(t, self.params[0].ndim-1, 'right')
@@ -153,9 +163,16 @@ class Kernel(ConvolveMixin, ParameterMixin, com.KernelBase):
                 t = shim.add_axes(t, self.evalndim - 1, 'right')
             else:
                 t = shim.add_axes(t, self.evalndim, 'right')
+            final_shape, _ = self.get_final_shape(tshape)
+            return shim.switch(shim.and_(shim.ge(t, self.t0), shim.lt(t, self.t0+self.memory_time)),
+                               self.shape_output(self._eval_f(t, from_idx), tshape),
+                               np.zeros(final_shape))
         else:
             tshape = ()
-        return self.shape_output(self._eval_f(t, from_idx), tshape)
+            final_shape, _ = self.get_final_shape(tshape)
+            return shim.ifelse(shim.and_(shim.ge(t, self.t0), shim.lt(t, self.t0+self.memory_time)),
+                               self.shape_output(self._eval_f(t, from_idx), tshape),
+                               np.zeros(final_shape))
 
     def theano_reset(self):
         """Make state clean for building a new Theano graph.
@@ -179,7 +196,7 @@ class Kernel(ConvolveMixin, ParameterMixin, com.KernelBase):
     def _convolve_op_single_t(self, hist, t, kernel_slice):
         return hist._convolve_op_single_t(self, t, kernel_slice)
 
-    def shape_output(self, output, tshape):
+    def get_final_shape(self, tshape):
         if not shim.is_theano_object(tshape):
             assert(isinstance(tshape, tuple))
         # tshape is expected to be a tuple, but could be a Theano object
@@ -207,6 +224,10 @@ class Kernel(ConvolveMixin, ParameterMixin, com.KernelBase):
             # ndim = shim.ifelse( shim.eq(tshapearr.shape[0], 0),
             #                     len(self.shape),
             #                     1 + len(self.shape) )
+        return final_shape, ndim
+
+    def shape_output(self, output, tshape):
+        final_shape, ndim = self.get_final_shape(tshape)
         return shim.reshape(output, final_shape, ndim=ndim)
 
     # TODO Deprecate the following
@@ -407,8 +428,16 @@ class ExpKernel(Kernel):
         elif self.last_conv is not None and self.last_hist is hist:
             if t > self.last_t:
                 Δt = t - self.last_t
-                result = ( self.shape_output(shim.exp(-hist.time_interval(Δt)/self.params.decay_const), ())
-                           * self.last_conv
+                # Compute the amount left from the cache
+                reduction_factor =  self.shape_output(shim.exp(-hist.time_interval(Δt)/self.params.decay_const), ())
+                if hasattr(hist, 'pop_rmul'):
+                    # FIXME The convolution needs to keep separate contributions from the different pops
+                    reduced_cache = hist.pop_rmul(reduction_factor, self.last_conv)
+                else:
+                    reduced_cache = reduction_factor * self.last_conv
+
+                # Add the convolution over the new time interval which is not cached
+                result = ( reduced_cache
                            + hist.convolve(self, t,
                                            slice(hist.index_interval(self.memory_blind_time),
                                                  hist.index_interval(self.memory_blind_time + Δt))) )

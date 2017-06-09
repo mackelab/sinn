@@ -161,7 +161,7 @@ class GLM_exp_kernel(Model):
     def loglikelihood(self, start=None, stop=None):
 
         hist_type_msg = ("To compute the loglikelihood, you need to use a NumPy "
-                            "history for the {}, or compile the history beforehand.")
+                         "history for the {}, or compile the history beforehand.")
         if self.A.use_theano:
             if self.A.compiled_history is None:
                 raise RuntimeError(hist_type_msg.format("activity"))
