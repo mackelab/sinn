@@ -7,7 +7,6 @@ Author: Alexandre René
 import os
 import sys
 import logging
-import logging.handlers
 from enum import IntEnum
 import numpy as np
 from collections import namedtuple, deque
@@ -23,21 +22,36 @@ import sinn.diskcache as diskcache
 
 # Add custom logger levels
 # https://stackoverflow.com/a/22586200
-class DebugLevels(IntEnum):
+class LoggingLevels(IntEnum):
     MONITOR = 17
 
 class SinnLogger(logging.getLoggerClass()):
     def __init__(self, name, level=logging.NOTSET):
         super().__init__(name, level)
-        logging.addLevelName(DebugLevels.MONITOR, "MONITOR")
+        logging.addLevelName(LoggingLevels.MONITOR, "MONITOR")
 
     def monitor(self, msg, *args, **kwargs):
-        if self.isEnabledFor(DebugLevels.MONITOR):
-            self._log(DebugLevels.MONITOR, msg, args, **kwargs)
+        if self.isEnabledFor(LoggingLevels.MONITOR):
+            self._log(LoggingLevels.MONITOR, msg, args, **kwargs)
 
 logging.setLoggerClass(SinnLogger)
     # Make sure that the logger class is set before constructing
     # any logging instance
+
+_msg_queue = deque()
+def log_queue(logfn, msg):
+    # TODO: use log level string and/or number instead of function
+    """Add a log message to the stack. If the same message is already
+    present, it is not added again."""
+    global _msg_queue
+    if (logfn, msg) not in _msg_queue:
+        _msg_queue.append( (logfn, msg) )
+
+def flush_log_queue():
+    global _msg_queue
+    while len(_msg_queue) > 0:
+        logfn, msg = _msg_queue.popleft()
+        logfn(msg)
 
 # Create logging instance for this module
 logger = logging.getLogger('sinn')
@@ -50,8 +64,13 @@ def clip_probabilities(prob_array,
                        max_prob = 1-np.sqrt(config.abs_tolerance)):
     # For float64 variables, we should clip at least 1e-8 away from the bounds
     if not config.use_theano():
-        if np.any(prob_array > max_prob) or np.any(prob_array < min_prob):
-            logger.warning("Some probabilities were clipped.")
+        if np.any(prob_array > 1) or np.any(prob_array < 1):
+            log_queue(logger.warning, "Some probabilities were clipped.")
+        elif np.any(prob_array > max_prob) or np.any(prob_array < min_prob):
+            log_queue(logger.debug,
+                      "Some valid probabilities were clipped for being "
+                      "too close to 0 or 1.")
+
     return shim.clip(prob_array, min_prob, max_prob)
         # Clipping a little bit within the interval [0,1] avoids problems
         # with likelihoods (which tend to blow up when p = 0 or 1)

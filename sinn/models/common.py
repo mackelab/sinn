@@ -158,9 +158,11 @@ class Model(com.ParameterMixin):
         The `locked` attribute of histories is used to determine whether
         they need to be recomputed.
         """
-        assert(all( type(param.get_value()) == type(new_param)
+        def gettype(param):
+            return type(param.get_value()) if shim.isshared(param) else type(param)
+        assert(all( gettype(param) == gettype(new_param)
                     for param, new_param in zip(self.params, new_params) ))
-        logger.info("Model params are now {}. Updating kernels...".format(self.params))
+        logger.monitor("Model params are now {}. Updating kernels...".format(self.params))
 
         # HACK Make sure sinn.inputs and models.history_inputs coincide
         sinn.inputs.union(self.history_inputs)
@@ -193,13 +195,13 @@ class Model(com.ParameterMixin):
                         if hash(kernel) in op.cache:
                             diskcache.save(op.cache[hash(kernel)])
                             # TODO subclass op[other] and define __hash__
-                            logger.info("Removing cache for binary op {} ({},{}) from heap."
+                            logger.monitor("Removing cache for binary op {} ({},{}) from heap."
                                         .format(str(op), obj.name, kernel.name))
                             del op.cache[hash(kernel)]
 
         for kernel in kernels_to_update:
             diskcache.save(kernel)
-            logger.info("Updating kernel {}.".format(kernel.name))
+            logger.monitor("Updating kernel {}.".format(kernel.name))
             kernel.update_params(self.params)
 
         self.clear_unlocked_histories()
@@ -231,7 +233,7 @@ class Model(com.ParameterMixin):
         # disk, because histories are data structures: there's no way of knowing
         # if they're equivalent to some already computed case other than comparing
         # the entire data.
-        logger.info("Clearing history " + history.name)
+        logger.monitor("Clearing history " + history.name)
         history.clear()
         if history in self.history_inputs.union(sinn.inputs):
             for obj in list(self.history_inputs) + self.kernel_list:
@@ -245,6 +247,53 @@ class Model(com.ParameterMixin):
                         logger.error("Uncached history {} is member of cached "
                                      "op {}. This may indicate a memory leak."
                                      .format(history.name, str(op)))
+
+    def get_loglikelihood(self, *args, **kwargs):
+
+        # Sanity check – it's easy to forget to clear histories in an interactive session
+        uncleared_histories = []
+        # HACK Shouldn't need to combine sinn.inputs
+        # TODO Make separate function, so that it can be called within loglikelihood instead
+        for hist in self.history_inputs.union(sinn.inputs):
+            if ( not hist.locked and ( ( hist.use_theano and hist.compiled_history is not None
+                                         and hist.compiled_history._cur_tidx.get_value() >= hist.t0idx )
+                                       or (not hist.use_theano and hist._cur_tidx.get_value() >= hist.t0idx) ) ):
+                uncleared_histories.append(hist)
+        if len(uncleared_histories) > 0:
+            raise RuntimeError("You are trying to produce a cost function graph, but have "
+                               "uncleared histories. Either lock them (with their .lock() "
+                               "method) or clear them (with their individual .clear() method "
+                               "or the model's .clear_unlocked_histories() method). The latter "
+                               "will delete data.\nUncleared histories: "
+                               + str([hist.name for hist in uncleared_histories]))
+
+        if sinn.config.use_theano():
+            # TODO Precompile function
+            def likelihood_f(model):
+                if 'loglikelihood' not in self.compiled:
+                    import theano
+                    self.theano_reset()
+                        # Make clean slate (in particular, clear the list of inputs)
+                    logL = model.loglikelihood(*args, **kwargs)
+                        # Calling logL sets the sinn.inputs, which we need
+                        # before calling get_input_list
+                    # DEBUG
+                    # with open("logL_graph", 'w') as f:
+                    #     theano.printing.debugprint(logL, file=f)
+                    input_list, input_vals = self.get_input_list()
+                    self.compiled['loglikelihood'] = {
+                        'function': theano.function(input_list, logL,
+                                                    on_unused_input='warn'),
+                        'inputs'  : input_vals }
+                    self.theano_reset()
+
+                return self.compiled['loglikelihood']['function'](
+                    *self.compiled['loglikelihood']['inputs'] )
+                    # * is there to expand the list of inputs
+        else:
+            def likelihood_f(model):
+                return model.loglikelihood(*args, **kwargs)
+        return likelihood_f
 
     def make_loglikelihood_binomial(self, n, N, p, approx=None):
         """
@@ -302,11 +351,13 @@ class Model(com.ParameterMixin):
             if shim.isshared(p_arr):
                 p_arr = p_arr.get_value()
 
+            p_arr = sinn.clip_probabilities(p_arr)
+
             if not shim.is_theano_object(n_arr_floats):
                 assert(sinn.ismultiple(n_arr_floats, 1).all())
             n_arr = shim.cast(n_arr_floats, 'int32')
 
-            # loglikelihood: -log n! - log (N-n)! + n log p + (N-n) log (1-p) + cst
+            #loglikelihood: -log n! - log (N-n)! + n log p + (N-n) log (1-p) + cst
 
             if approx == 'low p':
                 # We use the Stirling approximation for the second log

@@ -21,3 +21,10 @@
   - Cannot update to past t
 * TODO Attach list of inputs to history
 * TODO Don't allow negative integer indices for histories
+* TODO [Spiketrain] Attach connectivity matrix to kernel, not spiketrain
+** Will need to figure out how to expand the connectivity matrix
+   Possibly something like the 'discretize' pattern, where it is attached to the kernel ?
+* TODO [History] Allow to specify no. of bins in __init__, instead of t0 & tn
+* TODO [History] Detect when name is reused, and add suffix.
+* FIXME [History] Compound operations don't work. E.g. : (A-a) * (B-b), with A,B histories.
+* FIXME [Analyze.plot] History names/labels with multiple underscores break if we try to plot legend

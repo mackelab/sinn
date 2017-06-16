@@ -696,7 +696,9 @@ em
         before = before_idx_len * self.dt
         after = after_idx_len * self.dt
 
-        before_array = np.arange(self.t0 - before, self._tarr[0], self.dt)
+        before_array = np.arange(self.t0 - before,
+                                 self._tarr[0] - config.abs_tolerance,
+                                 self.dt)
         after_array = np.arange(self._tarr[-1] + self.dt - config.abs_tolerance,
                                 self.tn + self.dt - config.abs_tolerance + after,
                                 self.dt)
@@ -1290,19 +1292,22 @@ em
         # We need to be careful here, because time_array could be empty, and then
         # indexing it with time_array[0] or time_array[-1] would trigger an error
         empty_array = shim.eq( shim.min(time_array.shape), 0 )
+        # An array of size 1 would still fail on time_array[1]
+        singleton_array = shim.le( shim.min(time_array.shape), 1 )
 
-        if not shim.is_theano_object(time_array):
+        if ( not shim.is_theano_object(time_array)
+             and not singleton_array ):
             assert(abs(time_array[1] - time_array[0]) >= self.dt - sinn.config.abs_tolerance)
 
-        step = shim.ifelse(empty_array,
+        step = shim.ifelse(singleton_array,
                            self.dt,
-                           time_array[1] - time_array[0])
+                           shim.LazyEval(lambda: time_array[1] - time_array[0]))
                            #shim.largest(time_array[1] - time_array[0], self.dt))
 
         idxstart = shim.ifelse(empty_array,
                                shim.cast(0, dtype=self._cur_tidx.dtype),
                                self.get_t_idx(time_array[0]))
-        if not shim.is_theano_object(time_array) and len(time_array) > 1:
+        if not shim.is_theano_object(time_array) and not singleton_array:
             # Check that time_array is evenly spaced
             assert(np.all(sinn.ismultiple(time_array[1:] - time_array[:-1], step)))
 
@@ -1819,6 +1824,7 @@ class Spiketrain(ConvolveMixin, History):
         # data was wrapped with a scalar array then further with shim.shared.
         # This line recovers the original
         retval._data = retval._data.get_value()[()]
+        return retval
 
     def set_connectivity(self, w):
         """
@@ -2014,7 +2020,7 @@ class Spiketrain(ConvolveMixin, History):
                                           shape = newshape )
 
     def set(self, source=None, tslice=None):
-        """Set the entire set of spiketimes in one go. `source` may be a list of arrays, a
+        """Set the entire spiketrain in one go. `source` may be a list of arrays, a
         function, or even another History instance. It's useful for
         example if we've already computed history by some other means,
         or we specified it as a function (common for inputs).
@@ -2149,12 +2155,12 @@ class Spiketrain(ConvolveMixin, History):
 
         elif discretized_kernel.ndim == 1 and discretized_kernel.shape[0] == len(self.pop_sizes):
             # 1D discretized_kernel: populations only feed back into themselves
+            # HACK: Just removed connectivity matrix altogether
             return shim.asarray( np.concatenate(
-                [ self.conn_mats[from_pop_idx][from_pop_idx].dot(
+                [
                     hist_subarray[:, self.pop_slices[from_pop_idx]].multiply(
                         discretized_kernel[kernel_slice][::-1, from_pop_idx:from_pop_idx+1]
-                    ).sum(axis=0).A.T  # .T makes a column vector
-                  )[:,0]  # column vec -> 1d array
+                    ).sum(axis=0).A[0, :]  # row vec -> 1d array
                   for from_pop_idx in range(len(self.pop_sizes)) ],
                 axis = 0 ) )
 
@@ -2236,7 +2242,7 @@ class Spiketrain(ConvolveMixin, History):
     def pop_div(self, neuron_term, divisor):
         if not shim.is_theano_object(neuron_term, divisor):
             assert(len(self.pop_slices) == len(divisor))
-            return shim.concatenate( [ neuron_term[pop_slice] * div_el
+            return shim.concatenate( [ neuron_term[pop_slice] / div_el
                                     for pop_slice, div_el in zip(self.pop_slices, divisor)],
                                     axis = 0)
         else:
@@ -2573,7 +2579,7 @@ class Series(ConvolveMixin, History):
         if component is None:
             #return self[start:stop]
             return self._data.get_value()[start:stop]
-        elif isinstance(component, int):
+        elif isinstance(component, (int, slice)):
             #return self[start:stop, component]
             return self._data.get_value()[start:stop, component]
         elif isinstance(component, collections.Iterable):
@@ -2618,6 +2624,11 @@ class Series(ConvolveMixin, History):
         -------
         This history instance
         """
+
+        if source is None and self._cur_tidx >= self.t0idx + len(self) - 1:
+            # Nothing to do
+            return
+
         if self.locked:
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))

@@ -122,6 +122,14 @@ class ConvolveMixin(CachedOperation):
         if not isinstance(kernel_slice[0], slice):
             raise ValueError("Kernel bounds must be specified as a slice.")
 
+        if shim.isarray(t):
+            # Convert time array to a scalar if possible, otherwise a slice
+            # assert(t.ndim == 1)
+            # if len(t) == 1:
+            #     t = t[0]
+            # else:
+            t = history.time_array_to_slice(t)
+
         if shim.isscalar(t):
             #tidx = self.get_t_idx(t)
             output_tidx = history.get_t_idx(t) - history.t0idx

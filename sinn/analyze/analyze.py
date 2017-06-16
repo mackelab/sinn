@@ -7,7 +7,7 @@ Created Tue Feb 21 2017
 author: Alexandre René
 """
 
-__all__ = ['smooth', 'subsample', 'plot', 'get_axes', 'get_axis_labels']
+__all__ = ['mean', 'diff', 'smooth', 'subsample', 'plot', 'get_axes', 'get_axis_labels']
 
 import logging
 import collections
@@ -36,6 +36,121 @@ ParameterAxis = com.ParameterAxis
 
 # ==================================
 # Data manipulation
+
+def mean(hist, pop_slices=None, **kwargs):
+    """
+    Compute the time-dependent mean, by applying `np.mean` to every time slice
+    of `hist`.
+
+    Parameters
+    ----------
+    hist: History
+
+    pop_slices: list of slices
+        (Optional) If specified, timeslices are subdivided with theses slices
+        and the mean is computed for each slice separately.
+        TODO: 2d pop_slices ?
+
+    **kwargs:
+        Forwarded to `np.mean`. Can be use e.g. to limit the mean to one axis.
+
+    Returns
+    -------
+    History, of same length as hist.
+    """
+    if pop_slices is not None:
+        res_data = np.stack(
+                       [ np.stack( [ np.mean(hist[i][pop_slice]) 
+                                     for pop_slice in pop_slices ] )
+                         for i in range(hist.t0idx, hist.t0idx + len(hist)) ] )
+    else:
+        res_data = np.stack( [ np.mean(hist[i], **kwargs)
+                               for i in range(hist.t0idx, hist.t0idx + len(hist)) ] )
+    res = histories.Series(hist, name = "<" + hist.name + ">",
+                           shape = res_data.shape[1:])
+    res.set( res_data )
+    return res
+
+def diff(hist, mode='centered'):
+    """
+    Compute the numerical derivative of `hist`
+
+    Parameters
+    ----------
+    hist: History
+        Any history, but only really makes sense for Series
+    mode: str
+        Determines the method used to compute the derivatie. One of
+        - 'centered' : Centered differences (default)
+           ( hist[l+1] - hist[l-1] ) / (2Δt)
+           This consumes two time bins and is O(Δt²).
+        - 'forward'  : Forward-difference
+           ( hist[l+1] - hist[l] ) / Δt
+           This consumes one time bin and is O(Δt)
+        - 'backward' : Backward-difference
+           ( hist[l] - hist[l-1] ) / Δt
+           This consumes one time bin and is O(Δt)
+
+    Returns
+    -------
+    Series
+       The length of the series will be slightly reduced by the number of bins
+       consumed by the differentiation method.
+    """
+
+    if mode == 'centered':
+        # Remove consumed bins, but only if there's no padding
+        if hist.t0idx >= 1:
+            t0 = hist.t0
+            startidx = hist.t0idx - 1
+        else:
+            t0 = hist.t0 + hist.dt
+            startidx = hist.t0idx
+        if len(hist._tarr) > hist.t0idx + len(hist):
+            tn = hist.tn
+            endidx = hist.t0idx + len(hist) + 1
+        else:
+            tn = hist.tn - hist.dt
+            endidx = hist.t0idx + len(hist)
+
+        res = Series(hist, name = "D " + hist.name,
+                     t0 = t0, tn = tn)
+        res.set( (hist[startidx+2:endidx] - hist[startidx:endidx-2]) / (2*hist.dt) )
+        return res
+
+    if mode == 'forward':
+        # Remove consumed bins, but only if there's no padding
+        t0 = hist.t0
+        startidx = hist.t0idx
+
+        if len(hist._tarr) > hist.t0idx + len(hist):
+            tn = hist.tn
+            endidx = hist.t0idx + len(hist) + 1
+        else:
+            tn = hist.tn - hist.dt
+            endidx = hist.t0idx + len(hist)
+
+        res = Series(hist, name = "D " + hist.name,
+                     t0 = t0, tn = tn)
+        res.set( (hist[startidx+1:endidx] - hist[startidx:endidx-1]) / (hist.dt) )
+        return res
+
+    if mode == 'backward':
+        # Remove consumed bins, but only if there's no padding
+        if hist.t0idx >= 1:
+            t0 = hist.t0
+            startidx = hist.t0idx - 1
+        else:
+            hist.t0 + hist.dt
+            startidx = hist.t0idx
+
+        tn = hist.tn
+        endidx = hist.t0idx + len(hist) + 1
+
+        res = histories.Series(hist, name = "D " + hist.name,
+                               t0 = t0, tn = tn)
+        res.set( (hist[startidx+1:endidx] - hist[startidx:endidx-1]) / (hist.dt) )
+        return res
 
 def smooth(series, amount=None, method='mean', **kwargs):
     """Smooth the `series` and return as another Series instance.
@@ -69,6 +184,7 @@ def smooth(series, amount=None, method='mean', **kwargs):
         else:
             raise ValueError("Cannot smooth a Theano array.")
     if method == 'mean':
+        # TODO: Don't move t0 or tn if there is enough padding
         assert(amount is not None)
         res = histories.Series(name = series.name + "_smoothed",
                                t0 = series.t0 + (amount-1)*series.dt/2,
@@ -90,6 +206,7 @@ def smooth(series, amount=None, method='mean', **kwargs):
 
 def subsample(series, amount):
     """Reduce the number of time bins by averaging over `amount` bins.
+    TODO: add mode parameter to allow bins being identified by their centre or end time
 
     Parameters
     ----------
@@ -123,7 +240,8 @@ def subsample(series, amount):
     data = series.get_trace()[:nbins*amount]
         # Slicing removes bins which are not commensurate with the subsampling factor
     t0idx = series.t0idx
-    res.set(np.sum(data[i : i+nbins*amount : amount] for i in range(amount)))
+    res.set(np.sum(data[i : i+nbins*amount : amount] for i in range(amount))/amount)
+        # Can't use np.mean on a generator
     return res
 
 # ==================================
@@ -167,6 +285,8 @@ def plot(data, **kwargs):
     A list of the created axes.
     """
 
+    # TODO: Collect repeated code
+
     if isinstance(data, np.ndarray):
         comp_list = kwargs.pop('component', None)
         label = kwargs.pop('label', None)
@@ -186,15 +306,15 @@ def plot(data, **kwargs):
                 else:
                     comp_list = [tuple(c) for c in comp_list]
 
-        if len(comp_list) is not None:
+        if comp_list is not None:
             if label is None or isinstance(label, str):
                 name = label if label is not None else "y"
                 # Loop over the components
-                if len(comp_list) > 1:
-                    labels = [ "${}_{{{}}}$".format(cleanname(name), str(comp).strip('(),'))
-                               for comp in comp_list ]
-                else:
-                    labels = [ "${}$".format(cleanname(data.name)) ]
+                #if len(comp_list) > 1:
+                labels = [ "${}_{{{}}}$".format(cleanname(name), str(comp).strip('(),'))
+                           for comp in comp_list ]
+                #else:
+                #    labels = [ "${}$".format(cleanname(data.name)) ]
             else:
                 assert(isinstance(label, collections.Iterable))
                 labels = label
@@ -225,11 +345,11 @@ def plot(data, **kwargs):
         if label is None or isinstance(label, str):
             name = label if label is not None else data.name
             # Loop over the components
-            if len(comp_list) > 1:
-                labels = [ "${}_{{{}}}$".format(cleanname(name), str(comp).strip('(),'))
-                           for comp in comp_list ]
-            else:
-                labels = [ "${}$".format(cleanname(data.name)) ]
+            #if len(comp_list) > 1:
+            labels = [ "${}_{{{}}}$".format(cleanname(name), str(comp).strip('(),'))
+                       for comp in comp_list ]
+            #else:
+            #    labels = [ "${}$".format(cleanname(data.name)) ]
         else:
             assert(isinstance(label, collections.Iterable))
             labels = label
