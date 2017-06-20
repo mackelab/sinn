@@ -51,13 +51,17 @@ em
         + compiled_history : (Theano histories only) Another History instance of same
                              type, where the update function graph has been compiled.
                              Create with `compile` method.
+                             NOTE: The compilation mechanism is expected to change
+                             in the future.
     The following methods are also guaranteed to be defined:
         + compile          : If the update function is a Theano graph, compile it
                              and attach the new history as `compiled_history`.
+                             NOTE: The compilation mechanism is expected to change
+                             in the future.
         + lock             : Set the locked status
     A History may also define
         + _compute_range   : Function taking an array of consecutive times and returning
-                             an array-like object of the histhttps://gist.github.com/Newmu/acb738767acb4788bac3ory at those times.
+                             an array-like object of the history at those times.
                              NOTE: It is important that the times be consecutive (no skipping)
                              and increasing, as some implementations assume this.
 
@@ -762,6 +766,13 @@ em
             self._cur_tidx = shim.largest(end, self._cur_tidx)
             return
 
+
+        if hasattr(self, '_computing'):
+            # We are already computing this history (with Theano). Assuming we are
+            # correctly only updating up to _original_tidx + 1, there is no need to
+            # recursively compute.
+            return
+
         if (not shim.is_theano_object(end, self._cur_tidx)
             and end <= self._cur_tidx):
             # Nothing to compute
@@ -826,6 +837,18 @@ em
                 # The order in which _update_function is called is flipped, putting
                 # later times first. This ensures that if dependent computations
                 # are triggered, they will also batch update.
+
+        elif shim.is_theano_object(tarr):
+            # For non-batch Theano evaluations, we only allow evaluating one time step ahead;
+            # here, we simply assume that that is the case.
+            # TODO: Throw error if stop is incorrectly higher than start
+            logger.monitor("Creating the Theano graph for {}.".format(self.name))
+
+            self._computing = True
+                # Temporary flag to prevent infinite recursions
+            self.update(stop, self._update_function(tarr[stop]))
+            del self._computing
+
         else:
             assert(not shim.is_theano_object(tarr))
             logger.monitor("Iteratively computing {} from {} to {}."
@@ -911,8 +934,14 @@ em
         Avoid it in code that is called repeatedly, unless you know that Δt is an index.
 
         FIXME: Make this work with array arguments
+
+        Returns
+        -------
+        Integer (int16)
         """
         if shim.istype(Δt, 'int'):
+            if not shim.istype(Δt, 'int16'):
+                Δt = shim.cast_int16( Δt )
             return Δt
         else:
             try:
@@ -2625,7 +2654,8 @@ class Series(ConvolveMixin, History):
         This history instance
         """
 
-        if source is None and self._cur_tidx >= self.t0idx + len(self) - 1:
+        if ( source is None
+             and self._cur_tidx.get_value() >= self.t0idx + len(self) - 1 ):
             # Nothing to do
             return
 

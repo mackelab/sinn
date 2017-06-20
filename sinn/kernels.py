@@ -163,16 +163,20 @@ class Kernel(ConvolveMixin, ParameterMixin, com.KernelBase):
                 t = shim.add_axes(t, self.evalndim - 1, 'right')
             else:
                 t = shim.add_axes(t, self.evalndim, 'right')
-            final_shape, _ = self.get_final_shape(tshape)
+            final_shape, ndim = self.get_final_shape(tshape)
+            res = self.shape_output(self._eval_f(t, from_idx), tshape)
             return shim.switch(shim.and_(shim.ge(t, self.t0), shim.lt(t, self.t0+self.memory_time)),
-                               self.shape_output(self._eval_f(t, from_idx), tshape),
-                               np.zeros(final_shape))
+                               res,
+                               shim.getT().zeros_like(res))
+                               #shim.zeros(final_shape, ndim=ndim))
         else:
             tshape = ()
-            final_shape, _ = self.get_final_shape(tshape)
+            final_shape, ndim = self.get_final_shape(tshape)
+            res = self.shape_output(self._eval_f(t, from_idx), tshape)
             return shim.ifelse(shim.and_(shim.ge(t, self.t0), shim.lt(t, self.t0+self.memory_time)),
-                               self.shape_output(self._eval_f(t, from_idx), tshape),
-                               np.zeros(final_shape))
+                               res,
+                               shim.getT().zeros_like(res))
+                               #shim.zeros(final_shape, ndim=ndim))
 
     def theano_reset(self):
         """Make state clean for building a new Theano graph.
@@ -333,7 +337,10 @@ class Kernel(ConvolveMixin, ParameterMixin, com.KernelBase):
 
 
 class ExpKernel(Kernel):
-    """An exponential kernel, of the form κ(s) = c exp(-(s-t0)/τ).
+    """
+    An exponential kernel, of the form κ(s) = c exp(-(s-t0)/τ).
+    NOTE: The way things are coded now, t_offset is considered fixed. I.e.,
+          one should not try to use this in a routine seeking to optimize t_offset.
     """
 
     Parameter_info = OrderedDict( ( ( 'height'     , (config.floatX, None, True) ),
@@ -377,19 +384,21 @@ class ExpKernel(Kernel):
         super().initialize(name, params, shape, memory_time=memory_time, t0=t0, **kwargs)
             # WARNING: Don't use params below here, only self.params
 
-
-        self.memory_blind_time = np.max(self.params.t_offset.get_value()) - t0
-        # self.memory_blind_time = ifelse( (params.t_offset == params.t_offset.flatten()[0]).all(),
-        #                                  (shim.asarray(params.t_offset) - t0).flatten()[0],
-        #                                  params.t_offset - t0 )
+        if shim.isshared(self.params.t_offset):
+            # If t_offset is a shared variable, grab its value.
+            t_offset = self.params.t_offset.get_value()
+        elif shim.is_computable([self.params.t_offset]):
+            # We can evaluate the parameter (it's likely a symbolic manipulation of a
+            # shared variable). This takes a few seconds, but returns a pure Python value
+            t_offset = self.params.t_offset.eval()
+        else:
+            # There's nothing we can do: t_offset must remain symbolic
+            t_offset = self.params.t_offset
+        self.memory_blind_time = shim.max(t_offset) - t0
             # When we convolve, the time window of length self.memory_blind_time before t0
             # is ignored (because the kernel is zero there), and therefore not included
             # in self.last_conv. So we need to extend the kernel slice by this much when
             # we reuse the cache data
-            # The ifelse is to treat the case where t_offset is a matrix (i.e. multiple populations).
-            # In this case, we want the blind time to be a scalar if they are all the same (more efficient),
-            # but we leave the result as a matrix if they differ. In the latter case, convolutions
-            # need to be calculated for each population separately and recombined.
 
         self.last_t = None     # Keep track of the last convolution time
         self.last_conv = None  # Keep track of the last convolution result

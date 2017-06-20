@@ -9,6 +9,13 @@ logger = logging.getLogger('sinn.config')
 integration_precision = 1
 truncation_ratio = 0.001
 
+debug_level = 2
+   # 0 - Turn off all optional tests and assertions
+   # 1 - Basic tests, which add minimal execution time
+   # 2 - Include tests using eval on Theano variables. This will slow execution
+   # 3 - Asserts are added to the Theano graph. This may prevent certain Theano optimizations
+   # NOTE: The debug_level is new, and only a few functions yet use it.
+
 disk_cache_file = ""
 
 # List of optional librairies we want to load.
