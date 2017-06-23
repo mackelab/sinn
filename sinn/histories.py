@@ -429,6 +429,7 @@ em
         elif isinstance(key, slice):
             return self._getitem_internal(key)
         elif shim.isarray(key):
+            # FIXME Empty arrays still go through the 'then' branch somehow
             return shim.ifelse(shim.eq(key.shape[0], 0),
                                self._original_data[0:0], # Empty time slice
                                self._getitem_internal(key))
@@ -441,6 +442,7 @@ em
         cases, like empty keys."""
 
         if shim.isscalar(key):
+
             key = self.get_t_idx(key)
                 # If `key` is a negative integer, returns as is
                 # If `key` is a negative float, returns a positive index integer
@@ -513,6 +515,7 @@ em
             #     key = slice(start, stop, step)
 
         elif shim.isarray(key):
+
             #TODO: treat case where this gives a stop at -1
             assert(key.ndim == 1)
             start = self.get_t_idx(key[0])
@@ -767,10 +770,16 @@ em
             return
 
 
+        # Theano HACK
         if hasattr(self, '_computing'):
             # We are already computing this history (with Theano). Assuming we are
             # correctly only updating up to _original_tidx + 1, there is no need to
             # recursively compute.
+            return
+        # Theano HACK
+        if self._cur_tidx != self._original_tidx:
+            # We have already changed the current index once - don't change it again.
+            # Again, this assumes that we are only updating up to _original_tidx + 1
             return
 
         if (not shim.is_theano_object(end, self._cur_tidx)
@@ -2684,7 +2693,9 @@ class Series(ConvolveMixin, History):
             if hasattr(source, 'shape'):
                 # Input specified as an array
                 if source.shape != tarr.shape + self.shape:
-                    raise ValueError("The given external input series does not match the dimensions of the history")
+                    raise ValueError("[Series.set] The given source series does not match the dimensions of this one.\n"
+                                     "Source shape: {}\nThis history's shape: {}."
+                                     .format(source.shape, tarr.shape + self.shape))
                 data = source
 
             else:
