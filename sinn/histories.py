@@ -855,7 +855,7 @@ em
 
             self._computing = True
                 # Temporary flag to prevent infinite recursions
-            self.update(stop, self._update_function(tarr[stop]))
+            self.update(end, self._update_function(tarr[end]))
             del self._computing
 
         else:
@@ -2692,7 +2692,8 @@ class Series(ConvolveMixin, History):
         else:
             if hasattr(source, 'shape'):
                 # Input specified as an array
-                if source.shape != tarr.shape + self.shape:
+                if ( not shim.is_theano_object(source.shape)
+                     and source.shape != tarr.shape + self.shape ):
                     raise ValueError("[Series.set] The given source series does not match the dimensions of this one.\n"
                                      "Source shape: {}\nThis history's shape: {}."
                                      .format(source.shape, tarr.shape + self.shape))
@@ -2717,10 +2718,19 @@ class Series(ConvolveMixin, History):
                                   ) from e  #.with_traceback(e.__traceback__)
 
             shim.check(data is not None)
-            shim.check(data.shape == self._data.get_value(borrow=True).shape)
-            shim.check(data.shape[0] == len(tarr))
+            if not shim.is_theano_object(data.shape):
+                shim.check(data.shape == self._data.get_value(borrow=True).shape)
+                shim.check(data.shape[0] == len(tarr))
+                self._data.set_value(data, borrow=True)
+            elif shim.isshared(data):
+                shim.check(data.get_value(borrow=True).shape == self._data.get_value(borrow=True).shape)
+                shim.check(data.get_value(borrow=True).shape[0] == len(tarr))
+                self._data = data
+            else:
+                # We can't check that source shape matches (it's a Theano variable),
+                # so we have to trust it
+                self._data = data
 
-            self._data.set_value(data, borrow=True)
 
         self._original_tidx.set_value(self.t0idx + len(tarr) - 1)
         self._cur_tidx = self._original_tidx
