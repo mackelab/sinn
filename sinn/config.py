@@ -80,8 +80,8 @@ def use_theano():
 precision_dict = {
     '32': {'abs': 1e-4,
            'rel': 1e-4},
-    '64': {'abs': 1e-12,
-           'rel': 1e-12}}
+    '64': {'abs': 1e-10,
+           'rel': 1e-8}}
 
 def get_tolerance(var, tol_type):
     """
@@ -116,6 +116,8 @@ def get_rel_tolerance(var):
 
 # TODO: Rewrite these functions so they always check the value of floatX
 #       That way we can change the cast precision by just changing floatX
+# TODO: Move floatX to shim
+
 
 def set_floatX(floatX_str = None):
     """
@@ -127,7 +129,7 @@ def set_floatX(floatX_str = None):
 
     if floatX_str is None:
         if 'theano' in librairies:
-            floatX = theano.config.floatX
+            floatX = shim.gettheano().config.floatX
             assert(floatX in ['float64', 'float32'])
             # if floatX == 'float32':
             #     cast_floatX = np.float32
@@ -143,7 +145,8 @@ def set_floatX(floatX_str = None):
                 floatX = 'float32'
     else:
         assert(floatX_str in ['float64', 'float32'])
-        theano.config.floatX = floatX_str
+        if 'theano' in librairies:
+            shim.gettheano().config.floatX = floatX_str
         floatX = floatX_str
 
     cast_floatX = lambda x: shim.cast(x, floatX)
