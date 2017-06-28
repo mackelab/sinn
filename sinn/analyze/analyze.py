@@ -45,6 +45,7 @@ def mean(hist, pop_slices=None, **kwargs):
     Parameters
     ----------
     hist: History
+        Can also be a plain numpy array
 
     pop_slices: list of slices
         (Optional) If specified, timeslices are subdivided with theses slices
@@ -80,7 +81,7 @@ def diff(hist, mode='centered'):
     hist: History
         Any history, but only really makes sense for Series
     mode: str
-        Determines the method used to compute the derivatie. One of
+        Determines the method used to compute the derivative. One of
         - 'centered' : Centered differences (default)
            ( hist[l+1] - hist[l-1] ) / (2Δt)
            This consumes two time bins and is O(Δt²).

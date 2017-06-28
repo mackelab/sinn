@@ -181,11 +181,15 @@ em
         hist: History instance
             Optional. If passed, will used this history's parameters as defaults.
         t0: float
-            Time at which the history starts
+            Time at which the history starts.
         tn: float
-            Time at which the history ends
+            Time at which the history ends.
         dt: float
-            Timestep
+            Timestep.
+        t0idx: int
+            Index corresponding to t0 in the underlying data.
+        tnidx: int
+            Index corresponding to tn in the underlying data.
         (following are keyword-only arguments)
         shape: int tuple
             Shape of a history slice at a single point in time.

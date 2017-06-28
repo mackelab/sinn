@@ -431,7 +431,7 @@ class SGD:
             arr = np.array( [it[-i] for i in range(1, n+1)] )
             std = arr.std(ddof=1, axis=0) + abs_th
             if np.any( std > 1):
-                # Ensure that a large variance make the test accidentally succeed
+                # Ensure that a large variance does not make the test accidentally succeed
                 return False
             a = sp.stats.norm.ppf(p, loc=r*std, scale=1)
             s = np.sqrt(n) / std  # rescaling to get normalized Student-t
