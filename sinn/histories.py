@@ -322,6 +322,10 @@ em
             raise TypeError("'Lesser than' comparison is not supported between objects of type History and {}."
                             .format(type(other)))
 
+    @property
+    def tnidx(self):
+        return self.t0idx + len(self) - 1
+
     def raw(self, **kwds):
         # The raw format is meant for data longevity, and so should
         # seldom, if ever, be changed
@@ -441,9 +445,11 @@ em
             raise RuntimeError("Unrecognized key {} of type {}. (history: {})"
                                .format(key, type(key), self.name))
 
-    def _getitem_internal(self, key):
-        """Does the actual work of __getitem__; the latter just excludes special
-        cases, like empty keys."""
+    def _parse_key(self, key):
+        """
+        Conditionals and tests depending whether a key for __getitem__ is
+        a scalar, slice or array.
+        """
 
         if shim.isscalar(key):
 
@@ -545,6 +551,14 @@ em
             raise ValueError("Trying to index using {} ({}). 'key' should be an "
                              "integer, a float, or a slice of integers and floats"
                              .format(key, type(key)))
+
+        return key, key_filter, latest
+
+    def _getitem_internal(self, key):
+        """Does the actual work of __getitem__; the latter just excludes special
+        cases, like empty keys."""
+
+        key, key_filter, latest = self._parse_key(key)
 
         if shim.is_theano_object(latest, self._cur_tidx):
             # For theano variables, we can't know in advance if we need to compute
@@ -886,8 +900,9 @@ em
             - 'end'             : include the padding after tn
             - False (default)   : do not include padding
         """
+        return self._tarr[self._get_time_index_slice(time_slice, include_padding)]
 
-        #if not shim.isshared(self._cur_tidx):
+    def _get_time_index_slice(self, time_slice=slice(None, None), include_padding=False):
         if not self._cur_tidx == self._original_tidx:
             raise RuntimeError("You are in the midst of constructing a Theano graph. "
                                "Reset history {} before trying to obtain its time array."
@@ -921,7 +936,7 @@ em
                             .format(self.get_time(slcidx_stop),
                                     self.get_time(self.t0idx+len(self))))
 
-        return self._tarr[start:stop]
+        return slice(start, stop)
 
     def retrieve(self, key):
         raise NotImplementedError  # retrieve function is history type specific
@@ -1062,6 +1077,12 @@ em
             super().theano_reset()
         except AttributeError:
             pass
+
+    def convert_to_theano(self):
+        for attrname in dir(self):
+            attr = getattr(self, attrname)
+            if isinstance(attr, shim.ShimmedShared):
+                setattr(self, attrname, shim.shared(attr.get_value(), name=attr.name))
 
     def discretize_kernel(self, kernel):
 
@@ -1405,7 +1426,8 @@ em
                     input_list = sinn.inputs[hist]
                     break
         assert(input_list is not None)
-            # If this history is iterative, it should have at least one input
+
+        # If this history is iterative, it should have at least one input
 
         if not self._iterative:
             # Batch computable by construction
@@ -1933,6 +1955,89 @@ class Spiketrain(ConvolveMixin, History):
                                .format(self.name))
         self.initialize(None)
         super().clear()
+
+    def get_trace(self, pop=None, neuron=None, include_padding='none', time_slice=None):
+        """
+        Return the spiketrain's computed data for the given neuron.
+        Time points which have not yet been computed are excluded, such that
+        the len(series.get_trace(*)) may be smaller than len(series). The
+        return value is however guaranteed to be consistent with get_time_array().
+        If `component` is 'None', return the full multi-dimensional trace
+
+        Parameters
+        ----------
+        pop: int
+            Index of the population for which we want the trace. If unspecified,
+            all neurons are returned, unless otherwise indicated by the 'neuron' parameter.
+            Ignored if 'neuron' is specified.
+
+        neuron: int, slice, array of ints
+            Index of the neurons to return; takes precedence over 'pop'.
+
+        include_padding: 'none' (default) | 'before' | 'left' | 'after' | 'right' | 'all' | 'both'
+            'none':
+                Don't include the padding bins.
+            'before' or 'left':
+                Include the padding bins preceding t0.
+            'after' or 'right:
+                Include the padding bins following tn.
+            'all' or 'both':
+                Include the padding bins at both ends.
+
+        time_slice:
+            See get_time_array.
+
+        Returns
+        -------
+        A csr formatted sparse array.
+        """
+        if not shim.isshared(self._cur_tidx):
+            raise RuntimeError("You are in the midst of constructing a Theano graph. "
+                               "Reset history {} before trying to obtain its time array."
+                               .format(self.name))
+
+        # if start is not None:
+        #     start = self.get_t_idx(start)
+        # else:
+        #     padding_vals = [ 'none', 'before', 'left', 'after', 'right', 'all', 'both' ]
+        #     if include_padding in ['none', 'after', 'right']:
+        #         start = self.t0idx
+        #     elif include_padding in padding_vals:
+        #         # It's one of the other options
+        #         start = 0
+        #     else:
+        #         raise ValueError("include_padding should be one of {}.".format(padding_vals))
+
+        # if end is not None:
+        #     stop = self.get_t_idx(end) + 1
+        # else:
+        #     if include_padding in ['none', 'before', 'left']:
+        #         stop = self._cur_tidx.get_value() + 1
+        #     elif include_padding in padding_vals:
+        #         stop = min(self._cur_tidx.get_value() + 1, len(self._tarr))
+        #     else:
+        #         raise ValueError("include_padding should be one of {}.".format(padding_vals) )
+
+        time_slice = time_slice if time_slice is not None else slice(None, None)
+        tslice = self._get_time_index_slice(time_slice, include_padding)
+
+        assert(self._cur_tidx.get_value() >= tslice.stop - 1)
+
+        data_arr = self._data.tocsr()
+        if neuron is None:
+            if pop is None:
+                return data_arr[tslice]
+            else:
+                return data_arr[tslice, self.pop_slices[pop]]
+        elif isinstance(neuron, (int, slice)):
+            return data_arr[start:stop, neuron]
+        elif isinstance(neuron, collections.Iterable):
+            idx = (tslice,) + tuple(component)
+            return data_arr[idx]
+        else:
+            raise ValueError("Unrecognized spiketrain neuron '{}' of type '{}'"
+                             .format(neuron, type(neuron)))
+
 
     def retrieve(self, key):
         '''A function taking either an index or a splice and returning respectively
@@ -2575,7 +2680,7 @@ class Series(ConvolveMixin, History):
 
         self.clear()
 
-    def get_trace(self, component=None, include_padding='none'):
+    def get_trace(self, component=None, include_padding='none', time_slice=None):
         """
         Return the series' computed data for the given component.
         Time points which have not yet been computed are excluded, such that
@@ -2585,6 +2690,8 @@ class Series(ConvolveMixin, History):
 
         Parameters
         ----------
+        component: int, slice, iterable of ints
+            Restrict the returned trace to these components.
         include_padding: 'none' (default) | 'before' | 'left' | 'after' | 'right' | 'all' | 'both'
             'none':
                 Don't include the padding bins.
@@ -2594,48 +2701,48 @@ class Series(ConvolveMixin, History):
                 Include the padding bins following tn.
             'all' or 'both':
                 Include the padding bins at both ends.
+
+        time_slice:
+            See get_time_array.
         """
         if not shim.isshared(self._cur_tidx):
             raise RuntimeError("You are in the midst of constructing a Theano graph. "
                                "Reset history {} before trying to obtain its time array."
                                .format(self.name))
 
-        padding_vals = [ 'none', 'before', 'left', 'after', 'right', 'all', 'both' ]
-        if include_padding in ['none', 'after', 'right']:
-            start = self.t0idx
-        elif include_padding in padding_vals:
-            # It's one of the other options
-            start = 0
-        else:
-            raise ValueError("include_padding should be one of {}.".format(padding_vals))
+        # if start is not None:
+        #     start = self.get_t_idx(start)
+        # else:
+        #     padding_vals = [ 'none', 'before', 'left', 'after', 'right', 'all', 'both' ]
+        #     if include_padding in ['none', 'after', 'right']:
+        #         start = self.t0idx
+        #     elif include_padding in padding_vals:
+        #         # It's one of the other options
+        #         start = 0
+        #     else:
+        #         raise ValueError("include_padding should be one of {}.".format(padding_vals))
 
-        if include_padding in ['none', 'before', 'left']:
-            stop = self._cur_tidx.get_value() + 1
-        elif include_padding in padding_vals:
-            stop = min(self._cur_tidx.get_value() + 1, len(self._tarr))
-        else:
-            raise ValueError("include_padding should be one of {}.".format(padding_vals))
+        # if end is not None:
+        #     stop = self.get_t_idx(end) + 1
+        # else:
+        #     if include_padding in ['none', 'before', 'left']:
+        #         stop = self._cur_tidx.get_value() + 1
+        #     elif include_padding in padding_vals:
+        #         stop = min(self._cur_tidx.get_value() + 1, len(self._tarr))
+        #     else:
+        #         raise ValueError("include_padding should be one of {}.".format(padding_vals))
+        time_slice = time_slice if time_slice is not None else slice(None, None)
+        tslice = self._get_time_index_slice(time_slice, include_padding)
 
-        assert(self._cur_tidx.get_value() >= stop - 1)
+        assert(self._cur_tidx.get_value() >= tslice.stop - 1)
 
         if component is None:
-            #return self[start:stop]
-            return self._data.get_value()[start:stop]
+            return self._data.get_value()[tslice]
         elif isinstance(component, (int, slice)):
-            #return self[start:stop, component]
-            return self._data.get_value()[start:stop, component]
+            return self._data.get_value()[tslice, component]
         elif isinstance(component, collections.Iterable):
-            tslice = slice(start, stop)
             idx = (tslice,) + tuple(component)
             return self._data.get_value()[idx]
-        # elif len(component) == 1:
-        #     #return self[start:stop, component[0]]
-        #     return self._data.get_value()[start:stop, component]
-        # elif len(component) == 2:
-        #     #return self[start:stop, component[0], component[1]]
-        #     return self._data.get_value()[start:stop, component]
-        # else:
-        #     raise NotImplementedError("Really, you used more than 2 data dimensions in a series array ? Ok, well let me know and I'll implement that.")
         else:
             raise ValueError("Unrecognized series component '{}' of type '{}'"
                              .format(component, type(component)))
@@ -2869,6 +2976,13 @@ class Series(ConvolveMixin, History):
                 new_series.add_input([self, b])
             else:
                 new_series.add_input(self)
+
+        if ( self._original_tidx.get_value() >= self.tnidx
+             and ( b is None
+                   or not isinstance(b, HistoryBase)
+                   or b._original_tidx >= b.tnidx ) ):
+             # All op members are computed, so filling the result series is 1) possible and 2) cheap
+             new_series.set()
         return new_series
 
     def __abs__(self):
@@ -2901,3 +3015,52 @@ class Series(ConvolveMixin, History):
     def __mod__(self, other):
         return self._apply_op(operator.mod, other)
 
+
+#######################################
+# Views
+#######################################
+
+class DataView(HistoryBase):
+    """
+    Gives direct access to the history data.
+
+    Retrieving numerical data varies depending whether a
+    history's data is stored as a NumPy, Theano shared or
+    Theano variable. This abstracts out the calls, providing
+    an interface as though the data was a NumPy object.
+
+    TODO: - In __new__, allow to
+            + Subclass proper history
+            + Detect if hist is already a DataView, and return itself
+              in that case
+    """
+
+    def __init__(self, hist):
+        self.hist = hist
+        # We don't initialize base class, but let __getattr__ take care of attributes
+
+    def __getitem__(self, key):
+        res = self.hist[key]
+        if not shim.is_theano_object(res):
+            return res
+        elif shim.isshared(res):
+            return res.get_value()
+        else:
+            nwkey, key_filter, latest = self.hist._parse_key(key)
+            res = self.hist._original_data.get_value()[nwkey]
+            if key_filter is None:
+                return res
+            else:
+                return res[key_filter]
+
+    def __getattr__(self, name):
+        return getattr(self.hist, name)
+
+    def __len__(self):
+        return len(self.hist)
+
+    # Methods in HistoryBase must be explicitly redirected
+    def get_time(self, *args):
+        return self.hist.get_time(*args)
+    def get_t_idx(self, *args):
+        return self.hist.get_t_idx(*args)

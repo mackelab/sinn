@@ -93,7 +93,9 @@ def ismultiple(x, base, rtol=None, atol=None):
         logger.warning("Called `sinn.ismultiple` on a Theano object. This always returns True.")
         return True
     else:
-        return isclose(shim.round(x/base) - x/base, 0, rtol, atol)
+        return isclose(0, shim.round(x/base) - x/base, rtol, atol)
+            # Tolerance for isclose(a,b) is atol + rtol*abs(b),
+            # so the '0' above must be first argument
 
 def add_sibling_input(sibling, new_input):
     # TODO Move to Graph class
@@ -533,6 +535,13 @@ def set_parameters(target, source):
             if shim.isshared(val):
                 val = val.get_value()
             getattr(target, field).set_value( val )
+
+def convert_parameters_to_theano(params):
+    param_dict = params._asdict()
+    for key, val in param_dict.items():
+        if isinstance(val, shim.ShimmedShared):
+            param_dict[key] = shim.shared(val.get_value(), name=val.name)
+    return param_dict
 
 
 class ParameterMixin:

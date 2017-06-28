@@ -59,15 +59,48 @@ def mean(hist, pop_slices=None, **kwargs):
     -------
     History, of same length as hist.
     """
-    if pop_slices is not None:
-        res_data = np.stack(
-                       [ np.stack( [ np.mean(hist[i][pop_slice]) 
-                                     for pop_slice in pop_slices ] )
-                         for i in range(hist.t0idx, hist.t0idx + len(hist)) ] )
+    hist = histories.DataView(hist)
+
+    if isinstance(hist, np.ndarray):
+        data_arr = hist
+    elif isinstance(hist, histories.HistoryBase):
+        try:
+            data_arr = hist.get_trace()
+        except AttributeError:
+            raise ValueError("Histories of type '{}' don't provide a `get_trace` method. "
+                             "You can try passing a raw NumPy array, or better yet, defining "
+                             "`get_trace` for this history type.".type(hist.hist))
     else:
-        res_data = np.stack( [ np.mean(hist[i], **kwargs)
-                               for i in range(hist.t0idx, hist.t0idx + len(hist)) ] )
-    res = histories.Series(hist, name = "<" + hist.name + ">",
+        raise ValueError("Unrecognized History type '{}'.".format(type(hist.hist)))
+
+    if len(data_arr.shape) < 2:
+        raise ValueError("Data must be at least 2 dimensional: time + data axes.")
+
+    # If 'axis' is specified as a keyword, it relates to a time slice, so we add the time axis
+    if 'axis' in kwargs:
+        if not isinstance(kwargs['axis'], collections.Iterable):
+            kwargs['axis'] = axis + 1
+        else:
+            kwargs['axis'] = tuple(ax+1 for ax in kwargs['axis'])
+    else:
+        # Take mean over all but the time axis
+        if len(data_arr.shape) == 2:
+            kwargs['axis'] = 1 # Sparse arrays – which are always 2D – don't accept axis as a tuple
+        else:
+            kwargs['axis'] = tuple(range(1, len(data_arr.shape)))
+
+    # NOTE: Essential to use the mean method (rather than np.mean): data_arr may be sparse
+    if pop_slices is not None:
+        res_data = np.concatenate( [ data_arr[:, pop_slice].mean( **kwargs )
+                                     for pop_slice in pop_slices ],
+                                   axis = 1 )
+    else:
+        res_data = data_arr.mean(**kwargs)
+
+    if isinstance(res_data, np.matrix):
+        res_data = res_data.A
+
+    res = histories.Series(hist.hist, name = "<" + hist.name + ">",
                            shape = res_data.shape[1:])
     res.set( res_data )
     return res
@@ -98,6 +131,8 @@ def diff(hist, mode='centered'):
        The length of the series will be slightly reduced by the number of bins
        consumed by the differentiation method.
     """
+
+    hist = histories.DataView(hist)
 
     if mode == 'centered':
         # Remove consumed bins, but only if there's no padding
@@ -153,7 +188,7 @@ def diff(hist, mode='centered'):
         res.set( (hist[startidx+1:endidx] - hist[startidx:endidx-1]) / (hist.dt) )
         return res
 
-def smooth(series, amount=None, method='mean', **kwargs):
+def smooth(series, amount=None, method='mean', name = None, **kwargs):
     """Smooth the `series` and return as another Series instance.
     Data is smoothed by averaging over a certain number of data points
     (determined by `amount`) at each time point.
@@ -162,6 +197,8 @@ def smooth(series, amount=None, method='mean', **kwargs):
     ----------
     series: Histories.Series instance
         The data we want to smooth.
+        If provided as a plain NumPy array, a surrogate series is created
+        with step size (dt) of 1.
     amount: int | float
         A numerical parameter controlling the degree of smoothing.
         Its interpretation depends on the chosen method.
@@ -172,6 +209,9 @@ def smooth(series, amount=None, method='mean', **kwargs):
           + 'gaussian': Not implemented
           + 'convolve': Not implemented
         Default is 'mean'.
+    name: string
+        Name to assign to the smoothed series. Default is to append
+        '_smoothed' to the series' name.
 
     Return
     ------
@@ -179,6 +219,12 @@ def smooth(series, amount=None, method='mean', **kwargs):
         Note that in general the time range will be shorter than
         the original data, due to the averaging.
     """
+    series = histories.DataView(series)
+
+    if isinstance(series, np.ndarray):
+        series = histories.Series(name = name,
+                                  t0 = 0, tn = len(series)-1, dt = 1,
+                                  shape = series.shape[1:])
     if series.use_theano:
         if series.compiled_history is not None:
             series = series.compiled_history
@@ -187,7 +233,9 @@ def smooth(series, amount=None, method='mean', **kwargs):
     if method == 'mean':
         # TODO: Don't move t0 or tn if there is enough padding
         assert(amount is not None)
-        res = histories.Series(name = series.name + "_smoothed",
+        if name is None:
+            name = series.name + "_smoothed"
+        res = histories.Series(name = name,
                                t0 = series.t0 + (amount-1)*series.dt/2,
                                #tn = series.tn - (amount-1)*series.dt/2,
                                tn = series.t0 + (amount-1)*series.dt/2 + (len(series) - amount)*series.dt,
@@ -222,6 +270,8 @@ def subsample(series, amount):
         of each new bin is the average over `amount` bins of the original
         series. Bins are identified by the time at which they begin.
     """
+    series = histories.DataView(series)
+
     assert(np.issubdtype(np.asarray(amount).dtype, np.int))
     if series.use_theano:
         if series.compiled_history is not None:
@@ -266,7 +316,23 @@ def plot(data, **kwargs):
         - HeatMap: produces a 2D density (w/ pcolormesh(.))
         - Spiketimes: produces a raster plot (not implemented)
 
-    **kwargs: keyword arguments
+    TODO: Organize all keywords by data type
+          Include Spiketrain keywords
+
+    **kwargs: keyward arguments
+        These depend on the data type
+        Possible keywords for History data:
+        - start: float
+            Time at which to start plotting the data. Default is to plot
+            from the beginning. Ignored for pure NumPy data, as it has no associated
+            time array.
+
+        - end: float
+            Inclusive time at which to stop plotting the data. Default is to
+            plot until the end. Ignored for pure NumPy data, as it has no associated
+            time array.
+
+    Other keyword arguments
         These will be forwarded to the underlying plotting function;
         all are optional. The following keywords are preprocessed:
         - `label`
@@ -284,7 +350,14 @@ def plot(data, **kwargs):
     Returns
     -------
     A list of the created axes.
+
     """
+    if isinstance(data, histories.History):
+        data = histories.DataView(data)
+        start = kwargs.pop('start', data.t0idx)
+        stop = kwargs.pop('stop', data.tnidx+1)
+        stop = min(stop, data.tnidx+1)
+        tslice = slice(start, stop)
 
     # TODO: Collect repeated code
 
@@ -328,7 +401,12 @@ def plot(data, **kwargs):
             plt.plot(np.arange(len(data)), data[idx], label=label, **kwargs)
         return ax
 
-    elif isinstance(data, histories.Series):
+    elif ( isinstance(data, histories.Series)
+           or ( isinstance(data, histories.DataView)
+                and isinstance(data.hist, histories.Series) ) ):
+        # Second line catches a DataView of a Series
+        # TODO: Make DataView a derived class of its self.hist within __new__;
+        #       then 'isinstance' would work.
         if data.use_theano:
             assert(hasattr(data, 'compiled_history'))
             if data.compiled_history is None:
@@ -359,7 +437,42 @@ def plot(data, **kwargs):
         # Loop over the components, plotting each separately
         # Plotting separately allows to assign a label to each
         for comp, label in zip(comp_list, labels):
-            plt.plot(data.get_time_array(), data.get_trace(comp), label=label, **kwargs)
+            plt.plot(data.get_time_array(time_slice=tslice),
+                     data.get_trace(comp, time_slice=tslice),
+                     label=label, **kwargs)
+        return ax
+
+    elif ( isinstance(data, histories.Spiketrain)
+           or ( isinstance(data, histories.DataView)
+                and isinstance(data.hist, histories.Spiketrain) ) ):
+
+        lineheight = kwargs.pop('lineheight', 1)
+        markersize = kwargs.pop('markersize', 1)
+        alpha = kwargs.pop('alpha', 0.3)
+        linestyle = kwargs.pop('linestyle', 'None')
+        baselabel = kwargs.pop('label', 'Population')
+        if baselabel[-1] != ' ':
+            # Make sure there's a space to separate the population number
+            baselabel += ' '
+
+        ax = plt.gca()
+
+        tarr = data._tarr[data._data.row]
+        tstart = data._tarr[data.get_t_idx(tslice.start)]
+        tstop = data._tarr[data.get_t_idx(tslice.stop)]
+        tidcs = np.where(np.logical_and(tstart <= tarr, tarr < tstop))[0]
+        for i, popslice in enumerate(data.pop_slices):
+            popidcs = np.where(np.logical_and(popslice.start <= data._data.col,
+                                            data._data.col < popslice.stop))[0]
+            idcs = np.intersect1d(tidcs, popidcs)
+
+            plt.scatter(data._tarr[data._data.row[idcs]],
+                        data._data.col[idcs]*lineheight,
+                        s = markersize,
+                        linestyle = linestyle,
+                        label = baselabel + str(i),
+                        alpha = alpha)
+
         return ax
 
     elif isinstance(data, heatmap.HeatMap):
@@ -416,6 +529,8 @@ def plot_stddev_ellipse(data, width, **kwargs):
         Keyword arguments passed to maptplotlib.patches.Ellipse
     """
     # TODO: Deal with higher than 2D heatmaps
+    data = histories.DataView(data)
+
     eigvals, eigvecs = np.linalg.eig(data.cov())
     ax = plt.gca()
     w = width * np.sqrt(eigvals[0])

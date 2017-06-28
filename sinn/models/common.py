@@ -83,7 +83,7 @@ class Model(com.ParameterMixin):
         assert(all(arg1.shape == arg2.shape for arg1, arg2 in zip(args[:-1], args[1:])))
     @staticmethod
     def same_dt(*args):
-        assert(all(arg1.dt == arg2.dt for arg1, arg2 in zip(args[:-1], args[1:])))
+        assert(all(sinn.isclose(arg1.dt, arg2.dt) for arg1, arg2 in zip(args[:-1], args[1:])))
     @staticmethod
     def output_rng(outputs, rngs):
         """
@@ -248,6 +248,20 @@ class Model(com.ParameterMixin):
                                      "op {}. This may indicate a memory leak."
                                      .format(history.name, str(op)))
 
+    def apply_updates(self, update_dict):
+        """
+        Theano functions which produce updates (like scan) naturally will not
+        update the history data structures. This method applies those updates,
+        allowing histories to be used in subsequent calculations.
+        """
+        for history in self.history_set:
+            if history._original_tidx in update_dict:
+                assert(history._original_data in update_dict)
+                history._cur_tidx = update_dict[history._original_tidx]
+                history._data = update_dict[history._original_data]
+            elif history._original_tidx in update_dict:
+                history._data = update_dict[history._original_data]
+
     def get_loglikelihood(self, *args, **kwargs):
 
         # Sanity check – it's easy to forget to clear histories in an interactive session
@@ -295,7 +309,7 @@ class Model(com.ParameterMixin):
                 return model.loglikelihood(*args, **kwargs)
         return likelihood_f
 
-    def make_loglikelihood_binomial(self, n, N, p, approx=None):
+    def make_binomial_loglikelihood(self, n, N, p, approx=None):
         """
         Parameters
         ----------
@@ -346,6 +360,7 @@ class Model(com.ParameterMixin):
             n_arr_floats = nhist[start:stop]
             p_arr = phist[start:stop]
 
+            # FIXME: This would break the Theano graph, no ?
             if shim.isshared(n_arr_floats):
                 n_arr_floats = n_arr_floats.get_value()
             if shim.isshared(p_arr):
