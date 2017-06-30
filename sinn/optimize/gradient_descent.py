@@ -121,12 +121,34 @@ def get_indices(param):
 
 class SGD:
 
-    def __init__(self, model, optimizer,
+    def __init__(self, cost, model, optimizer,
                  burnin, datalen, mbatch_size):
         """
         Important that burnin + datalen not exceed the amount of data
+
+        Parameters
+        ----------
+        cost: Theano graph
+            Theano symbolic variable/graph for the cost function we want to optimize.
+            Must derive from parameters and histories found in `model`
+        model: sinn Model
+            Provides a handle to the variables appearing in the cost graph.
+        optimizer: str | class/factory function
+            String specifying the optimizer to use. Possible values:
+              - 'adam'
+            If a class/factory function, should have the signature
+              `optimizer(cost, fitparams, **kwds)`
+            where `fitparams` has the same form as the homonymous parameter to `compile`.
+        burnin: float, int
+            Burnin time, in the time units of the model
+        datalen: float, int
+            Amount of data on which to evaluate the cost, in the model's time units.
+            Cost will be evaluated up to the time point 'burnin + datalen'.
+        mbatch_size: int, float
+            Size of minibatches, either in the model's time units (float) or time bins (int).
         """
 
+        self.cost_fn = cost
         self.model = model
         self.optimizer = optimizer
         self.burnin = burnin
@@ -138,6 +160,7 @@ class SGD:
         self.step_i = 0
         self.output_width = 5 # Default width for printing number of steps
         self.tidx = theano.tensor.lscalar('tidx')
+        self.cum_cost = 0
         #tidx.tag.test_value = 978
         #shim.gettheano().config.compute_test_value = 'warn'
         self.substitutions = {}
@@ -182,12 +205,13 @@ class SGD:
         # Check that variable is part of the computational graph
         self.model.theano_reset()
         self.model.clear_unlocked_histories()
-        logL = self.model.loglikelihood(self.tidx, self.tidx + self.mbatch_size)
+        #logL = self.model.loglikelihood(self.tidx, self.tidx + self.mbatch_size)
+        cost, cost_updates = self.cost_fn(self.tidx, self.tidx + self.mbatch_size)
         self.model.clear_unlocked_histories()
         self.model.theano_reset()
-        if variable not in theano.gof.graph.inputs([logL]):
-            raise ValueError("'{}' is not part of the Theano graph for the log "
-                             "likelihood".format(variable))
+        if variable not in theano.gof.graph.inputs([cost]):
+            raise ValueError("'{}' is not part of the Theano graph for the cost."
+                             .format(variable))
 
         # Check that the transforms are callable and each other's inverse
         # Choosing a test value is error prone, since different variables will have
@@ -250,7 +274,7 @@ class SGD:
                 for param in fitparams ]
                 }
 
-        # Creat self.fitparams
+        # Create self.fitparams
         # If any of the fitparams appear in self.substitutions, change those
         # This assumes that the substitution transforms are element wise
         self.fitparams = OrderedDict()
@@ -263,20 +287,31 @@ class SGD:
         # Compile step function
         self.model.theano_reset()
         self.model.clear_unlocked_histories()
-        logL = self.model.loglikelihood(self.tidx, self.tidx + self.mbatch_size)
+
+        logger.info("Producing the cost function theano graph")
+        cost, cost_updates = self.cost_fn(self.tidx, self.tidx + self.mbatch_size)
+        logger.info("Cost function graph complete.")
         if replace is not None:
-            logL = theano.clone(logL, replace=replace)
+            logger.info("Performing variable substitutions in Theano graph.")
+            cost = theano.clone(cost, replace=replace)
+            logger.info("Substitutions complete.")
+
+        logger.info("Compiling the minibatch cost function.")
+        self.cost = theano.function([self.tidx], cost)
+        logger.info("Done compilation.")
 
         if isinstance(self.optimizer, str):
             if self.optimizer == 'adam':
-                updates = Adam(-logL, self.fitparams, **kwds)
+                logger.info("Calculating Adam optimizer updates.")
+                updates = Adam(-cost, self.fitparams, **kwds)
             else:
                 raise ValueError("Unrecognized optimizer '{}'.".format(self.optimizer))
 
         else:
             # Treat optimizer as a class or factory function
             try:
-                updates = self.optimizer(-logL, self.fitparams, **kwds)
+                logger.info("Calculating custom optimizer updates.")
+                updates = self.optimizer(-cost, self.fitparams, **kwds)
             except TypeError as e:
                 if 'is not callable' not in str(e):
                     # Some other TypeError was triggered; reraise
@@ -287,19 +322,25 @@ class SGD:
                                      "name or a factory function).\nThe original error was:\n"
                                      + str(e))
 
+        logger.info("Done calculating optimizer updates.")
+
         updates.update(sinn.get_updates())
 
+        logger.info("Compiling the optimization step function.")
         self._step = theano.function([self.tidx], [], updates=updates)
+        logger.info("Done compilation.")
 
-        # Compile likelihood function
+        # # Compile likelihood function
+        # self.model.clear_unlocked_histories()
+        # self.model.theano_reset()
+        # #cost = self.cost_fn(self.burnin, self.burnin + self.datalen)
+        # cost, cost_updates = self.cost_fn(self.tidx, self.tidx + self.mbatch_size)
+        # if len(replace) > 0:
+        #     cost = theano.clone(cost, replace)
+
+        # self.cost = theano.function([], cost)
+
         self.model.clear_unlocked_histories()
-        self.model.theano_reset()
-        logL = self.model.loglikelihood(self.burnin, self.burnin + self.datalen)
-        if len(replace) > 0:
-            logL = theano.clone(logL, replace)
-
-        self.logL = theano.function([], logL)
-
         self.model.theano_reset()  # clean the graph after compilation
 
         self.initialize()
@@ -407,7 +448,7 @@ class SGD:
 
         self.param_evol = {param: deque([param.get_value()])
                            for param in self.fitparams}
-        self.logL_evol = deque([-np.inf])
+        self.cost_evol = deque([-np.inf])
 
         self.step_i = 0
         self.curtidx = self.burnin_idx
@@ -445,8 +486,14 @@ class SGD:
             # Reset time index to beginning
             self.curtidx = self.burnin_idx
             self.model.clear_unlocked_histories()
-            self.logL_evol.append(self.logL())
-            self.model.clear_unlocked_histories()
+            self.cost_evol.append(self.cum_cost)
+            #self.model.clear_unlocked_histories()
+            self.cum_cost = 0
+
+            # HACK Fill the data corresponding to the burnin time
+            #      (hack b/c ugly + repeated in iterate() + does not check indexing)
+            for i in range(self.burnin_idx):
+                self._step(i)
         else:
             # TODO: Check what it is that is cleared here, and why we need to do it
             self.model.clear_other_histories()
@@ -457,13 +504,15 @@ class SGD:
         for param in self.fitparams:
             self.param_evol[param].append(param.get_value())
 
+        self.cum_cost += self.cost()
+
         # Increment step counter
         self.step_i += 1
 
         # Check to see if there have been meaningful changes in the last 10 iterations
-        if ( converged(self.logL_evol)
+        if ( converged(self.cost_evol)
              and all( converged(self.param_evol[p]) for p in self.fitparams) ):
-            logger.info("Converged. log L = {:.2f}".format(float(self.logL_evol[-1])))
+            logger.info("Converged. log L = {:.2f}".format(float(self.cost_evol[-1])))
             return ConvergeStatus.CONVERGED
 
         #Print progress
@@ -472,7 +521,7 @@ class SGD:
         logger.info("Iteration {:>{}} – log L = {:.2f}"
                     .format(self.step_i,
                             self.output_width,
-                            float(self.logL_evol[-1])))
+                            float(self.cost_evol[-1])))
         self.curtidx += self.mbatch_size
 
         return ConvergeStatus.NOTCONVERGED
@@ -481,6 +530,12 @@ class SGD:
 
         Nmax = int(Nmax)
         self.output_width = int(np.log10(Nmax))
+
+        # HACK Fill the data corresponding to the burnin time
+        #      (hack b/c ugly + repeated in step() + does not check indexing)
+        # Possible fix: create another "skip burnin" function, with scan ?
+        for i in range(self.burnin_idx):
+            self._step(i)
 
         t1 = time.perf_counter()
         for i in range(Nmax):
@@ -493,7 +548,7 @@ class SGD:
             print("Did not converge.")
 
         if i > 0:
-            logger.info("Likelihood evaluation : {:.1f}s / {:.1f}s ({:.1f}% total "
+            logger.info("Cost/likelihood evaluation : {:.1f}s / {:.1f}s ({:.1f}% total "
                         "execution time)"
                         .format(self.cum_step_time,
                                 self.tot_time,
@@ -505,7 +560,7 @@ class SGD:
 
     def get_evol(self):
         """
-        Return a dictionary storing the evolution of the likelihood and parameters.
+        Return a dictionary storing the evolution of the cost and parameters.
 
         Parameters
         ----------
@@ -520,7 +575,7 @@ class SGD:
         """
         evol = { param.name: np.array([val for val in self.param_evol[param]])
                  for param in self.fitparams }
-        evol['logL'] = np.array([val for val in self.logL_evol])
+        evol['logL'] = np.array([val for val in self.cost_evol])
         return evol
 
     def stats(self):
@@ -530,7 +585,7 @@ class SGD:
                 'average time per iteration (ms)': self.tot_time / self.step_i * 1000,
                 'time spent stepping (%)': self.cum_step_time / (self.tot_time) * 100}
 
-    def plot_logL_evol(self, evol=None):
+    def plot_cost_evol(self, evol=None):
         if evol is None:
             evol = self.get_evol()
         plt.title("Maximization of likelihood")
@@ -735,7 +790,10 @@ def Adam(cost, params, lr=0.0002, b1=0.1, b2=0.001, e=1e-8):
                 param_masks.append(np.ones(p[0].get_value().shape, dtype=int)
                                   * p[1])
             else:
-                assert(p[1].shape == p[0].get_value().shape)
+                if p[1].shape != p[0].get_value().shape:
+                    raise ValueError("Provided mask (shape {}) for parameter {} "
+                                     "(shape {}) has a different shape."
+                                     .format(p[1].shape, p[0].name, p[0].get_value().shape))
                 param_masks.append(p[1])
         else:
             tmpparams.append(p)
