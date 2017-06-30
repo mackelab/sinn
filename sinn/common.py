@@ -97,6 +97,15 @@ def ismultiple(x, base, rtol=None, atol=None):
             # Tolerance for isclose(a,b) is atol + rtol*abs(b),
             # so the '0' above must be first argument
 
+def static_vars(**kwargs):
+    """Declare static variables in a function with a decorator."""
+    # Sources from https://stackoverflow.com/a/279586
+    def decorate(func):
+        for k in kwargs:
+            setattr(func, k, kwargs[k])
+        return func
+    return decorate
+
 def add_sibling_input(sibling, new_input):
     # TODO Move to Graph class
     for key, val in inputs.items():
