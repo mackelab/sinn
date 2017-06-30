@@ -214,7 +214,7 @@ class Model(com.ParameterMixin):
     def clear_other_histories(self):
         """
         Clear unlocked histories that are not explicitly part of this model
-        (but may be inputs.
+        (but may be inputs).
         """
         # Implemented as a wrapper around clear_unlocked_histories:
         # first lock of this model's histories, clear histories, and then
@@ -254,13 +254,18 @@ class Model(com.ParameterMixin):
         update the history data structures. This method applies those updates,
         allowing histories to be used in subsequent calculations.
         """
+        # Update the history data
         for history in self.history_set:
             if history._original_tidx in update_dict:
                 assert(history._original_data in update_dict)
+                    # If you are changing tidx, then surely you must change _data as well
                 history._cur_tidx = update_dict[history._original_tidx]
                 history._data = update_dict[history._original_data]
             elif history._original_tidx in update_dict:
                 history._data = update_dict[history._original_data]
+
+        # Update the shim update dictionary
+        shim.config.theano_updates.update(update_dict)
 
     def get_loglikelihood(self, *args, **kwargs):
 
