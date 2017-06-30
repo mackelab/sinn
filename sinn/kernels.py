@@ -167,7 +167,7 @@ class Kernel(ConvolveMixin, ParameterMixin, com.KernelBase):
             res = self.shape_output(self._eval_f(t, from_idx), tshape)
             return shim.switch(shim.and_(shim.ge(t, self.t0), shim.lt(t, self.t0+self.memory_time)),
                                res,
-                               shim.getT().zeros_like(res))
+                               shim.zeros_like(res))
                                #shim.zeros(final_shape, ndim=ndim))
         else:
             tshape = ()
@@ -175,7 +175,7 @@ class Kernel(ConvolveMixin, ParameterMixin, com.KernelBase):
             res = self.shape_output(self._eval_f(t, from_idx), tshape)
             return shim.ifelse(shim.and_(shim.ge(t, self.t0), shim.lt(t, self.t0+self.memory_time)),
                                res,
-                               shim.getT().zeros_like(res))
+                               shim.zeros_like(res))
                                #shim.zeros(final_shape, ndim=ndim))
 
     def theano_reset(self):

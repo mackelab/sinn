@@ -2605,16 +2605,22 @@ class Series(ConvolveMixin, History):
         pad_width = ( [(before_len, after_len)]
                       + [(0, 0) for i in range(len(self.shape))] )
 
-        if self.use_theano:
-            if self._original_data is None:
-                self._original_data = self._data
+        #if self.use_theano:
+            #if self._original_data is None:
+            #    self._original_data = self._data
                     # Persistently store the current _data, because that's the handle
                     # to the input that will be used when compiling the function
+        if self._original_data in shim.get_updates():
+            # We've already updated the data array, so we need to update the update
             self._data = shim.pad(self._data, previous_tarr_shape + self.shape,
                                   pad_width, **kwargs)
+            shim.add_update(self._original_data, self._data)
         else:
-            self._data.set_value( shim.pad(self._data, previous_tarr_shape + self.shape,
-                                           pad_width, **kwargs) )
+            # _data is still in the original state, so we change the underlying data
+            self._data.set_value( shim.pad(self._data.get_value(borrow=True),
+                                           previous_tarr_shape + self.shape,
+                                           pad_width, **kwargs),
+                                  borrow=True)
 
 
     # def generator(self, inputs):
