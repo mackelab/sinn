@@ -1,3 +1,10 @@
+We use the following indexing convention:
+
+- start: inclusive lower bound
+- stop: exclusive upper bound
+- end: inclusive lower bound
+
+The meaning of 'start' and 'stop' are the same as for slices in the Python documentation.
 
 TODOs:
   - Determine the convolution shape in ConvolutionMixin, depending

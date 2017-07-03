@@ -459,8 +459,9 @@ def plot(data, **kwargs):
 
         tarr = data._tarr[data._data.row]
         tstart = data._tarr[data.get_t_idx(tslice.start)]
-        tstop = data._tarr[data.get_t_idx(tslice.stop)]
-        tidcs = np.where(np.logical_and(tstart <= tarr, tarr < tstop))[0]
+        tend = data._tarr[data.get_t_idx(tslice.stop)-1]
+            # We do 'tarr[idx-1]' to avoid indexing beyond the end of _tarr
+        tidcs = np.where(np.logical_and(tstart <= tarr, tarr <= tend))[0]
         for i, popslice in enumerate(data.pop_slices):
             popidcs = np.where(np.logical_and(popslice.start <= data._data.col,
                                             data._data.col < popslice.stop))[0]
@@ -581,12 +582,23 @@ def _linear_centers_to_edges(arr):
     -------
     1D array of length N+1
     """
-    dxs = (arr[1:]-arr[:-1])/2
-    newarr = np.concatenate(((arr[0]-dxs[0],), (arr[1:] - dxs), (arr[-1] + dxs[-1],)))
+    if arr.ndim != 1:
+        raise ValueError("Axis stops must be given by a 1D array. (Given axis is {}D.)"
+                         .format(arr.ndim))
+    if len(arr) == 0:
+        raise ValueError("Provided axis has length 0.")
+    elif len(arr) == 1:
+        logger.warning("Computing the 'edges' for a length 1 axis. Unless you are debugging, "
+                       "you probably made a mistake when producing the data.")
+        dx = 10**int(np.log10(abs(arr[0]))) / 2
+        newarr = np.array([arr[0]-dx, arr[0]+dx])
+    else:
+        dxs = (arr[1:]-arr[:-1])/2
+        newarr = np.concatenate(((arr[0]-dxs[0],), (arr[1:] - dxs), (arr[-1] + dxs[-1],)))
     return newarr
 
 def _centers_to_edges(centers, linearization_function=None, inverse_linearization_function=None):
-    """Same as _centers_to_edges, but for logarithmic axes."""
+    """[TODO]"""
     if isinstance(centers, ParameterAxis):
         arr = centers.stops
         linearization_function = centers.linearize_fn

@@ -621,7 +621,7 @@ em
         (since once locked, it can no longer be updated). This can be disabled
         by setting `warn` to False.
         """
-        if shim.is_theano_variable(self._cur_tidx):
+        if self._cur_tidx != self._original_tidx:
             raise RuntimeError("You are trying to lock the history {}, which "
                                "in the midst of building a Theano graph. Reset "
                                "it first".format(self.name))
@@ -1016,7 +1016,7 @@ em
                 return shim.cast( t, dtype = self._cur_tidx.dtype )
             else:
                 try:
-                    shim.check(t >= self._tarr[0])
+                    shim.check((t >= self._tarr[0]).all())
                 except AssertionError:
                     raise RuntimeError("You've tried to obtain the time index at t={}, which "
                                        "is outside this history's range. Please add padding."
@@ -1026,7 +1026,7 @@ em
                     # Enforce that times be multiples of dt
 
                     try:
-                        shim.check( t * config.get_rel_tolerance(t) < self.dt )
+                        shim.check( (t * config.get_rel_tolerance(t) < self.dt).all() )
                     except AssertionError:
                         raise ValueError("You've tried to convert a time (float) into an index "
                                         "(int), but the value is too large to ensure the absence "
@@ -1034,7 +1034,7 @@ em
                     t_idx = (t - self._tarr[0]) / self.dt
                     r_t_idx = shim.round(t_idx)
                     if (not shim.is_theano_object(r_t_idx)
-                          and abs(t_idx - r_t_idx) > config.get_abs_tolerance(t) / self.dt):
+                          and (abs(t_idx - r_t_idx) > config.get_abs_tolerance(t) / self.dt).all() ):
                         logger.error("t: {}, t0: {}, t-t0: {}, t_idx: {}, dt: {}"
                                      .format(t, self._tarr[0], t - self._tarr[0], t_idx, self.dt) )
                         raise ValueError("Tried to obtain the time index of t=" +
@@ -1079,10 +1079,14 @@ em
             pass
 
     def convert_to_theano(self):
+        assert((self._cur_tidx.get_value() == self._original_tidx.get_value()).all())
+        assert((self._data.get_value() == self._original_data.get_value()).all())
         for attrname in dir(self):
             attr = getattr(self, attrname)
             if isinstance(attr, shim.ShimmedShared):
                 setattr(self, attrname, shim.shared(attr.get_value(), name=attr.name))
+        self._cur_tidx = self._original_tidx
+        self._data = self._original_data
 
     def discretize_kernel(self, kernel):
 
@@ -2780,6 +2784,11 @@ class Series(ConvolveMixin, History):
         This history instance
         """
 
+        if ( source is None and self._cur_tidx != self._original_tidx):
+            raise RuntimeError("Tried to call '.set()' on the history {} while "
+                               "in the midst of building a Theano graph."
+                               .format(self.name))
+
         if ( source is None
              and self._cur_tidx.get_value() >= self.t0idx + len(self) - 1 ):
             # Nothing to do
@@ -2848,9 +2857,14 @@ class Series(ConvolveMixin, History):
                 # so we have to trust it
                 self._data = data
 
-
-        self._original_tidx.set_value(self.t0idx + len(tarr) - 1)
-        self._cur_tidx = self._original_tidx
+        if not shim.is_theano_variable(self._data):
+            self._original_tidx.set_value(self.t0idx + len(tarr) - 1)
+            self._cur_tidx = self._original_tidx
+        else:
+            # HACK If _data is not just a shared variable, it's Theano graph
+            # almost certainly depends on _original_tidx, so it should not be
+            # updated
+            self._cur_tidx = shim.shared(self.t0idx + len(tarr) - 1)
 
         return self
 

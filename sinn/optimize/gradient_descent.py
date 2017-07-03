@@ -297,13 +297,14 @@ class SGD:
             logger.info("Substitutions complete.")
 
         logger.info("Compiling the minibatch cost function.")
-        self.cost = theano.function([self.tidx], cost)
+        # DEBUG
+        self.cost = theano.function([self.tidx], cost, updates=cost_updates)
         logger.info("Done compilation.")
 
         if isinstance(self.optimizer, str):
             if self.optimizer == 'adam':
                 logger.info("Calculating Adam optimizer updates.")
-                updates = Adam(-cost, self.fitparams, **kwds)
+                optimizer_updates = Adam(-cost, self.fitparams, **kwds)
             else:
                 raise ValueError("Unrecognized optimizer '{}'.".format(self.optimizer))
 
@@ -311,7 +312,7 @@ class SGD:
             # Treat optimizer as a class or factory function
             try:
                 logger.info("Calculating custom optimizer updates.")
-                updates = self.optimizer(-cost, self.fitparams, **kwds)
+                optimizer_updates = self.optimizer(-cost, self.fitparams, **kwds)
             except TypeError as e:
                 if 'is not callable' not in str(e):
                     # Some other TypeError was triggered; reraise
@@ -324,10 +325,10 @@ class SGD:
 
         logger.info("Done calculating optimizer updates.")
 
-        updates.update(sinn.get_updates())
+        shim.add_updates(optimizer_updates)
 
         logger.info("Compiling the optimization step function.")
-        self._step = theano.function([self.tidx], [], updates=updates)
+        self._step = theano.function([self.tidx], [], updates=shim.get_updates())
         logger.info("Done compilation.")
 
         # # Compile likelihood function
