@@ -967,6 +967,13 @@ em
         -------
         Integer (int16)
         """
+        if not shim.is_theano_object(Δt) and abs(Δt) < self.dt - config.abs_tolerance:
+            if Δt == 0:
+                return 0
+            else:
+                raise ValueError("You've asked for the index interval corresponding to "
+                                 "Δt = {}, which is smaller than this history's step size "
+                                 "({}).".format(Δt, self.dt))
         if shim.istype(Δt, 'int'):
             if not shim.istype(Δt, 'int16'):
                 Δt = shim.cast_int16( Δt )
@@ -2527,11 +2534,14 @@ class Series(ConvolveMixin, History):
             # assert(shim.is_theano_variable(self._data))
             #     # This should be guaranteed by self.use_theano=True
             tmpdata = self._data
-            if self._original_data is None:
-                self._original_data = self._data
+            #if self._original_data is None:
+            #    self._original_data = self._data
                     # Persistently store the current _data, because that's the handle
                     # to the input that will be used when compiling the function
-            self._data = shim.set_subtensor(tmpdata[tidx], value)
+            # TODO: Decide whether this is the best way to avoid reupdating/recomputing past time points
+            self._data = shim.ifelse(self._cur_tidx < end,
+                                     shim.set_subtensor(tmpdata[tidx], value),
+                                     self._data)
             if updates is not None:
                 shim.add_updates(updates)
 
