@@ -39,6 +39,8 @@ import numpy as np
 import dill
 logger = logging.getLogger('sinn.iotools')
 
+extensions = ['sin', 'sir', 'dat', 'txt']
+
 ##########################
 # Public API
 
@@ -46,7 +48,9 @@ def save(filename, data):
     """Save `data` and, if it has a 'raw' representation, that as well:"""
     os.makedirs(_get_savedir(), exist_ok=True)
     try:
-        relpath = _get_savedir() + filename
+        relname, ext = os.path.splitext(_get_savedir() + filename)
+        ext = ext if ext != "" else ".sin"
+        relpath = relname + ext
         f, realrelpath = _get_free_file(relpath)
 
     except IOError:
@@ -73,7 +77,7 @@ def saveraw(filename, data):
     if hasattr(data, 'raw'):
         relfilename, relext = os.path.splitext(relpath)
         try:
-            f, rawrelpath = _get_free_file(relfilename + "_raw" + relext)
+            f, rawrelpath = _get_free_file(relfilename + ".sir")
         except IOError:
             logger.error("Could not create the filename")
         else:
@@ -82,8 +86,10 @@ def saveraw(filename, data):
     else:
         raise AttributeError("{} has no 'raw' method.".format(str(data)))
 
-def load(filename):
-    with open(_get_savedir() + filename, 'rb') as f:
+def load(filename, basedir=None):
+    #basename, ext = _parse_filename(filename)
+    #filename = basename if ext is None else basename + '.' + ext
+    with open(_get_savedir(basedir) + filename, 'rb') as f:
         try:
             return dill.load(f)
         except EOFError:
@@ -92,10 +98,10 @@ def load(filename):
                            "delete this one.".format(filename))
             raise FileNotFoundError
 
-def loadraw(filename):
+def loadraw(filename, basedir=None):
     fn, ext = os.path.splitext(filename)
-    path = _get_savedir() + filename
-    rawpath = _get_savedir() + fn + '_raw' + ext
+    path = _get_savedir(basedir) + filename
+    rawpath = _get_savedir(basedir) + fn + '.sir'
 
     # Try the raw path first
     if os.path.exists(rawpath):
@@ -107,19 +113,32 @@ def loadraw(filename):
 # Internal functions
 
 
-_savedir = "data"
+_savedir = "."
 _max_files = 100 # Maximum number we will append to a file to make it unique. If this number is exceeded, an error is raised
 
-def _get_savedir():
-    global _savedir
+def _get_savedir(savedir=None):
+    #global _savedir
 
-    while len(_savedir) > 0:
-        if _savedir[-1] == '/':
-            _savedir = _savedir[:-1]
+    if savedir is None:
+        savedir = _savedir
+    while len(savedir) > 0:
+        if savedir[-1] == '/':
+            savedir = savedir[:-1]
         else:
             break
 
-    return _savedir + '/'
+    return savedir + '/'
+
+# def _parse_filename(filename):
+#     """Replace . with /. Return the extension separately, if present."""
+#     flst = filename.split('.')
+#     if flst[-1] in extensions:
+#         filename = '/'.join(flst[:-1])
+#         ext = flst[-1]
+#     else:
+#         filename = '/'.join(flst)
+#         ext = None
+#     return filename, ext
 
 def _get_free_file(relpath):
     # Should avoid race conditions, since multiple processes may run in parallel
