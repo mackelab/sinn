@@ -1007,12 +1007,23 @@ em
         else:
             return t
 
-    def get_t_idx(self, t):
+    def get_t_idx(self, t, allow_rounding=False):
         """Return the idx corresponding to time t. Fails if no such index exists.
         It is ok for the t to correspond to a time "in the future",
         and for the data array not yet to contain a point at that time.
         `t` may also be specified as a slice, in which case a slice of time
         indices is returned.
+
+        Parameters
+        ----------
+        t: int, float, slice
+            The time we want to convert to an index. Integers are considered
+            indices and returned unchanged.
+
+        allow_rounding: bool (default: False)
+            By default, if no time index corresponds to t, a ValueError is raised.
+            This behaviour can be changed if allow_rounding is set to True, in
+            which case the index corresponding to the time closest to t is returned.
         """
         def _get_tidx(t):
             if shim.istype(t, 'int'):
@@ -1040,7 +1051,7 @@ em
                                         "of numerical errors. Try using a higher precision type.")
                     t_idx = (t - self._tarr[0]) / self.dt
                     r_t_idx = shim.round(t_idx)
-                    if (not shim.is_theano_object(r_t_idx)
+                    if (not shim.is_theano_object(r_t_idx) and not allow_rounding
                           and (abs(t_idx - r_t_idx) > config.get_abs_tolerance(t) / self.dt).all() ):
                         logger.error("t: {}, t0: {}, t-t0: {}, t_idx: {}, dt: {}"
                                      .format(t, self._tarr[0], t - self._tarr[0], t_idx, self.dt) )
