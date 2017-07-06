@@ -493,7 +493,7 @@ class SGD:
 
             # HACK Fill the data corresponding to the burnin time
             #      (hack b/c ugly + repeated in iterate() + does not check indexing)
-            for i in range(self.burnin_idx):
+            for i in range(0, self.burnin_idx, self.mbatch_size):
                 self._step(i)
         else:
             # TODO: Check what it is that is cleared here, and why we need to do it
@@ -535,7 +535,7 @@ class SGD:
         # HACK Fill the data corresponding to the burnin time
         #      (hack b/c ugly + repeated in step() + does not check indexing)
         # Possible fix: create another "skip burnin" function, with scan ?
-        for i in range(self.burnin_idx):
+        for i in range(0, self.burnin_idx, self.mbatch_size):
             self._step(i)
 
         t1 = time.perf_counter()
