@@ -221,9 +221,10 @@ class Model(com.ParameterMixin):
         # revert to the original locked/unlocked status
         old_status = {hist: hist.locked for hist in self.history_set}
         for hist in self.history_set:
-            hist.lock()
+            if not hist.locked:
+                hist.lock()
         self.clear_unlocked_histories()
-        for hist, status in old_status:
+        for hist, status in old_status.items():
             if status == False:
                 hist.unlock()
 
