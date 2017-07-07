@@ -206,7 +206,7 @@ class SGD:
         self.model.theano_reset()
         self.model.clear_unlocked_histories()
         #logL = self.model.loglikelihood(self.tidx, self.tidx + self.mbatch_size)
-        cost, cost_updates = self.cost_fn(self.tidx, self.tidx + self.mbatch_size)
+        cost, cost_updates = self.cost_fn(self.tidx, self.mbatch_size)
         self.model.clear_unlocked_histories()
         self.model.theano_reset()
         if variable not in theano.gof.graph.inputs([cost]):
@@ -289,7 +289,7 @@ class SGD:
         self.model.clear_unlocked_histories()
 
         logger.info("Producing the cost function theano graph")
-        cost, cost_updates = self.cost_fn(self.tidx, self.tidx + self.mbatch_size)
+        cost, cost_updates = self.cost_fn(self.tidx, self.mbatch_size)
         logger.info("Cost function graph complete.")
         if replace is not None:
             logger.info("Performing variable substitutions in Theano graph.")
@@ -297,9 +297,14 @@ class SGD:
             logger.info("Substitutions complete.")
 
         logger.info("Compiling the minibatch cost function.")
-        # DEBUG
-        self.cost = theano.function([self.tidx], cost, updates=cost_updates)
+        # DEBUG (because on mini batches?)
+        self.cost = theano.function([self.tidx], cost)#, updates=cost_updates)
         logger.info("Done compilation.")
+
+        # Function for stepping the model forward, e.g. for burnin
+        #logger.info("Compiling the minibatch advancing function.")
+        #self.cost = theano.function([self.tidx], updates=cost_updates)
+        #logger.info("Done compilation.")
 
         if isinstance(self.optimizer, str):
             if self.optimizer == 'adam':
@@ -493,8 +498,11 @@ class SGD:
 
             # HACK Fill the data corresponding to the burnin time
             #      (hack b/c ugly + repeated in iterate() + does not check indexing)
-            for i in range(0, self.burnin_idx, self.mbatch_size):
-                self._step(i)
+            logger.info("Moving current index forward to the end of the burnin period.")
+            self.model.advance(self.burnin_idx)
+            #for i in range(0, self.burnin_idx, self.mbatch_size):
+            #    self._step(i)
+            logger.info("Done.")
         else:
             # TODO: Check what it is that is cleared here, and why we need to do it
             self.model.clear_other_histories()
@@ -505,7 +513,7 @@ class SGD:
         for param in self.fitparams:
             self.param_evol[param].append(param.get_value())
 
-        self.cum_cost += self.cost()
+        self.cum_cost += self.cost(self.curtidx)
 
         # Increment step counter
         self.step_i += 1
@@ -535,8 +543,11 @@ class SGD:
         # HACK Fill the data corresponding to the burnin time
         #      (hack b/c ugly + repeated in step() + does not check indexing)
         # Possible fix: create another "skip burnin" function, with scan ?
-        for i in range(0, self.burnin_idx, self.mbatch_size):
-            self._step(i)
+        logger.info("Moving current index forward to the end of the burnin period.")
+        #for i in range(0, self.burnin_idx, self.mbatch_size):
+        #    self._step(i)
+        self.model.advance(self.burnin_idx)
+        logger.info("Done.")
 
         t1 = time.perf_counter()
         for i in range(Nmax):
@@ -554,7 +565,7 @@ class SGD:
                         .format(self.cum_step_time,
                                 self.tot_time,
                                 self.cum_step_time / (self.tot_time) * 100))
-            logger.info("Time per iteration: {}ms".format((self.tot_time)/self.step_i*1000))
+            logger.info("Time per iteration: {:.3f}ms".format((self.tot_time)/self.step_i*1000))
 
         #with open("sgd-evol", 'wb') as f:
         #    pickle.dump((L_evol, param_evol), f)

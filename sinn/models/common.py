@@ -208,9 +208,13 @@ class Model(com.ParameterMixin):
 
     def clear_unlocked_histories(self):
         """Clear all histories that have not been explicitly locked."""
-        for hist in self.history_inputs.union(sinn.inputs):
+        #for hist in self.history_inputs.union(sinn.inputs):
+        for hist in self.history_inputs:
+            # HACK: Removal of sinn.inputs is a more drastic version attempt
+            #       at correcting the same problem as fsgif.remove_other_histories
             if not hist.locked:
                 self.clear_history(hist)
+
     def clear_other_histories(self):
         """
         Clear unlocked histories that are not explicitly part of this model
@@ -236,7 +240,10 @@ class Model(com.ParameterMixin):
         # the entire data.
         logger.monitor("Clearing history " + history.name)
         history.clear()
-        if history in self.history_inputs.union(sinn.inputs):
+        #if history in self.history_inputs.union(sinn.inputs):
+        if history in self.history_inputs:
+            # HACK: Removal of sinn.inputs is a more drastic version attempt
+            #       at correcting the same problem as fsgif.remove_other_histories
             for obj in list(self.history_inputs) + self.kernel_list:
                 for op in obj.cached_ops:
                     if hash(history) in op.cache:
