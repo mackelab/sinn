@@ -746,27 +746,40 @@ em
         return len(before_array), len(after_array)
 
     def compute_up_to(self, tidx):
-        """
-        Compute the history up to `tidx` inclusive.
+        """Compute the history up to `tidx` inclusive.
 
         Parameters
         ----------
         tidx: int, str
-            Index up to which we need to compute. Can also be the string
-            'end', in which the entire history (excluding subsequent padding)
-            is computed.
+            Index up to which we need to compute. Can also be a string, either
+            'end' or 'all', in which the entire history is computed. The
+            difference between these is that 'end' will compute all values
+            starting at the current time, whereas 'all' restarts from 0 and
+            computes everything. Padding is also excluded with 'end', while it
+            is included with 'all'. When compiling a Theano graph for
+            non-iterative histories, 'all' results in a much cleaner graph,
+            since the neither computation bound is a Theano variable.
             NOTE: The index must be positive. Negative indices are treated as
             before 0, and lead to no computation. (I.e. negative indices are
             not subtracted from the end.)
+
         """
 
         if tidx == 'end':
-            tidx = self.t0idx + len(self) - 1
+            start = self._original_tidx + 1
+            end = self.tnidx
+            replace = False
+        elif tidx == 'all':
+            start = 0
+            end = len(self._tarr) - 1
+            replace = True
+        else:
+            shim.check(shim.istype(tidx, 'int'))
+            start = self._original_tidx + 1
+            end = tidx
+            replace = False
 
-        shim.check(shim.istype(tidx, 'int'))
 
-        start = self._original_tidx + 1
-        end = tidx
         #end = shim.ifelse(tidx >= 0,
         #                  tidx,
         #                  len(self._tarr) + tidx)
@@ -849,7 +862,7 @@ em
             # has been defined – use it.
             if printlogs:
                 logger.monitor("Computing {} up to {}. Using custom batch operation."
-                            .format(self.name, tarr[tidx]))
+                            .format(self.name, tarr[end]))
             self.update(slice(start, stop),
                         self._compute_range(tarr[slice(start, stop)]))
 
@@ -858,12 +871,18 @@ em
             # one go
             if printlogs:
                 logger.monitor("Computing {} from {} to {}. Computing all times simultaneously."
-                            .format(self.name, tarr[start], tarr[stop-1]))
-            self.update(slice(start,stop),
-                        self._update_function(tarr[slice(start,stop)][::-1])[::-1])
-                # The order in which _update_function is called is flipped, putting
-                # later times first. This ensures that if dependent computations
-                # are triggered, they will also batch update.
+                               .format(self.name, tarr[start], tarr[end]))
+            if replace:
+                self._data = self._update_function(tarr[::-1])[::-1]
+                if isinstance(self._data, np.ndarray):
+                    self._data = shim.shared(self._data)
+                self._cur_tidx = end
+            else:
+                self.update(slice(start,stop),
+                            self._update_function(tarr[slice(start,stop)][::-1])[::-1])
+                    # The order in which _update_function is called is flipped, putting
+                    # later times first. This ensures that if dependent computations
+                    # are triggered, they will also batch update.
 
         elif shim.is_theano_object(tarr):
             # For non-batch Theano evaluations, we only allow evaluating one time step ahead;
@@ -2796,7 +2815,8 @@ class Series(ConvolveMixin, History):
 
         If no source is specified, the series own update function is used,
         provided it has been previously defined. Can be used to force
-        computation of the whole series.
+        computation of the whole series. Internally, this calls `_compute_up_to('all')`,
+        which means every time point (including padding) is recomputed.
 
         This history is returned to allow chaining operations.
 
@@ -2825,7 +2845,7 @@ class Series(ConvolveMixin, History):
 
         if source is None:
             # Default is to use series' own compute functions
-            self.compute_up_to('end')
+            self.compute_up_to('all')
 
         elif isinstance(source, History):
             raise NotImplemented

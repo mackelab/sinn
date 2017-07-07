@@ -25,6 +25,7 @@
     _data should always be a shared variable
 *** TODO Allow combinations of kernels (e.g. uniform + exp)
 ** TODO Attach list of inputs to history
+** TODO Allow resizing a History (esp. reducing)
 ** TODO Allow input dependencies to specify a lag
    Should be possible to give to m the dependency m_lag1, while
    keeping m 'batch computable'.
