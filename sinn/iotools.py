@@ -46,7 +46,8 @@ extensions = ['sin', 'sir', 'dat', 'txt']
 
 def save(filename, data):
     """Save `data` and, if it has a 'raw' representation, that as well:"""
-    os.makedirs(_get_savedir(), exist_ok=True)
+    #os.makedirs(_get_savedir(), exist_ok=True)
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
     try:
         relname, ext = os.path.splitext(_get_savedir() + filename)
         ext = ext if ext != "" else ".sin"
@@ -71,7 +72,8 @@ def save(filename, data):
 
 def saveraw(filename, data):
     """Same as `save`, but only saves the raw data."""
-    os.makedirs(_get_savedir(), exist_ok=True)
+    #os.makedirs(_get_savedir(), exist_ok=True)
+    os.makedirs(os.pat.dirname(filename), exist=True)
     relpath = _get_savedir() + filename
 
     if hasattr(data, 'raw'):
@@ -113,13 +115,14 @@ def loadraw(filename, basedir=None):
 # Internal functions
 
 
-_savedir = "."
+_savedir = ""
 _max_files = 100 # Maximum number we will append to a file to make it unique. If this number is exceeded, an error is raised
 
 def _get_savedir(savedir=None):
     #global _savedir
 
     if savedir is None:
+        #return ""
         savedir = _savedir
     while len(savedir) > 0:
         if savedir[-1] == '/':
@@ -127,7 +130,9 @@ def _get_savedir(savedir=None):
         else:
             break
 
-    return savedir + '/'
+    if len(savedir) > 0:
+        savedir += '/'
+    return savedir
 
 # def _parse_filename(filename):
 #     """Replace . with /. Return the extension separately, if present."""
