@@ -47,10 +47,12 @@ extensions = ['sin', 'sir', 'dat', 'txt']
 def save(filename, data):
     """Save `data` and, if it has a 'raw' representation, that as well:"""
     #os.makedirs(_get_savedir(), exist_ok=True)
-    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    dirname = os.path.dirname(filename)
+    if dirname != "":
+        os.makedirs(dirname, exist_ok=True)
     try:
         relname, ext = os.path.splitext(_get_savedir() + filename)
-        ext = ext if ext != "" else ".sin"
+        ext = ext if ext != "" or ext == ".sir" else ".sin"
         relpath = relname + ext
         f, realrelpath = _get_free_file(relpath)
 
@@ -64,8 +66,10 @@ def save(filename, data):
 
         # Also try to save a more future-proof raw datafile
         try:
-            saveraw(os.path.basename(realrelpath), data)
+            #saveraw(os.path.basename(realrelpath), data)
+            saveraw(realrelpath, data)
         except AttributeError:
+            # TODO: Use custom error type
             pass
 
     return realrelpath
@@ -73,7 +77,9 @@ def save(filename, data):
 def saveraw(filename, data):
     """Same as `save`, but only saves the raw data."""
     #os.makedirs(_get_savedir(), exist_ok=True)
-    os.makedirs(os.pat.dirname(filename), exist=True)
+    dirname = os.path.dirname(filename)
+    if dirname != "":
+        os.makedirs(dirname, exist_ok=True)
     relpath = _get_savedir() + filename
 
     if hasattr(data, 'raw'):
@@ -86,6 +92,7 @@ def saveraw(filename, data):
             np.savez(f, **data.raw())
             f.close()
     else:
+        # TODO: use custom error type
         raise AttributeError("{} has no 'raw' method.".format(str(data)))
 
 def load(filename, basedir=None):

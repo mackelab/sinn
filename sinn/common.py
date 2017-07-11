@@ -98,8 +98,11 @@ def ismultiple(x, base, rtol=None, atol=None):
             # so the '0' above must be first argument
 
 def static_vars(**kwargs):
-    """Declare static variables in a function with a decorator."""
-    # Sources from https://stackoverflow.com/a/279586
+    """
+    Declare static variables in a function with a decorator.
+    Note that this only works with functions, not methods.
+    """
+    # Sourced from https://stackoverflow.com/a/279586
     def decorate(func):
         for k in kwargs:
             setattr(func, k, kwargs[k])

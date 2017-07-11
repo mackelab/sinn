@@ -226,7 +226,7 @@ class Model(com.ParameterMixin):
         old_status = {hist: hist.locked for hist in self.history_set}
         for hist in self.history_set:
             if not hist.locked:
-                hist.lock()
+                hist.lock(warn=False)
         self.clear_unlocked_histories()
         for hist, status in old_status.items():
             if status == False:
