@@ -137,7 +137,7 @@ class SGD:
             String specifying the optimizer to use. Possible values:
               - 'adam'
             If a class/factory function, should have the signature
-              `optimizer(cost, fitparams, **kwds)`
+              `optimizer(cost, fitparams, **kwargs)`
             where `fitparams` has the same form as the homonymous parameter to `compile`.
         burnin: float, int
             Burnin time, in the time units of the model
@@ -252,7 +252,12 @@ class SGD:
         # If the ground truth of `variable` was set, compute that of `newvar`
         self._augment_ground_truth_with_transforms()
 
-    def compile(self, fitparams, **kwds):
+    def compile(self, fitparams, **kwargs):
+
+        if 'lr' in kwargs:
+            self._compiled_lr = kwargs['lr']
+        else:
+            self._compiled_lr = None
 
         # Create the Theano `replace` parameter from self.substitutions
         if len(self.substitutions) > 0:
@@ -309,7 +314,7 @@ class SGD:
         if isinstance(self.optimizer, str):
             if self.optimizer == 'adam':
                 logger.info("Calculating Adam optimizer updates.")
-                optimizer_updates = Adam(-cost, self.fitparams, **kwds)
+                optimizer_updates = Adam(-cost, self.fitparams, **kwargs)
             else:
                 raise ValueError("Unrecognized optimizer '{}'.".format(self.optimizer))
 
@@ -317,7 +322,7 @@ class SGD:
             # Treat optimizer as a class or factory function
             try:
                 logger.info("Calculating custom optimizer updates.")
-                optimizer_updates = self.optimizer(-cost, self.fitparams, **kwds)
+                optimizer_updates = self.optimizer(-cost, self.fitparams, **kwargs)
             except TypeError as e:
                 if 'is not callable' not in str(e):
                     # Some other TypeError was triggered; reraise
@@ -454,16 +459,18 @@ class SGD:
 
         self.param_evol = {param: deque([param.get_value()])
                            for param in self.fitparams}
-        self.cost_evol = deque([-np.inf])
+        self.cost_evol = deque([])
 
         self.step_i = 0
+        self.circ_step_i = 0
+        self.step_cost = []
         self.curtidx = self.burnin_idx
         self.cum_step_time = 0
         self.tot_time = 0
 
-    def converged(it, r=0.01, p=0.99, n=10, m=10, abs_th=0.001):
+    def converged(it, r, p=0.99, n=10, m=10, abs_th=0.001):
         """
-        r: resolution. Identify a difference in means of r*sigma with probability p
+        r: resolution. Identify a difference in means of r*sigma with probability p. A smaller r makes the test harder to satisfy; the learning rate is a good starting point for this value.
         p: certainty of each hypothesis test
         n: length of each test
         m: number of tests
@@ -486,8 +493,14 @@ class SGD:
             return all( (meandiff(it, end=-i) * s < a).all()
                         for i in range(1, m+1) )
 
-    def step(self):
-        if self.curtidx > self.burnin_idx + self.datalen - self.mbatch_size:
+    def step(self, conv_res):
+        """
+        Parameters
+        ----------
+        conv_res: float
+            Convergence resolution. Smaller number means a more stringent test for convergence.
+        """
+        if self.curtidx > self.burnin_idx + self.data_idxlen - self.mbatch_size:
             # We've run through the dataset
             # Reset time index to beginning
             self.curtidx = self.burnin_idx
@@ -495,6 +508,7 @@ class SGD:
             self.cost_evol.append(self.cum_cost)
             #self.model.clear_unlocked_histories()
             self.cum_cost = 0
+            self.circ_step_i = 0
 
             # HACK Fill the data corresponding to the burnin time
             #      (hack b/c ugly + repeated in iterate() + does not check indexing)
@@ -503,6 +517,7 @@ class SGD:
             #for i in range(0, self.burnin_idx, self.mbatch_size):
             #    self._step(i)
             logger.info("Done.")
+
         else:
             # TODO: Check what it is that is cleared here, and why we need to do it
             self.model.clear_other_histories()
@@ -513,32 +528,48 @@ class SGD:
         for param in self.fitparams:
             self.param_evol[param].append(param.get_value())
 
-        self.cum_cost += self.cost(self.curtidx)
+        if self.circ_step_i >= len(self.step_cost):
+            assert(self.circ_step_i == len(self.step_cost))
+            self.step_cost.append(self.cost(self.curtidx))
+        else:
+            self.step_cost[self.circ_step_i] = self.cost(self.curtidx)
+        self.cum_cost += self.step_cost[self.circ_step_i]
 
         # Increment step counter
         self.step_i += 1
+        self.circ_step_i += 1
+        self.curtidx += self.mbatch_size
 
+        # TODO: Use a circular iterator for step_cost, so that a) we don't need circ_step_i
+        #       and b) we can test over intervals that straddle a reset of curtidx
         # Check to see if there have been meaningful changes in the last 10 iterations
-        if ( converged(self.cost_evol)
-             and all( converged(self.param_evol[p]) for p in self.fitparams) ):
+        if ( converged(self.cost_evol, r=conv_res, n=4, m=3) and
+             converged(self.step_cost[:self.circ_step_i], r=conv_res, n=100)
+             and all( converged(self.param_evol[p], r=conv_res) for p in self.fitparams) ):
             logger.info("Converged. log L = {:.2f}".format(float(self.cost_evol[-1])))
             return ConvergeStatus.CONVERGED
 
         #Print progress
         clear_output(wait=True)
             #`wait` indicates to wait until something is printed, which avoids flicker
-        logger.info("Iteration {:>{}} – log L = {:.2f}"
+        logger.info("Iteration {:>{}} – <log L> = {:.2f}"
                     .format(self.step_i,
                             self.output_width,
-                            float(self.cost_evol[-1])))
-        self.curtidx += self.mbatch_size
+                            float(sum(self.step_cost[:self.circ_step_i])/(self.curtidx-self.burnin_idx)/self.mbatch_size)))
 
         return ConvergeStatus.NOTCONVERGED
 
-    def iterate(self, Nmax=int(5e3)):
+    def iterate(self, Nmax=int(5e3), lr=None):
 
         Nmax = int(Nmax)
         self.output_width = int(np.log10(Nmax))
+
+        if lr is not None:
+            # Override the learning rate set during compilation
+            pass
+        else:
+            lr = self._compiled_lr
+        assert(lr is not None)
 
         # HACK Fill the data corresponding to the burnin time
         #      (hack b/c ugly + repeated in step() + does not check indexing)
@@ -550,11 +581,15 @@ class SGD:
         logger.info("Done.")
 
         t1 = time.perf_counter()
-        for i in range(Nmax):
-            status = self.step()
-            if status in [ConvergeStatus.CONVERGED, ConvergeStatus.ABORT]:
-                break
-        self.tot_time = time.perf_counter() - t1
+        try:
+            for i in range(Nmax):
+                status = self.step(conv_res=lr)
+                if status in [ConvergeStatus.CONVERGED, ConvergeStatus.ABORT]:
+                    break
+        except KeyboardInterrupt:
+            print("Gradient descent was interrupted.")
+        finally:
+            self.tot_time = time.perf_counter() - t1
 
         if status != ConvergeStatus.CONVERGED:
             print("Did not converge.")
@@ -640,7 +675,7 @@ class SGD:
                     logger.warning("Although ground truth parameters have been set, "
                                    "the value of '{}' was not.".format(param.name))
 
-    def plot_param_evol_overlay(self, basedata, evol=None, **kwds):
+    def plot_param_evol_overlay(self, basedata, evol=None, **kwargs):
         """
         Parameters
         ----------
@@ -653,7 +688,7 @@ class SGD:
             method. If not specified, `get_evol` is called to retrieve the latest
             parameter evolution.
 
-        **kwds:
+        **kwargs:
             Additional keyword arguments are passed to `plt.plot`
         """
 
@@ -727,7 +762,7 @@ class SGD:
                                          .format(ax.name))
 
                 assert( len(plotcoords) == 2 )
-                plt.plot(plotcoords[0], plotcoords[1])
+                plt.plot(plotcoords[0], plotcoords[1], **kwargs)
 
             else:
                 raise NotImplementedError("Overlaying currently implemented "
@@ -838,5 +873,8 @@ def Adam(cost, params, lr=0.0002, b1=0.1, b2=0.001, e=1e-8):
         updates[m] = m_t
         updates[v] = v_t
         updates[p] = p_t
+        # Debug
+        if p.name == 'w':
+            updates[p] = shim.print(p_t)
     updates[i] = i_t
     return updates
