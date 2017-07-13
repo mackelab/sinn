@@ -34,6 +34,9 @@ class ConvergeStatus(Enum):
     NOTCONVERGED = 1
     ABORT = 2
 
+# DEBUG ?
+debug_flags = {}
+
 ######################################
 #
 # General use functions
@@ -206,7 +209,7 @@ class SGD:
         self.model.theano_reset()
         self.model.clear_unlocked_histories()
         #logL = self.model.loglikelihood(self.tidx, self.tidx + self.mbatch_size)
-        cost, cost_updates = self.cost_fn(self.tidx, self.mbatch_size)
+        cost, statevar_upds, shared_upds = self.cost_fn(self.tidx, self.mbatch_size)
         self.model.clear_unlocked_histories()
         self.model.theano_reset()
         if variable not in theano.gof.graph.inputs([cost]):
@@ -252,8 +255,9 @@ class SGD:
         # If the ground truth of `variable` was set, compute that of `newvar`
         self._augment_ground_truth_with_transforms()
 
-    def compile(self, fitparams, **kwargs):
+    def get_substituted_cost_graph(self, fitparams, **kwargs):
 
+        # Store the learning rate since it's also used in the convergence test
         if 'lr' in kwargs:
             self._compiled_lr = kwargs['lr']
         else:
@@ -289,17 +293,25 @@ class SGD:
             else:
                 self.fitparams[param] = mask
 
-        # Compile step function
+
         self.model.theano_reset()
         self.model.clear_unlocked_histories()
 
         logger.info("Producing the cost function theano graph")
-        cost, cost_updates = self.cost_fn(self.tidx, self.mbatch_size)
+        cost, statevar_upds, shared_upds = self.cost_fn(self.tidx, self.mbatch_size)
         logger.info("Cost function graph complete.")
         if replace is not None:
             logger.info("Performing variable substitutions in Theano graph.")
             cost = theano.clone(cost, replace=replace)
             logger.info("Substitutions complete.")
+
+        return cost, statevar_upds, shared_upds
+
+    def compile(self, fitparams, **kwargs):
+        # Compile step function
+
+        cost, statevar_upds, shared_upds = self.get_substituted_cost_graph(fitparams, **kwargs)
+            # Sets self.fitparams
 
         logger.info("Compiling the minibatch cost function.")
         # DEBUG (because on mini batches?)
@@ -319,7 +331,7 @@ class SGD:
                 raise ValueError("Unrecognized optimizer '{}'.".format(self.optimizer))
 
         else:
-            # Treat optimizer as a class or factory function
+            # Treat optimizer as a factory class or function
             try:
                 logger.info("Calculating custom optimizer updates.")
                 optimizer_updates = self.optimizer(-cost, self.fitparams, **kwargs)
@@ -335,10 +347,11 @@ class SGD:
 
         logger.info("Done calculating optimizer updates.")
 
-        shim.add_updates(optimizer_updates)
+        assert(len(shim.get_updates()) == 0)
+        #shim.add_updates(optimizer_updates)
 
         logger.info("Compiling the optimization step function.")
-        self._step = theano.function([self.tidx], [], updates=shim.get_updates())
+        self._step = theano.function([self.tidx], [], updates=optimizer_updates)#shim.get_updates())
         logger.info("Done compilation.")
 
         # # Compile likelihood function
@@ -500,6 +513,10 @@ class SGD:
         conv_res: float
             Convergence resolution. Smaller number means a more stringent test for convergence.
         """
+        # Clear notebook of previous iteration's output
+        clear_output(wait=True)
+            #`wait` indicates to wait until something is printed, which avoids flicker
+
         if self.curtidx > self.burnin_idx + self.data_idxlen - self.mbatch_size:
             # We've run through the dataset
             # Reset time index to beginning
@@ -512,7 +529,8 @@ class SGD:
 
             # HACK Fill the data corresponding to the burnin time
             #      (hack b/c ugly + repeated in iterate() + does not check indexing)
-            logger.info("Moving current index forward to the end of the burnin period.")
+            logger.info("Iteration {:>{}} – Moving current index forward to the end of the burnin period."
+                        .format(step_i))
             self.model.advance(self.burnin_idx)
             #for i in range(0, self.burnin_idx, self.mbatch_size):
             #    self._step(i)
@@ -523,6 +541,8 @@ class SGD:
             self.model.clear_other_histories()
 
         t1 = time.perf_counter()
+        self.model.advance(self.curtidx)
+            # FIXME?: Currently `advance` is needed because grad updates don't change the data
         self._step(self.curtidx)
         self.cum_step_time += time.perf_counter() - t1
         for param in self.fitparams:
@@ -549,9 +569,7 @@ class SGD:
             logger.info("Converged. log L = {:.2f}".format(float(self.cost_evol[-1])))
             return ConvergeStatus.CONVERGED
 
-        #Print progress
-        clear_output(wait=True)
-            #`wait` indicates to wait until something is printed, which avoids flicker
+        #Print progress  # TODO: move to top of step
         logger.info("Iteration {:>{}} – <log L> = {:.2f}"
                     .format(self.step_i,
                             self.output_width,
@@ -799,7 +817,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
-def Adam(cost, params, lr=0.0002, b1=0.1, b2=0.001, e=1e-8):
+def Adam(cost, params, lr=0.0002, b1=0.1, b2=0.001, e=1e-8, grad_fn=None):
     """
     Adam optimizer. Returns a set of gradient descent updates.
     This is ported from the GitHub Gist by Alec Radford
@@ -817,6 +835,13 @@ def Adam(cost, params, lr=0.0002, b1=0.1, b2=0.001, e=1e-8):
         the same shape as the shared variable – False entries indicate that
         we are not fitting for this parameter component, and so its gradient
         is to be set to zero.
+
+    […]
+
+    grad_fn: function
+        If specified, use this instead of `T.grad` to compute the cost's gradient.
+        Should have the same signature (i.e. `grad_fn(cost, params)`) and return
+        a result of the same shape as `T.grad`.
 
     Returns
     -------
@@ -848,7 +873,17 @@ def Adam(cost, params, lr=0.0002, b1=0.1, b2=0.001, e=1e-8):
     params = tmpparams
 
     updates = OrderedDict()
-    grads = T.grad(cost, params)
+
+    if grad_fn is None:
+        grads = T.grad(cost, params)
+    else:
+        grads = grad_fn(cost, params)
+
+    # DEBUG ?
+    if 'print grads' in debug_flags:
+        for i, p in enumerate(params):
+            if p.name in debug_flags['print grads']:
+                grads[i] = shim.print(grads[i], 'gradient ' + p.name)
     # Mask out the gradient for parameters we aren't fitting
     for i, m in enumerate(param_masks):
         if m is not None:
@@ -873,8 +908,87 @@ def Adam(cost, params, lr=0.0002, b1=0.1, b2=0.001, e=1e-8):
         updates[m] = m_t
         updates[v] = v_t
         updates[p] = p_t
-        # Debug
-        if p.name == 'w':
-            updates[p] = shim.print(p_t)
     updates[i] = i_t
     return updates
+
+
+
+class NPAdam:
+    """
+    A pure NumPy version of the Adam optimizer
+
+    params: list
+        List of Theano shared variables. Any element may be specified instead
+        as a tuple pair, whose first element is the shared variable, and the
+        second is a boolean mask array. If given, the mask array should be of
+        the same shape as the shared variable – False entries indicate that
+        we are not fitting for this parameter component, and so its gradient
+        is to be set to zero.
+
+    […]
+
+    Returns
+    -------
+    Theano update dictionary for the parameters in `params`
+    """
+    def __init__(self, grad_fn, params, lr=0.0002, b1=0.1, b2=0.001, e=1e-8):
+        self.param_masks = []
+        # Standardize the form of params
+        if isinstance(params, dict):
+            # Convert dictionary to a list of (param, mask_descriptor) tuples
+            params = list(params.items())
+        # Extract the gradient mask for each parameter
+        for p in params:
+            if isinstance(p, tuple):
+                assert(len(p) == 2)
+                if isinstance(p[1], bool):
+                    self.param_masks.append(np.ones(p[0].get_value().shape, dtype=int)
+                                    * p[1])
+                else:
+                    if p[1].shape != p[0].get_value().shape:
+                        raise ValueError("Provided mask (shape {}) for parameter {} "
+                                        "(shape {}) has a different shape."
+                                        .format(p[1].shape, p[0].name, p[0].get_value().shape))
+                    self.param_masks.append(p[1])
+            else:
+                self.param_masks.append(None)
+
+        self.grad_fn = grad_fn
+
+        self.lr = lr
+        self.b1 = b1
+        self.b2 = b2
+        self.e = e
+
+        self.i = 0
+        self.m = deque([])
+        self.v = deque([])
+        for p in zip(params):
+            self.m.append( np.zeros(p.shape) )
+            self.v.append( np.zeros(p.shape) )
+
+    def masked_grad_fn(self, params):
+        grads = self.grad_fn(params)
+        # Mask out the gradient for parameters we aren't fitting
+        for i, m in enumerate(self.param_masks):
+            if m is not None:
+                grads[i] = grads[i]*m
+                # m is an array of ones and zeros
+        return grads
+
+    def __call__(self, params):
+
+        grads = self.masked_grad_fn(params)
+
+        self.i += 1
+        fix1 = 1. - (1. - self.b1)**self.i
+        fix2 = 1. - (1. - self.b2)**self.i
+        lr_t = lr * (np.sqrt(fix2) / fix1)
+
+        p_t = []
+        for p, g in zip(params, grads):
+            self.m[i] = (b1 * g) + ((1. - b1) * self.m[i])
+            self.v[i] = (b2 * g**2) + ((1. - b2) * self.v[i])
+            g_t = self.m[i] / (np.sqrt(self.v[i]) + self.e)
+            p_t = p - (lr_t * g_t)
+        return updates
