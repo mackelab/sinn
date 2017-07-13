@@ -530,7 +530,7 @@ class SGD:
             # HACK Fill the data corresponding to the burnin time
             #      (hack b/c ugly + repeated in iterate() + does not check indexing)
             logger.info("Iteration {:>{}} – Moving current index forward to the end of the burnin period."
-                        .format(step_i))
+                        .format(self.step_i, self.output_width))
             self.model.advance(self.burnin_idx)
             #for i in range(0, self.burnin_idx, self.mbatch_size):
             #    self._step(i)
