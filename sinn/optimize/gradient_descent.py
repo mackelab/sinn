@@ -20,6 +20,7 @@ import theano_shim as shim
 import sinn
 import sinn.analyze as anlz
 import sinn.analyze.heatmap
+import sinn.iotools
 
 logger = logging.getLogger('sinn.optimize.gradient_descent')
 
@@ -163,6 +164,12 @@ class SGD:
         self.tidx_var = theano.tensor.lscalar('tidx')
         self.mbatch_var = theano.tensor.lscalar('batch_size')
 
+        self.substitutions = {}
+        self._verified_transforms = {}
+            # For security reasons, users should visually check that transforms defined
+            # with strings are not malicious. We save a flag for each transform, indicating
+            # that it has been verified.
+
         if sgd_file is None:
             self.burnin = burnin
             self.burnin_idx = model.get_t_idx(burnin)
@@ -172,7 +179,6 @@ class SGD:
 
             #tidx.tag.test_value = 978
             #shim.gettheano().config.compute_test_value = 'warn'
-            self.substitutions = {}
             self.fitparams = None
             self.trueparams = None
 
@@ -181,9 +187,12 @@ class SGD:
                 # initialize will be called again after 'fitparams' is set.
 
         else:
-            # FIXME: what to do with substitutions ?
             # TODO: Allow loading both raw (.sir) and sinn pickles (.sin)
-            self.from_raw(io.loadraw(sgd_file))
+            # TODO: Make from_raw a class method, to be consistent with History ?
+            #       -> Would require saving the cost function as well
+            self.fitparams = OrderedDict()
+            self.param_evol = {}
+            self.from_raw(sinn.iotools.loadraw(sgd_file))
 
     def raw(self, **kwargs):
         raw = {}
@@ -191,7 +200,7 @@ class SGD:
         def add_attr(attr, retrieve_fn=None):
             # Doing it this way allows to use keywords to avoid errors triggered by getattr(attr)
             if retrieve_fn is None:
-                retrieve_fn = getattr
+                retrieve_fn = lambda attrname: getattr(self, attrname)
             raw[attr] = kwargs.pop(attr) if attr in kwargs else retrieve_fn(attr)
 
         add_attr('burnin')
@@ -211,19 +220,30 @@ class SGD:
         add_attr('step_cost')
         add_attr('cost_evol')
 
-        raw['param_names'] = np.array([p.name for p in self.fitparams()])
+        if self.trueparams is not None:
+            raw['true_param_names'] = np.array([p.name for p in self.trueparams])
+            for p, val in self.trueparams.items():
+                raw['true_param_val_' + p.name] = val
+
+        raw['fit_param_names'] = np.array([p.name for p in self.fitparams])
         for p, val in self.fitparams.items():
             raw['mask_' + p.name] = val
         for p, val in self.param_evol.items():
-            assert(p.name in raw['param_names'])
+            assert(p.name in raw['fit_param_names'])
             raw['evol_' + p.name] = np.array(val)
+
+        raw['substituted_param_names'] = np.array([p.name for p in self.substitutions])
+        for keyvar, subinfo in self.substitutions.items():
+            raw['subs_' + keyvar.name] = np.array([subinfo[0].name, subinfo[1], subinfo[2]])
 
         raw.update(kwargs)
 
         return raw
 
-
-    def from_raw(self, raw):
+    def from_raw(self, raw, trust_transforms=False):
+        """
+        Don't forget to call `verify_transforms` after this.
+        """
 
         self.burnin = raw['burnin']
         self.burnin_idx = raw['burnin_idx']
@@ -231,7 +251,7 @@ class SGD:
         self.data_idxlen = raw['data_idxlen']
         self.mbatch_size = raw['mbatch_size']
 
-        self.curtidx = raw['curtixd']
+        self.curtidx = raw['curtidx']
         self.step_i = raw['step_i']
         self.circ_step_i = raw['circ_step_i']
         self.output_width = raw['output_width']
@@ -242,17 +262,107 @@ class SGD:
         self.step_cost = deque(raw['step_cost'])
         self.cost_evol = deque(raw['cost_evol'])
 
-        param_names = raw['param_names']
-        for name in param_names:
+        for name in raw['substituted_param_names']:
             p = None
             for p in self.model.params:
                 if p.name == name:
+                    break
+            # Copied from self.transform
+            # New transformed variable value will be set once the transform string is verified
+            newvar = theano.shared(p.get_value(),
+                                    broadcastable = p.broadcastable,
+                                    name = raw['subs_'+name][0])
+            inverse_transform = raw['subs_'+name][1]
+            transform = raw['subs_'+name][2]
+            self.substitutions[p] = (newvar, inverse_transform, transform)
+
+        if 'true_param_names' in raw:
+            self.trueparams = {}
+            for name in raw['true_param_names']:
+                p = None
+                for q in self.model.params:
+                    if q.name == name:
+                        p = q
+                        break
+                # fitparam might also be transformed from a base model parameter
+                for q, subinfo in self.substitutions.items():
+                    if subinfo[0].name == name:
+                        p = subinfo[0]
+                        break
+                assert(p is not None)
+                self.trueparams[p] = raw['true_param_val_' + name]
+        else:
+            self.trueparams = None
+
+        fit_param_names = raw['fit_param_names']
+        for name in fit_param_names:
+            p = None
+            for q in self.model.params:
+                if q.name == name:
+                    p = q
+                    break
+            # fitparam might also be transformed from a base model parameter
+            for q, subinfo in self.substitutions.items():
+                if subinfo[0].name == name:
+                    p = subinfo[0]
                     break
             assert(p is not None)
             self.fitparams[p] = raw['mask_' + name]
             self.param_evol[p] = raw['evol_' + name]
 
 
+    def verify_transforms(self, trust_automatically=False):
+        """
+        Should be called immediately after loading from raw.
+
+        Parameters
+        ----------
+        trust_automatically: bool
+            Bypass the verification. Required to avoid user interaction, but
+            since it beats the purpose of this function, to be used with care.
+        """
+        if len(self.substitutions) == 0 or all(_verified_transforms.values()):
+            # Nothing to do; don't bother the user
+            return
+
+        if trust_automatically:
+            trusted = True
+        else:
+            trusted = False
+            print("Here are the transforms currently used:")
+            for p, val in self.substitutions.items():
+                print("{} -> {} – (to) '{}', (from) '{}'"
+                      .format(p.name, val[0].name, val[2], val[1]))
+            res = input("Press y to confirm that these transforms are not malicious.")
+            if res[0].lower() == 'y':
+                trusted = True
+
+        if trusted:
+            for p, subinfo in self.substitutions.items():
+                self._verified_transforms[p] = True
+                # Set the transformed value now that the transform has been verified
+                subinfo[0].set_value(self._make_transform(p, subinfo[2])(p.get_value()))
+
+    def _make_transform(self, variable, transform_desc):
+        assert variable in self._verified_transforms
+        if not self._verified_transforms[variable]:
+            raise RuntimeError("Because they are interpreted with `eval`, you "
+                               "must verify transforms before using them.")
+
+        comps = transform_desc.split('->')
+
+        try:
+            if len(comps) == 1:
+                # Specified just a callable, like 'log10'
+                return eval('lambda x: ' + comps[0] + '(x)')
+            elif len(comps) == 2:
+                return eval('lambda ' + comps[0] + ': ' + comps[1])
+            else:
+                raise SyntaxError
+
+        except SyntaxError:
+            raise ValueError("Invalid transform description: \n '{}'"
+                             .format(transform_desc))
 
     def transform(self, variable, newname, transform, inverse_transform):
         """
@@ -271,13 +381,14 @@ class SGD:
             Must be part of the Theano graph for the log likelihood.
         newname: string
             Name to assign the new variable.
-        transform: callable
+        transform: str
+            TODO: Update docs to string defs for transforms
             Applied to `variable`, returns the new variable we want to fit.
             E.g. if we want to fit the log of `variable`, than `transform`
             could be specified as `lambda x: shim.log10(x)`.
             Make sure to use `shim` functions, rather directly `numpy` or `theano`
             to ensure expected behaviour.
-        inverse_transform: callable
+        inverse_transform: str
             Given the new variable, returns the old one. Continuing with the log
             example, this would be `lambda x: 10**x`.
         """
@@ -285,6 +396,9 @@ class SGD:
         # if variable not in self.fitparams:
         #     raise ValueError("Variable '{}' is not part of the fit parameters."
         #                      .format(variable))
+
+        assert(newname != variable.name)
+            # TODO: More extensive test that name doesn't already exist
 
         # Check that variable is a shared variable
         if not shim.isshared(variable):
@@ -301,38 +415,47 @@ class SGD:
             raise ValueError("'{}' is not part of the Theano graph for the cost."
                              .format(variable))
 
+        # Since these transform descriptions are given by the user, they are assumed safe
+        self._verified_transforms[variable] = True
+        _transform = self._make_transform(variable, transform)
+        _inverse_transform = self._make_transform(variable, inverse_transform)
+
         # Check that the transforms are callable and each other's inverse
         # Choosing a test value is error prone, since different variables will have
         # different domains – 0.5 is about as safe a value as we will find
         testx = 0.5
         try:
-            transform(testx)
+            _transform(testx)
         except TypeError as e:
             if "is not callable" in str(e):
+                # FIXME This error might be confusing now that we save strings instead of callables
                 raise ValueError("'transform' argument (current '{}' must be "
                                  "callable.".format(transform))
             else:
                 # Some other TypeError
                 raise
         try:
-            inverse_transform(testx)
+            _inverse_transform(testx)
         except TypeError as e:
             if "is not callable" in str(e):
+                # FIXME See above
                 raise ValueError("'inverse_transform' argument (current '{}' must be "
                                  "callable.".format(inverse_transform))
             else:
                 # Some other TypeError
                 raise
-        if not sinn.isclose(testx, inverse_transform(transform(testx))):
+        if not sinn.isclose(testx, _inverse_transform(_transform(testx))):
             raise ValueError("The given inverse transform does not actually invert "
                              "`transform({})`.".format(testx))
 
         # Create the new transformed variable
-        newvar = theano.shared(transform(variable.get_value()),
+        newvar = theano.shared(_transform(variable.get_value()),
                                broadcastable = variable.broadcastable,
                                name = newname)
 
         # Save the transform
+        # We save the strings rather than callables, as that allows us to save them
+        # along with the optimizer when we save to file
         self.substitutions[variable] = (newvar, inverse_transform, transform)
             # From this point on the inverse_transform is more likely to be used,
             # but in some cases we still need the original transform
@@ -350,7 +473,7 @@ class SGD:
 
         # Create the Theano `replace` parameter from self.substitutions
         if len(self.substitutions) > 0:
-            replace = { var: subs[1](subs[0])
+            replace = { var: self._make_transform(var, subs[1])(subs[0])
                         for var, subs in self.substitutions.items() }
                 # We use the inverse transform here, because transform(var)
                 # is the variable we want in the graph
@@ -363,14 +486,16 @@ class SGD:
         if isinstance(fitparams, dict):
             fitparamsarg = fitparams
         else:
-            fitparamsarg = {
+            fitparamsarg = dict(
                 [ (param[0], param[1]) if isinstance(param, tuple) else (param, True)
-                for param in fitparams ]
-                }
+                  for param in fitparams ]
+                )
 
         # Create self.fitparams
         # If any of the fitparams appear in self.substitutions, change those
         # This assumes that the substitution transforms are element wise
+        if self.fitparams is not None:
+            logger.warning("Replacing 'fitparams'. Previous fitparams are lost.")
         self.fitparams = OrderedDict()
         for param, mask in fitparamsarg.items():
             if param in self.substitutions:
@@ -472,7 +597,7 @@ class SGD:
         for param, transformedparaminfo in self.substitutions.items():
             if param in self.trueparams:
                 transformedparam = transformedparaminfo[0]
-                transform = transformedparaminfo[2]
+                transform = self._make_transform(param, transformedparaminfo[2])
                 self.trueparams[transformedparam] = transform(self.trueparams[param])
 
     def get_param(self, name):
@@ -532,10 +657,10 @@ class SGD:
             for subp, subinfo in self.substitutions.items():
                 if param is subp:
                     # This parameter was substituted by another; update the new parameter
-                    subinfo[0].set_value(subinfo[2](val))
+                    subinfo[0].set_value(self._make_transform(param, subinfo[2])(val))
                 elif param is subinfo[0]:
                     # This parameter substitutes another; update the original
-                    subp.set_value(subinfo[1](val))
+                    subp.set_value(self._make_transform(param, subinfo[1])(val))
 
     def initialize(self, new_params=None, mask=None):
         """
@@ -877,8 +1002,8 @@ class SGD:
                             # As above, but we also invert the variable transformation
                             if param.name == ax.name:
                                 found = True
-                                transformedparam = self.substitutions[param][0]
-                                inversetransform = self.substitutions[param][1]
+                                transformedparam = self._make_transform(param, self.substitutions[param][0])
+                                inversetransform = self._make_transform(param, self.substitutions[param][1])
                                 if shim.isscalar(param):
                                     plotcoords.append(inversetransform( evol[transformedparam.name] ))
                                 else:
