@@ -326,13 +326,13 @@ em
     def tnidx(self):
         return self.t0idx + len(self) - 1
 
-    def raw(self, **kwds):
+    def raw(self, **kwargs):
         # The raw format is meant for data longevity, and so should
         # seldom, if ever, be changed
         """
         Parameters
         ----------
-        **kwds:
+        **kwargs:
             Passed keywords will be added to the raw structure, or replace
             an existing keyword if it is already included.
             This argument exists to allow specialization in derived classes.
@@ -349,21 +349,21 @@ em
             # We do it this way in case kwd substitutions are there to
             # avoid an error (such as _data not having a .get_value() method)
             raw = {}
-            raw['name'] = kwds.pop('name') if 'name' in kwds else self.name
-            raw['t0'] = kwds.pop('t0') if 't0' in kwds else self.t0
-            raw['tn'] = kwds.pop('tn') if 'tn' in kwds else self.tn
-            raw['dt'] = kwds.pop('dt') if 'dt' in kwds else self.dt
-            raw['t0idx'] = kwds.pop('t0idx') if 't0idx' in kwds else self.t0idx
-            raw['_unpadded_length'] = kwds.pop('_unpadded_length') if '_unpadded_length' in kwds else self._unpadded_length
-            raw['_cur_tidx'] = kwds.pop('_cur_tidx') if '_cur_tidx' in kwds else self._cur_tidx.get_value()
-            raw['shape'] = kwds.pop('shape') if 'shape' in kwds else self.shape
-            raw['ndim'] = kwds.pop('ndim') if 'ndim' in kwds else self.ndim
-            raw['_tarr'] = kwds.pop('_tarr') if '_tarr' in kwds else self._tarr
-            raw['_data'] = kwds.pop('_data') if '_data' in kwds else self._data.get_value()
-            raw['_iterative'] = kwds.pop('_iterative') if '_iterative' in kwds else self._iterative
-            raw['locked'] = kwds.pop('locked') if 'locked' in kwds else self.locked
+            raw['name'] = kwargs.pop('name') if 'name' in kwargs else self.name
+            raw['t0'] = kwargs.pop('t0') if 't0' in kwargs else self.t0
+            raw['tn'] = kwargs.pop('tn') if 'tn' in kwargs else self.tn
+            raw['dt'] = kwargs.pop('dt') if 'dt' in kwargs else self.dt
+            raw['t0idx'] = kwargs.pop('t0idx') if 't0idx' in kwargs else self.t0idx
+            raw['_unpadded_length'] = kwargs.pop('_unpadded_length') if '_unpadded_length' in kwargs else self._unpadded_length
+            raw['_cur_tidx'] = kwargs.pop('_cur_tidx') if '_cur_tidx' in kwargs else self._cur_tidx.get_value()
+            raw['shape'] = kwargs.pop('shape') if 'shape' in kwargs else self.shape
+            raw['ndim'] = kwargs.pop('ndim') if 'ndim' in kwargs else self.ndim
+            raw['_tarr'] = kwargs.pop('_tarr') if '_tarr' in kwargs else self._tarr
+            raw['_data'] = kwargs.pop('_data') if '_data' in kwargs else self._data.get_value()
+            raw['_iterative'] = kwargs.pop('_iterative') if '_iterative' in kwargs else self._iterative
+            raw['locked'] = kwargs.pop('locked') if 'locked' in kwargs else self.locked
 
-            raw.update(kwds)
+            raw.update(kwargs)
         return raw
 
     @classmethod

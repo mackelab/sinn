@@ -100,7 +100,7 @@ def converged(it, r=0.01, p=0.99, n=10, m=10, abs_th=0.001):
         a = sp.stats.norm.ppf(p, loc=r*std, scale=1)
         s = np.sqrt(n) / std  # rescaling to get normalized Student-t
         # Check if the m last iterations were below the threshold
-        return all( (meandiff(it, end=-i) * s < a).all()
+        return all( (meandiff(it, n=n, end=-i) * s < a).all()
                     for i in range(1, m+1) )
 
 def get_indices(param):
@@ -125,9 +125,12 @@ def get_indices(param):
 class SGD:
 
     def __init__(self, cost, model, optimizer,
-                 burnin, datalen, mbatch_size):
+                 burnin=None, datalen=None, mbatch_size=None,
+                 sgd_file=None):
         """
         Important that burnin + datalen not exceed the amount of data
+        burnin, datalen, mbatch_size should only be omitted when loading from a
+        previously saved SGD instance.
 
         Parameters
         ----------
@@ -149,25 +152,107 @@ class SGD:
             Cost will be evaluated up to the time point 'burnin + datalen'.
         mbatch_size: int, float
             Size of minibatches, either in the model's time units (float) or time bins (int).
+        sgd_file: File, where an SGD instance was saved. This can be used to continue a fit;
+            in this case, `burnin`, `datalen` and `mbatch_size` are ignored.
         """
 
         self.cost_fn = cost
         self.model = model
         self.optimizer = optimizer
-        self.burnin = burnin
-        self.burnin_idx = model.get_t_idx(burnin)
-        self.datalen = datalen
-        self.data_idxlen = model.index_interval(datalen)
-        self.mbatch_size = model.index_interval(mbatch_size)
 
-        self.step_i = 0
-        self.output_width = 5 # Default width for printing number of steps
-        self.tidx = theano.tensor.lscalar('tidx')
-        self.cum_cost = 0
-        #tidx.tag.test_value = 978
-        #shim.gettheano().config.compute_test_value = 'warn'
-        self.substitutions = {}
-        self.trueparams = None
+        self.tidx_var = theano.tensor.lscalar('tidx')
+        self.mbatch_var = theano.tensor.lscalar('batch_size')
+
+        if sgd_file is None:
+            self.burnin = burnin
+            self.burnin_idx = model.get_t_idx(burnin)
+            self.datalen = datalen
+            self.data_idxlen = model.index_interval(datalen)
+            self.mbatch_size = model.index_interval(mbatch_size)
+
+            #tidx.tag.test_value = 978
+            #shim.gettheano().config.compute_test_value = 'warn'
+            self.substitutions = {}
+            self.fitparams = None
+            self.trueparams = None
+
+            self.initialize()
+                # Create the state variables other functions may expect;
+                # initialize will be called again after 'fitparams' is set.
+
+        else:
+            # FIXME: what to do with substitutions ?
+            # TODO: Allow loading both raw (.sir) and sinn pickles (.sin)
+            self.from_raw(io.loadraw(sgd_file))
+
+    def raw(self, **kwargs):
+        raw = {}
+
+        def add_attr(attr, retrieve_fn=None):
+            # Doing it this way allows to use keywords to avoid errors triggered by getattr(attr)
+            if retrieve_fn is None:
+                retrieve_fn = getattr
+            raw[attr] = kwargs.pop(attr) if attr in kwargs else retrieve_fn(attr)
+
+        add_attr('burnin')
+        add_attr('burnin_idx')
+        add_attr('datalen')
+        add_attr('data_idxlen')
+        add_attr('mbatch_size')
+
+        add_attr('curtidx')
+        add_attr('step_i')
+        add_attr('circ_step_i')
+        add_attr('output_width')
+        add_attr('cum_cost')
+        add_attr('cum_step_time')
+        add_attr('tot_time')
+
+        add_attr('step_cost')
+        add_attr('cost_evol')
+
+        raw['param_names'] = np.array([p.name for p in self.fitparams()])
+        for p, val in self.fitparams.items():
+            raw['mask_' + p.name] = val
+        for p, val in self.param_evol.items():
+            assert(p.name in raw['param_names'])
+            raw['evol_' + p.name] = np.array(val)
+
+        raw.update(kwargs)
+
+        return raw
+
+
+    def from_raw(self, raw):
+
+        self.burnin = raw['burnin']
+        self.burnin_idx = raw['burnin_idx']
+        self.datalen = raw['datalen']
+        self.data_idxlen = raw['data_idxlen']
+        self.mbatch_size = raw['mbatch_size']
+
+        self.curtidx = raw['curtixd']
+        self.step_i = raw['step_i']
+        self.circ_step_i = raw['circ_step_i']
+        self.output_width = raw['output_width']
+        self.cum_cost = raw['cum_cost']
+        self.cum_step_time = raw['cum_step_time']
+        self.tot_time = raw['tot_time']
+
+        self.step_cost = deque(raw['step_cost'])
+        self.cost_evol = deque(raw['cost_evol'])
+
+        param_names = raw['param_names']
+        for name in param_names:
+            p = None
+            for p in self.model.params:
+                if p.name == name:
+                    break
+            assert(p is not None)
+            self.fitparams[p] = raw['mask_' + name]
+            self.param_evol[p] = raw['evol_' + name]
+
+
 
     def transform(self, variable, newname, transform, inverse_transform):
         """
@@ -208,8 +293,8 @@ class SGD:
         # Check that variable is part of the computational graph
         self.model.theano_reset()
         self.model.clear_unlocked_histories()
-        #logL = self.model.loglikelihood(self.tidx, self.tidx + self.mbatch_size)
-        cost, statevar_upds, shared_upds = self.cost_fn(self.tidx, self.mbatch_size)
+        #logL = self.model.loglikelihood(self.tidx_var, self.tidx_var + self.mbatch_size)
+        cost, statevar_upds, shared_upds = self.cost_fn(self.tidx_var, self.mbatch_var)
         self.model.clear_unlocked_histories()
         self.model.theano_reset()
         if variable not in theano.gof.graph.inputs([cost]):
@@ -298,7 +383,7 @@ class SGD:
         self.model.clear_unlocked_histories()
 
         logger.info("Producing the cost function theano graph")
-        cost, statevar_upds, shared_upds = self.cost_fn(self.tidx, self.mbatch_size)
+        cost, statevar_upds, shared_upds = self.cost_fn(self.tidx_var, self.mbatch_var)
         logger.info("Cost function graph complete.")
         if replace is not None:
             logger.info("Performing variable substitutions in Theano graph.")
@@ -315,12 +400,12 @@ class SGD:
 
         logger.info("Compiling the minibatch cost function.")
         # DEBUG (because on mini batches?)
-        self.cost = theano.function([self.tidx], cost)#, updates=cost_updates)
+        self.cost = theano.function([self.tidx_var, self.mbatch_var], cost)#, updates=cost_updates)
         logger.info("Done compilation.")
 
         # Function for stepping the model forward, e.g. for burnin
         #logger.info("Compiling the minibatch advancing function.")
-        #self.cost = theano.function([self.tidx], updates=cost_updates)
+        #self.cost = theano.function([self.tidx_var], updates=cost_updates)
         #logger.info("Done compilation.")
 
         if isinstance(self.optimizer, str):
@@ -351,14 +436,14 @@ class SGD:
         #shim.add_updates(optimizer_updates)
 
         logger.info("Compiling the optimization step function.")
-        self._step = theano.function([self.tidx], [], updates=optimizer_updates)#shim.get_updates())
+        self._step = theano.function([self.tidx_var, self.mbatch_var], [], updates=optimizer_updates)#shim.get_updates())
         logger.info("Done compilation.")
 
         # # Compile likelihood function
         # self.model.clear_unlocked_histories()
         # self.model.theano_reset()
         # #cost = self.cost_fn(self.burnin, self.burnin + self.datalen)
-        # cost, cost_updates = self.cost_fn(self.tidx, self.tidx + self.mbatch_size)
+        # cost, cost_updates = self.cost_fn(self.tidx_var, self.tidx_var + self.mbatch_size)
         # if len(replace) > 0:
         #     cost = theano.clone(cost, replace)
 
@@ -470,15 +555,21 @@ class SGD:
         if new_params is not None:
             self.set_param_values(new_params, mask)
 
-        self.param_evol = {param: deque([param.get_value()])
-                           for param in self.fitparams}
+        if self.fitparams is not None:
+            self.param_evol = {param: deque([param.get_value()])
+                               for param in self.fitparams}
+        else:
+            self.param_evol = {}
+
         self.cost_evol = deque([])
 
         self.step_i = 0
         self.circ_step_i = 0
+        self.output_width = 5 # Default width for printing number of steps
         self.step_cost = []
         self.curtidx = self.burnin_idx
         self.cum_step_time = 0
+        self.cum_cost = 0
         self.tot_time = 0
 
     def converged(it, r, p=0.99, n=10, m=10, abs_th=0.001):
@@ -506,12 +597,27 @@ class SGD:
             return all( (meandiff(it, end=-i) * s < a).all()
                         for i in range(1, m+1) )
 
-    def step(self, conv_res):
+    def step(self, conv_res, cost_calc='cum', **kwargs):
         """
         Parameters
         ----------
         conv_res: float
             Convergence resolution. Smaller number means a more stringent test for convergence.
+        cost_calc: str
+            Determines how the cost is computed. Some values allow additional
+            keywords to define behaviour. Default is 'cum'; possible values are:
+              - 'cum': (cumulative) The cost of each step is computed, and added to the
+                previously computed values. This is effectively the cost seen by the algorithm;
+                it is cheap to compute, but gives only an approximation of the true cost,
+                as it aggregates the result of many different values.
+                After having used up all the data, the sum is saved and the process
+                repeats for the next round.
+              - 'full': At every step, the full likelihood over the whole data is computed.
+                This is slower, but gives a better indication of whether the algorithm is
+                going in the right direction.
+                *Additional keyword*
+                  + 'cost_period': int. Compute the cost only after this many steps
+
         """
         # Clear notebook of previous iteration's output
         clear_output(wait=True)
@@ -522,7 +628,8 @@ class SGD:
             # Reset time index to beginning
             self.curtidx = self.burnin_idx
             self.model.clear_unlocked_histories()
-            self.cost_evol.append(self.cum_cost)
+            if cost_calc == 'cum':
+                self.cost_evol.append(self.cum_cost)
             #self.model.clear_unlocked_histories()
             self.cum_cost = 0
             self.circ_step_i = 0
@@ -543,17 +650,25 @@ class SGD:
         t1 = time.perf_counter()
         self.model.advance(self.curtidx)
             # FIXME?: Currently `advance` is needed because grad updates don't change the data
-        self._step(self.curtidx)
+        self._step(self.curtidx, self.mbatch_size)
         self.cum_step_time += time.perf_counter() - t1
         for param in self.fitparams:
             self.param_evol[param].append(param.get_value())
 
-        if self.circ_step_i >= len(self.step_cost):
-            assert(self.circ_step_i == len(self.step_cost))
-            self.step_cost.append(self.cost(self.curtidx))
-        else:
-            self.step_cost[self.circ_step_i] = self.cost(self.curtidx)
-        self.cum_cost += self.step_cost[self.circ_step_i]
+        #if cost_calc == 'cum':
+        if True:
+            if self.circ_step_i >= len(self.step_cost):
+                # At first, extend step_cost as points are added
+                assert(self.circ_step_i == len(self.step_cost))
+                self.step_cost.append(self.cost(self.curtidx, self.mbatch_size))
+            else:
+                # After having looped through the data, reuse memory for the cumulative cost
+                self.step_cost[self.circ_step_i] = self.cost(self.curtidx, self.mbatch_size)
+            self.cum_cost += self.step_cost[self.circ_step_i]
+
+        if ( cost_calc == 'full'
+             and self.step_i % kwargs.get('cost_period', 1) == 0 ):
+            self.cost_evol.append(self.cost(self.burnin_idx, self.data_idxlen))
 
         # Increment step counter
         self.step_i += 1
@@ -573,11 +688,19 @@ class SGD:
         logger.info("Iteration {:>{}} – <log L> = {:.2f}"
                     .format(self.step_i,
                             self.output_width,
-                            float(sum(self.step_cost[:self.circ_step_i])/(self.curtidx-self.burnin_idx)/self.mbatch_size)))
+                            float(sum(self.step_cost[:self.circ_step_i])/(self.curtidx + self.mbatch_size -self.burnin_idx))))
+        if cost_calc == 'full':
+            logger.info(" "*(13+self.output_width) + "Last evaluated log L: {}".format(self.cost_evol[-1]))
 
         return ConvergeStatus.NOTCONVERGED
 
-    def iterate(self, Nmax=int(5e3), lr=None):
+    def iterate(self, Nmax=int(5e3), lr=None, **kwargs):
+        """
+        Parameters
+        ----------
+
+        **kwargs: Additional keyword arguments are passed to `step`.
+        """
 
         Nmax = int(Nmax)
         self.output_width = int(np.log10(Nmax))
@@ -601,7 +724,7 @@ class SGD:
         t1 = time.perf_counter()
         try:
             for i in range(Nmax):
-                status = self.step(conv_res=lr)
+                status = self.step(conv_res=lr, **kwargs)
                 if status in [ConvergeStatus.CONVERGED, ConvergeStatus.ABORT]:
                     break
         except KeyboardInterrupt:
