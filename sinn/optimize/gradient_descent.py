@@ -52,7 +52,7 @@ try:
     __IPYTHON__
 except NameError:
     # We are not within an IPython environment
-    def clear_output():
+    def clear_output(wait=False):
         return
 else:
     # We are within an IPython environment – use its clear_output function
