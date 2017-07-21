@@ -275,6 +275,7 @@ class SGD:
             inverse_transform = raw['subs_'+name][1]
             transform = raw['subs_'+name][2]
             self.substitutions[p] = (newvar, inverse_transform, transform)
+            self._verified_transforms[p] = trust_transforms
 
         if 'true_param_names' in raw:
             self.trueparams = {}
@@ -321,7 +322,7 @@ class SGD:
             Bypass the verification. Required to avoid user interaction, but
             since it beats the purpose of this function, to be used with care.
         """
-        if len(self.substitutions) == 0 or all(_verified_transforms.values()):
+        if len(self.substitutions) == 0 or all(self._verified_transforms.values()):
             # Nothing to do; don't bother the user
             return
 
@@ -639,6 +640,9 @@ class SGD:
                         elif subinfo[0] is param and subp in mask:
                             parammask = mask[subp]
 
+                if isinstance(parammask, bool):
+                    parammask = np.ones(param.get_value().shape) * parammask
+
             if shim.isshared(val):
                 val = val.get_value()
             val = np.array(val, dtype=param.dtype)
@@ -660,7 +664,7 @@ class SGD:
                     subinfo[0].set_value(self._make_transform(param, subinfo[2])(val))
                 elif param is subinfo[0]:
                     # This parameter substitutes another; update the original
-                    subp.set_value(self._make_transform(param, subinfo[1])(val))
+                    subp.set_value(self._make_transform(subp, subinfo[1])(val))
 
     def initialize(self, new_params=None, mask=None):
         """
@@ -1002,7 +1006,7 @@ class SGD:
                             # As above, but we also invert the variable transformation
                             if param.name == ax.name:
                                 found = True
-                                transformedparam = self._make_transform(param, self.substitutions[param][0])
+                                transformedparam = self.substitutions[param][0]
                                 inversetransform = self._make_transform(param, self.substitutions[param][1])
                                 if shim.isscalar(param):
                                     plotcoords.append(inversetransform( evol[transformedparam.name] ))
