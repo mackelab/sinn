@@ -219,13 +219,19 @@ def smooth(series, amount=None, method='mean', name = None, **kwargs):
         Note that in general the time range will be shorter than
         the original data, due to the averaging.
     """
-    series = histories.DataView(series)
 
     if isinstance(series, np.ndarray):
+        series_data = series
         series = histories.Series(name = name,
                                   t0 = 0, tn = len(series)-1, dt = 1,
                                   shape = series.shape[1:])
-    if series.use_theano:
+        series.set(series_data)
+
+    series = histories.DataView(series)
+         # FIXME: make DataView inherit type, in case one is passed as argument
+
+    # TODO: Update Theano check
+    if hasattr(series, 'use_theano') and series.use_theano:
         if series.compiled_history is not None:
             series = series.compiled_history
         else:

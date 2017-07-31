@@ -35,6 +35,7 @@ author: Alexandre René
 import os
 import os.path
 import logging
+import numbers
 import numpy as np
 import dill
 logger = logging.getLogger('sinn.iotools')
@@ -117,6 +118,20 @@ def loadraw(filename, basedir=None):
         return np.load(rawpath)
     else:
         return np.load(path)
+
+def paramstr(x):
+    """Sanitize a parameter in a way that's adequate for filenames.
+    """
+    if isinstance(x, numbers.Number):
+        s = str(x).replace('.', '-')
+    else:
+        raise ValueError("Unsupported parameter type '{}'."
+                         .format(type(x)))
+    return s
+
+seed_lsts = {'sin': [0, 100, 200, 300, 314],
+             'flat': [314],
+             'no': [314]}
 
 ###########################
 # Internal functions

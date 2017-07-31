@@ -2,6 +2,7 @@ from enum import Enum
 from collections import OrderedDict, deque
 import time
 import logging
+import copy
 
 import numpy as np
 import scipy as sp
@@ -127,7 +128,7 @@ class SGD:
 
     def __init__(self, cost, model, optimizer,
                  burnin=None, datalen=None, mbatch_size=None,
-                 sgd_file=None):
+                 sgd_file=None, set_params=False):
         """
         Important that burnin + datalen not exceed the amount of data
         burnin, datalen, mbatch_size should only be omitted when loading from a
@@ -155,6 +156,9 @@ class SGD:
             Size of minibatches, either in the model's time units (float) or time bins (int).
         sgd_file: File, where an SGD instance was saved. This can be used to continue a fit;
             in this case, `burnin`, `datalen` and `mbatch_size` are ignored.
+        set_params: bool
+            If true, call `set_params_to_evols` after loading sgd from file.
+            Only has an effect if `sgd_file` is not None. Default is False.
         """
 
         self.cost_fn = cost
@@ -193,6 +197,8 @@ class SGD:
             self.fitparams = OrderedDict()
             self.param_evol = {}
             self.from_raw(sinn.iotools.loadraw(sgd_file))
+            if set_params:
+                self.set_params_to_evols()
 
     def raw(self, **kwargs):
         raw = {}
@@ -245,21 +251,23 @@ class SGD:
         Don't forget to call `verify_transforms` after this.
         """
 
-        self.burnin = raw['burnin']
-        self.burnin_idx = raw['burnin_idx']
-        self.datalen = raw['datalen']
-        self.data_idxlen = raw['data_idxlen']
-        self.mbatch_size = raw['mbatch_size']
+        # Using "{}".format(-) on a NumPy array doesn't work, so we
+        # convert the integer variables to Python variables.
+        self.burnin = float(raw['burnin'])
+        self.burnin_idx = int(raw['burnin_idx'])
+        self.datalen = float(raw['datalen'])
+        self.data_idxlen = int(raw['data_idxlen'])
+        self.mbatch_size = int(raw['mbatch_size'])
 
-        self.curtidx = raw['curtidx']
-        self.step_i = raw['step_i']
-        self.circ_step_i = raw['circ_step_i']
-        self.output_width = raw['output_width']
-        self.cum_cost = raw['cum_cost']
-        self.cum_step_time = raw['cum_step_time']
-        self.tot_time = raw['tot_time']
+        self.curtidx = int(raw['curtidx'])
+        self.step_i = int(raw['step_i'])
+        self.circ_step_i = int(raw['circ_step_i'])
+        self.output_width = int(raw['output_width'])
+        self.cum_cost = float(raw['cum_cost'])
+        self.cum_step_time = float(raw['cum_step_time'])
+        self.tot_time = float(raw['tot_time'])
 
-        self.step_cost = deque(raw['step_cost'])
+        self.step_cost = list(raw['step_cost'])
         self.cost_evol = deque(raw['cost_evol'])
 
         for name in raw['substituted_param_names']:
@@ -309,7 +317,7 @@ class SGD:
                     break
             assert(p is not None)
             self.fitparams[p] = raw['mask_' + name]
-            self.param_evol[p] = raw['evol_' + name]
+            self.param_evol[p] = deque(raw['evol_' + name])
 
 
     def verify_transforms(self, trust_automatically=False):
@@ -464,6 +472,14 @@ class SGD:
         # If the ground truth of `variable` was set, compute that of `newvar`
         self._augment_ground_truth_with_transforms()
 
+    def _get_nontransformed_param(self, param):
+        res = None
+        for var, subinfo in self.substitutions.items():
+            if subinfo[0] is param:
+                assert(res is None)
+                res = var
+        return res
+
     def get_substituted_cost_graph(self, fitparams, **kwargs):
 
         # Store the learning rate since it's also used in the convergence test
@@ -578,7 +594,21 @@ class SGD:
         self.model.clear_unlocked_histories()
         self.model.theano_reset()  # clean the graph after compilation
 
-        self.initialize()
+        #self.initialize()
+
+    def set_params_to_evols(self):
+        """Set the model parameters to the last ones in param_evols"""
+        for param, evol in self.param_evol.items():
+            if len(evol) == 0:
+                logger.warning("Unable to set parameter '{}': evol is empty"
+                               .format(param.name))
+            else:
+                param.set_value(evol[-1])
+                original_param = self._get_nontransformed_param(param)
+                if original_param is not None:
+                    subinfo = self.substitutions[original_param]
+                    original_param.set_value(self._make_transform(original_param, subinfo[1])(param.get_value()))
+
 
     def set_ground_truth(self, trueparams):
         """
@@ -696,7 +726,8 @@ class SGD:
         self.circ_step_i = 0
         self.output_width = 5 # Default width for printing number of steps
         self.step_cost = []
-        self.curtidx = self.burnin_idx
+        self.curtidx = copy.deepcopy(self.burnin_idx)
+                # Copy ensures updating curtidx doesn't also update burnin_idx
         self.cum_step_time = 0
         self.cum_cost = 0
         self.tot_time = 0
@@ -755,7 +786,8 @@ class SGD:
         if self.curtidx > self.burnin_idx + self.data_idxlen - self.mbatch_size:
             # We've run through the dataset
             # Reset time index to beginning
-            self.curtidx = self.burnin_idx
+            self.curtidx = copy.deepcopy(self.burnin_idx)
+                # Copy ensures updating curtidx doesn't also update burnin_idx
             self.model.clear_unlocked_histories()
             if cost_calc == 'cum':
                 self.cost_evol.append(self.cum_cost)
