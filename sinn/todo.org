@@ -1,4 +1,5 @@
 * Priority 1
+** BUG [Analyze.plot] History names/labels with multiple underscores break if we try to plot legend
 ** TODO Memory-less Series (i.e. variable)
    - Include 'get_value' method for easy sequential updating
    - Only update once per t
@@ -13,10 +14,16 @@
    - Idea: implement a HistoryView, which allows indexing of histories
      at lagged times. So call could be `A.lag(3)[t]`
 ** TODO [History] Detect when name is reused, and add suffix.
-** FIXME [History] Compound operations don't work. E.g. : (A-a) * (B-b), with A,B histories.
-** FIXME [Analyze.plot] History names/labels with multiple underscores break if we try to plot legend
+** BUG [History] Compound operations don't work. E.g. : (A-a) * (B-b), with A,B histories.
 
 * Priority 2
+** TODO Make history dependency resolution local
+   Don't search sinn.inputs for the list of inputs, but keep the list of inputs
+in the history itself.
+
+** TODO Make HistoryBase derive from a Node class (or replace by?)
+   Then make the elements of _globals.inputs Node instances
+** TODO Parameters metaclass
 ** TODO Parameter replace function for models
    Would take graph, parameter, new name, "to" and "from" conversion functions (e.g. 10** and log)
    Would then take care of cloning the graph, replacing with the "to" converted new parameter
@@ -39,3 +46,14 @@
 ** TODO [History] Allow argument to 'pad' to be another history
    Padding would then be adjusted to include at least as much padding
 
+** TODO Add a destructor to models
+   So that when we delete them, they also remove histories from sinn.histories
+   Ideally only if those histories don't appear anywhere else. Or at least a warning.
+org-todo-keywords
+** TODO Change sinn.inputs to sinn.histories
+** TODO Allow History functions to deal with pure Python _data objects
+   (Not just shared variables)
+
+* Priority 3
+
+** TODO Check that on disk caching is successfully loading
