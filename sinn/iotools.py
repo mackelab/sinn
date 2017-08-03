@@ -45,8 +45,14 @@ extensions = ['sin', 'sir', 'dat', 'txt']
 ##########################
 # Public API
 
-def save(filename, data):
-    """Save `data` and, if it has a 'raw' representation, that as well:"""
+def save(filename, data, only_raw=True):
+    """Save `data`. By default, only the 'raw' representation is saved, if present.
+    Not only is the raw format more future-proof, but it can be an order of
+    magnitude for compact.
+    If the raw save is unsuccessful (possibly because 'data' does not provide a
+    'raw' method), than save falls back to saving a plain (dill) pickle of 'data'.
+    Saving a dill pickle can be forced by passing `only_raw=False`.
+    """
     #os.makedirs(_get_savedir(), exist_ok=True)
     dirname = os.path.dirname(filename)
     if dirname != "":
@@ -62,16 +68,20 @@ def save(filename, data):
         realrelpath = None
 
     else:
-        dill.dump(data, f)
-        f.close()
-
         # Also try to save a more future-proof raw datafile
+        saved = False
         try:
             #saveraw(os.path.basename(realrelpath), data)
             saveraw(realrelpath, data)
+            saved = True
         except AttributeError:
             # TODO: Use custom error type
-            pass
+            logger.warning("Unable to save to raw format. "
+                           "Will try a plain (dill) pickle dump.")
+
+        if not only_raw or not saved:
+            dill.dump(data, f)
+            f.close()
 
     return realrelpath
 
