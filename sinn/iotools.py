@@ -129,13 +129,8 @@ def paramstr(x):
                          .format(type(x)))
     return s
 
-seed_lsts = {'sin': [0, 100, 200, 300, 314],
-             'flat': [314],
-             'no': [314]}
-
 ###########################
 # Internal functions
-
 
 _savedir = ""
 _max_files = 100 # Maximum number we will append to a file to make it unique. If this number is exceeded, an error is raised
