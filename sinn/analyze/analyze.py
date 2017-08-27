@@ -402,9 +402,13 @@ def plot(data, **kwargs):
         ax = plt.gca()
         # Loop over the components, plotting each separately
         # Plotting separately allows to assign a label to each
-        for comp, label in zip(comp_list, labels):
-            idx = (slice(None),) + comp
-            plt.plot(np.arange(len(data)), data[idx], label=label, **kwargs)
+        if comp_list is None:
+            plt.plot(np.arange(len(data)), data)
+
+        else:
+            for comp, label in zip(comp_list, labels):
+                idx = (slice(None),) + comp
+                plt.plot(np.arange(len(data)), data[idx], label=label, **kwargs)
         return ax
 
     elif ( isinstance(data, histories.Series)

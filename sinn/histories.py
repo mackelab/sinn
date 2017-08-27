@@ -195,7 +195,7 @@ em
             Shape of a history slice at a single point in time.
             E.g. a movie history might store NxN frames in an TxNxN array.
             (N,N) would be the shape, and T would be (tn-t0)/dt.
-        f:  function (t) -> shape
+        f:  (Deprecated - use set_update_function) function (t) -> shape
             (Optional) Function, which takes a time (float) as argument and computes the
             associated time slice. Self-references to history are permitted,
             for times strictly smaller than t. This function should correspond
@@ -292,6 +292,7 @@ em
             #      works for histories derived from others (i.e. is recognized as the
             #      "missing function" function. Maybe a global function or class,
             #      with which we use isinstance ?
+            #      => If we deprecate this, can just use a flag
             # Set a default function that will raise an error when called
             def nofunc(*arg):
                 raise RuntimeError("The update function for history {} is not set."
