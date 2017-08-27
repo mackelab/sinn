@@ -77,6 +77,14 @@ class Model(com.ParameterMixin):
             if hasattr(self, 'eval'):
                 history.set_update_function(self.eval)
 
+    @property
+    def dt(self):
+        try:
+            return self._refhist.dt
+        except AttributeError:
+            raise AttributeError("The reference history for this model was not set, "
+                                 "or it doesn't define a 'dt' attribute.")
+
     # Simple consistency check functions
     @staticmethod
     def same_shape(*args):
