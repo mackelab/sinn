@@ -268,9 +268,11 @@ em
         ############
 
         self.name = name
-        self.shape = shape
+        self.shape = tuple(shape)
             # shape at a single time point, or number of elements
             # in the system
+            # We call tuple because the shape parameter could be
+            # passed e.g. as an ndarray
         self.ndim = len(shape)
 
         self.dt = np.array(dt, dtype=config.floatX)
