@@ -41,7 +41,7 @@ class SeriesFunction(Series):
 class Sin(SeriesFunction):
     # TODO: Allow Theano parameters
 
-    def init_params( baseline=0, amplitude=None, frequency=None, period=None, phase=0, unit='radians'):
+    def init_params( self, baseline=0, amplitude=None, frequency=None, period=None, phase=0, unit='Hz'):
         """
         If 'unit' is 'Hz', frequency gives the number of cycles per unit time,
         while phase is a shift in numbers of cycles. I.e. both frequency and phase
@@ -56,13 +56,13 @@ class Sin(SeriesFunction):
 
         self.baseline = baseline
 
-        if angle_units.lower() == 'radians':
+        if unit.lower() == 'radians':
             self.amplitude = amplitude
             self.phase = phase
             self.frequency = frequency if frequency is not None else 2*np.pi/period
             if period is not None and frequency != 2*np.pi/period:
                 raise ValueError("When creating a sin input, don't specify both frequency and period.")
-        elif angle_units.lower() == 'hz':
+        elif unit.lower() == 'hz':
             self.amplitude = amplitude
             self.phase = phase * 2 * np.pi
             self.frequency = frequency * 2*np.pi if frequency is not None else 2*np.pi/period
@@ -70,7 +70,7 @@ class Sin(SeriesFunction):
                 raise ValueError("When creating a sin input, don't specify both frequency and period.")
         else:
             raise ValueError("When creating a sin input, 'unit' must be either "
-                             "'radians' or 'Hz', not '{}'".format(angle_units))
+                             "'radians' or 'Hz', not '{}'".format(unit))
 
         try:
             shape = np.broadcast(self.baseline, np.broadcast(
@@ -82,8 +82,12 @@ class Sin(SeriesFunction):
         return shape
 
     def update_function(self, t):
-        A = self.amplitude if shim.isscalar(t) else self.amplitude[np.newaxis, :]
-        return self.baseline + A * shim.sin(self.frequency*t + self.phase)
+        if not shim.isscalar(t):
+            ndim = len(self.shape)
+            if ndim == 0:
+                ndim = 1
+            t = shim.add_axes(t, ndim, 'after')
+        return self.baseline + self.amplitude * shim.sin(self.frequency*t + self.phase)
 
 
 class GaussianWhiteNoise(SeriesFunction):
