@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 """
+DEPRECATION WARNING: This module has been superseded by the 'history_function' module.
+It will eventually be removed.
+
 Created Wed Feb 2 2017
 
 author: Alexandre René

@@ -279,7 +279,7 @@ def subsample(series, amount):
     series = histories.DataView(series)
 
     assert(np.issubdtype(np.asarray(amount).dtype, np.int))
-    if series.use_theano:
+    if hasattr(series, 'use_theano') and series.use_theano:
         if series.compiled_history is not None:
             series = series.compiled_history
         else:
@@ -402,9 +402,13 @@ def plot(data, **kwargs):
         ax = plt.gca()
         # Loop over the components, plotting each separately
         # Plotting separately allows to assign a label to each
-        for comp, label in zip(comp_list, labels):
-            idx = (slice(None),) + comp
-            plt.plot(np.arange(len(data)), data[idx], label=label, **kwargs)
+        if comp_list is None:
+            plt.plot(np.arange(len(data)), data)
+
+        else:
+            for comp, label in zip(comp_list, labels):
+                idx = (slice(None),) + comp
+                plt.plot(np.arange(len(data)), data[idx], label=label, **kwargs)
         return ax
 
     elif ( isinstance(data, histories.Series)
@@ -413,7 +417,7 @@ def plot(data, **kwargs):
         # Second line catches a DataView of a Series
         # TODO: Make DataView a derived class of its self.hist within __new__;
         #       then 'isinstance' would work.
-        if data.use_theano:
+        if hasattr(data, 'use_theano') and data.use_theano:
             assert(hasattr(data, 'compiled_history'))
             if data.compiled_history is None:
                 raise ValueError("You need to compile a Theano history before plotting it.")
@@ -479,6 +483,11 @@ def plot(data, **kwargs):
                         linestyle = linestyle,
                         label = baselabel + str(i),
                         alpha = alpha)
+
+        # Set the axis limits to see the whole time range
+        # (if the beginning or end is empty, it would otherwise be truncated)
+        margin = (tend - tstart) / 20
+        plt.xlim( (tstart-margin, tend+margin) )
 
         return ax
 

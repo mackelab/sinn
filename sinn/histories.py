@@ -195,7 +195,7 @@ em
             Shape of a history slice at a single point in time.
             E.g. a movie history might store NxN frames in an TxNxN array.
             (N,N) would be the shape, and T would be (tn-t0)/dt.
-        f:  function (t) -> shape
+        f:  (Deprecated - use set_update_function) function (t) -> shape
             (Optional) Function, which takes a time (float) as argument and computes the
             associated time slice. Self-references to history are permitted,
             for times strictly smaller than t. This function should correspond
@@ -268,9 +268,11 @@ em
         ############
 
         self.name = name
-        self.shape = shape
+        self.shape = tuple(shape)
             # shape at a single time point, or number of elements
             # in the system
+            # We call tuple because the shape parameter could be
+            # passed e.g. as an ndarray
         self.ndim = len(shape)
 
         self.dt = np.array(dt, dtype=config.floatX)
@@ -292,6 +294,7 @@ em
             #      works for histories derived from others (i.e. is recognized as the
             #      "missing function" function. Maybe a global function or class,
             #      with which we use isinstance ?
+            #      => If we deprecate this, can just use a flag
             # Set a default function that will raise an error when called
             def nofunc(*arg):
                 raise RuntimeError("The update function for history {} is not set."
@@ -2133,6 +2136,7 @@ class Spiketrain(ConvolveMixin, History):
         neuron_idcs: iterable
             List of neuron indices that fired in this bin.
         '''
+        # TODO: Fix batch update to something less hacky
         if self.locked:
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))
@@ -2148,30 +2152,34 @@ class Spiketrain(ConvolveMixin, History):
                 raise ValueError("Indices of neurons to update specified as a {}d array. "
                                  "Flatten the array before passing to `update`"
                                  .format(neuron_idcs.ndim))
+            tidx = [tidx]
+            neuron_idcs = [neuron_idcs]
         else:
             latestidx = shim.max(newidx)
-            if neuron_idcs.ndim == 1:
-                raise ValueError("You are attempting to update a range of time points, "
-                                 "but specified the indices of neurons to update as only "
-                                 "a 1d array. It must be 2d, where the first axis is time.")
-            elif neuron_idcs.ndim > 2:
-                raise ValueError("Indices of neurons to update specified as a {}d array. "
-                                 "Flatten the array before passing to `update`"
-                                 .format(neuron_idcs.ndim))
-        if not shim.is_theano_variable(newidx):
-            assert(newidx <= self._original_tidx.get_value() + 1)
+            # if neuron_idcs.ndim == 1:
+            #     raise ValueError("You are attempting to update a range of time points, "
+            #                      "but specified the indices of neurons to update as only "
+            #                      "a 1d array. It must be 2d, where the first axis is time.")
+            # elif neuron_idcs.ndim > 2:
+            #     raise ValueError("Indices of neurons to update specified as a {}d array. "
+            #                      "Flatten the array before passing to `update`"
+            #                      .format(neuron_idcs.ndim))
+        if not shim.is_theano_variable([newidx, latestidx]):
+            assert(latestidx <= self._original_tidx.get_value() + 1)
             if newidx.ndim > 0:
                 assert(newidx.shape[0] == neuron_idcs.shape[0])
 
-        onevect = shim.ones(neuron_idcs.shape, dtype='int8')
-            # vector of ones of the same length as the number of units which fired
-        self._data.data = shim.concatenate((self._data.data, onevect.flatten()))
-            # Add as many 1 entries as there are new spikes
-        self._data.col = shim.concatenate((self._data.col, neuron_idcs.flatten()))
-            # Assign those spikes to neurons (col idx corresponds to neuron index)
-        self._data.row = shim.concatenate((self._data.row,
-                                           (shim.add_axes(tidx, 1, 'after')*onevect).flatten()))
-            # Assign the spike times (row idx corresponds to time index)
+        for ti, idcs in zip(tidx, neuron_idcs):
+            # TODO: Assign in one block
+            onevect = shim.ones(idcs.shape, dtype='int8')
+                # vector of ones of the same length as the number of units which fired
+            self._data.data = shim.concatenate((self._data.data, onevect))
+                # Add as many 1 entries as there are new spikes
+            self._data.col = shim.concatenate((self._data.col, idcs))
+                # Assign those spikes to neurons (col idx corresponds to neuron index)
+            self._data.row = shim.concatenate((self._data.row,
+                                               (shim.add_axes(ti, 1, 'after')*onevect).flatten()))
+                # Assign the spike times (row idx corresponds to time index)
 
         # Set the cur_idx. If tidx was less than the current index, then the latter
         # is *reduced*, since we no longer know whether later history is valid.

@@ -146,7 +146,7 @@ _savedir = ""
 _max_files = 100 # Maximum number we will append to a file to make it unique. If this number is exceeded, an error is raised
 
 def _get_savedir(savedir=None):
-    #global _savedir
+    # TODO: Replace with os.path.normpath
 
     if savedir is None:
         #return ""
