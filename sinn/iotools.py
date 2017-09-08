@@ -33,7 +33,6 @@ author: Alexandre René
 #       Return a namedtuple
 
 import os
-import os.path
 import logging
 import numbers
 import numpy as np
@@ -48,7 +47,7 @@ extensions = ['sin', 'sir', 'dat', 'txt']
 def save(filename, data, only_raw=True):
     """Save `data`. By default, only the 'raw' representation is saved, if present.
     Not only is the raw format more future-proof, but it can be an order of
-    magnitude for compact.
+    magnitude more compact.
     If the raw save is unsuccessful (possibly because 'data' does not provide a
     'raw' method), than save falls back to saving a plain (dill) pickle of 'data'.
     Saving a dill pickle can be forced by passing `only_raw=False`.
@@ -82,6 +81,9 @@ def save(filename, data, only_raw=True):
         if not only_raw or not saved:
             dill.dump(data, f)
             f.close()
+        else:
+            f.close()
+            os.remove(realrelpath)
 
     return realrelpath
 
@@ -118,16 +120,24 @@ def load(filename, basedir=None):
                            "delete this one.".format(filename))
             raise FileNotFoundError
 
-def loadraw(filename, basedir=None):
+def loadraw(filename, basedir=None, return_path=False):
     fn, ext = os.path.splitext(filename)
     path = _get_savedir(basedir) + filename
     rawpath = _get_savedir(basedir) + fn + '.sir'
 
     # Try the raw path first
     if os.path.exists(rawpath):
-        return np.load(rawpath)
+        savepath = rawpath
+        data = np.load(rawpath)
     else:
-        return np.load(path)
+        savepath = path
+        data = np.load(path)
+
+    # Return
+    if return_path:
+        return data, savepath
+    else:
+        return data
 
 def paramstr(x):
     """Sanitize a parameter in a way that's adequate for filenames.
