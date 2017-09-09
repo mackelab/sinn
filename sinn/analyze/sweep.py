@@ -112,7 +112,7 @@ class ParameterSweep:
                    for p, il in zip(self.params_to_sweep, inner_len)]
                  for i in range(np.prod(self.shape)) )
 
-    def do_sweep(self, output_filename, ippclient=None):
+    def do_sweep(self, output_filename, ippclient=None, debug=False):
 
         # variables that will be defined in the engine processes
         model = self._model
@@ -216,15 +216,25 @@ class ParameterSweep:
             ippclient[:].block = False
             res_arr_raw = ippclient[:].map_async(sweep_f, self.param_list())
             monitor_async_result(res_arr_raw)
-            res_arr = np.array(res_arr_raw.get()).reshape(self.shape)
+            if not debug:
+                res_arr = np.array(res_arr_raw.get()).reshape(self.shape)
+            else:
+                raise NotImplementedError
         else:
             os.chdir(self.workdir)
 
-            res_arr = np.fromiter(map(sweep_f, self.param_list()), sinn.config.floatX).reshape(self.shape)
+            if not debug:
+                res_arr = np.fromiter(map(sweep_f, self.param_list()), sinn.config.floatX).reshape(self.shape)
+            else:
+                # For a debug run, no point in repeating the computation for different parameters
+                res = sweep_f(next(self.param_list()))
 
-        res = HeatMap(self.function_label, res_arr, self.params_to_sweep)
-
-        io.save(output_filename, res)
+        if not debug:
+            res = HeatMap(self.function_label, res_arr, self.params_to_sweep)
+            io.save(output_filename, res)
+        else:
+            # Let the caller decide how to save the debug data
+            pass
 
         return res
 
