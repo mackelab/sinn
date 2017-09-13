@@ -12,6 +12,7 @@ try:
 except ImportError:
     logger.warning("Unable to import matplotlib. Plotting functions "
                    "will not work.")
+from parameters import ParameterSet
 
 
 import theano
@@ -128,7 +129,7 @@ class SGD:
 
     def __init__(self, cost, model, optimizer,
                  burnin=None, datalen=None, mbatch_size=None,
-                 sgd_file=None, set_params=False):
+                 sgd_file=None, set_params=True):
         """
         Important that burnin + datalen not exceed the amount of data
         burnin, datalen, mbatch_size should only be omitted when loading from a
@@ -154,8 +155,10 @@ class SGD:
             Cost will be evaluated up to the time point 'burnin + datalen'.
         mbatch_size: int, float
             Size of minibatches, either in the model's time units (float) or time bins (int).
-        sgd_file: File, where an SGD instance was saved. This can be used to continue a fit;
+        sgd_file: str or raw SGD
+            File, where an SGD instance was saved. This can be used to continue a fit;
             in this case, `burnin`, `datalen` and `mbatch_size` are ignored.
+            Can be either the already loaded raw data, or a filename to be loaded with iotools.loadraw.
         set_params: bool
             If true, call `set_params_to_evols` after loading sgd from file.
             Only has an effect if `sgd_file` is not None. Default is False.
@@ -175,6 +178,12 @@ class SGD:
             # that it has been verified.
 
         if sgd_file is None:
+            if burnin is None:
+                raise ValueError("SGD: Unless an sgd file is provided, the parameter 'burnin' is required.")
+            if datalen is None:
+                raise ValueError("SGD: Unless an sgd file is provided, the parameter 'datalen' is required.")
+            if mbatch_size is None:
+                raise ValueError("SGD: Unless an sgd file is provided, the parameter 'mbatch_size' is required")
             self.burnin = burnin
             self.burnin_idx = model.get_t_idx(burnin)
             self.datalen = datalen
@@ -194,9 +203,13 @@ class SGD:
             # TODO: Allow loading both raw (.sir) and sinn pickles (.sin)
             # TODO: Make from_raw a class method, to be consistent with History ?
             #       -> Would require saving the cost function as well
+            if isinstance(sgd_file, str):
+                rawdata = sinn.iotools.loadraw(sgd_file)
+            else:
+                rawdata = sgd_file
             self.fitparams = OrderedDict()
             self.param_evol = {}
-            self.from_raw(sinn.iotools.loadraw(sgd_file))
+            self.from_raw(rawdata)
             if set_params:
                 self.set_params_to_evols()
 
@@ -480,24 +493,7 @@ class SGD:
                 res = var
         return res
 
-    def get_substituted_cost_graph(self, fitparams, **kwargs):
-
-        # Store the learning rate since it's also used in the convergence test
-        if 'lr' in kwargs:
-            self._compiled_lr = kwargs['lr']
-        else:
-            self._compiled_lr = None
-
-        # Create the Theano `replace` parameter from self.substitutions
-        if len(self.substitutions) > 0:
-            replace = { var: self._make_transform(var, subs[1])(subs[0])
-                        for var, subs in self.substitutions.items() }
-                # We use the inverse transform here, because transform(var)
-                # is the variable we want in the graph
-                # (e.g. to replace τ by log τ, we need a new variable `logτ`
-                #  and then we would replace in the graph by `10**logτ`.
-        else:
-            replace = None
+    def set_fitparams(self, fitparams):
 
         # Ensure fitparams is a dictionary of param : mask pairs.
         if isinstance(fitparams, dict):
@@ -515,11 +511,40 @@ class SGD:
             logger.warning("Replacing 'fitparams'. Previous fitparams are lost.")
         self.fitparams = OrderedDict()
         for param, mask in fitparamsarg.items():
+            # Normalize/check the mask shape
+            if isinstance(mask, bool):
+                # A single boolean indicates to allow or lock the entire parameter
+                # Convert it to a matrix of same shape as the parameter
+                mask = np.ones(param.get_value().shape, dtype=int) * mask
+            else:
+                if mask.shape != param.get_value().shape:
+                    raise ValueError("Provided mask (shape {}) for parameter {} "
+                                     "(shape {}) has a different shape."
+                                     .format(mask.shape, param.name, param.get_value().shape))
+
             if param in self.substitutions:
                 self.fitparams[self.substitutions[param][0]] = mask
             else:
                 self.fitparams[param] = mask
 
+
+    def get_substituted_cost_graph(self, **kwargs):
+        # Store the learning rate since it's also used in the convergence test
+        if 'lr' in kwargs:
+            self._compiled_lr = kwargs['lr']
+        else:
+            self._compiled_lr = None
+
+        # Create the Theano `replace` parameter from self.substitutions
+        if len(self.substitutions) > 0:
+            replace = { var: self._make_transform(var, subs[1])(subs[0])
+                        for var, subs in self.substitutions.items() }
+                # We use the inverse transform here, because transform(var)
+                # is the variable we want in the graph
+                # (e.g. to replace τ by log τ, we need a new variable `logτ`
+                #  and then we would replace in the graph by `10**logτ`.
+        else:
+            replace = None
 
         self.model.theano_reset()
         self.model.clear_unlocked_histories()
@@ -534,11 +559,15 @@ class SGD:
 
         return cost, statevar_upds, shared_upds
 
-    def compile(self, fitparams, **kwargs):
+    def compile(self, fitparams=None, **kwargs):
         # Compile step function
 
-        cost, statevar_upds, shared_upds = self.get_substituted_cost_graph(fitparams, **kwargs)
-            # Sets self.fitparams
+        if fitparams is not None:
+            self.set_fitparams(fitparams)
+        else:
+            if self.fitparams is None:
+                raise RuntimeError("You must set 'fitparams' before compiling.")
+        cost, statevar_upds, shared_upds = self.get_substituted_cost_graph(**kwargs)
 
         logger.info("Compiling the minibatch cost function.")
         # DEBUG (because on mini batches?)
@@ -616,9 +645,29 @@ class SGD:
 
         Parameters
         ----------
-        trueparams: Iterable of shared variables
+        trueparams: Iterable of shared variables or ParameterSet or model.Parameters
         """
-        self.trueparams = { param: param.get_value() for param in trueparams }
+        if isinstance(trueparams, ParameterSet):
+            self.trueparams = {}
+            for name, val in trueparams.items():
+                try:
+                    param = self.get_param(name)
+                except KeyError:
+                    pass
+                else:
+                    self.trueparams[param] = val
+        elif hasattr(trueparams, '_fields'):
+            # It's a model parameter collection, derived from namedtuple
+            self.trueparams = {}
+            for name, val in zip(trueparams._fields, trueparams):
+                try:
+                    param = self.get_param(name)
+                except KeyError:
+                    pass
+                else:
+                    self.trueparams[param] = val
+        else:
+            self.trueparams = { param: param.get_value() for param in trueparams }
         self._augment_ground_truth_with_transforms()
 
     def _augment_ground_truth_with_transforms(self):
@@ -1225,15 +1274,16 @@ class NPAdam:
         for p in params:
             if isinstance(p, tuple):
                 assert(len(p) == 2)
-                if isinstance(p[1], bool):
-                    self.param_masks.append(np.ones(p[0].get_value().shape, dtype=int)
-                                    * p[1])
-                else:
-                    if p[1].shape != p[0].get_value().shape:
-                        raise ValueError("Provided mask (shape {}) for parameter {} "
-                                        "(shape {}) has a different shape."
-                                        .format(p[1].shape, p[0].name, p[0].get_value().shape))
-                    self.param_masks.append(p[1])
+                self.param_masks.append(p[1])
+                # if isinstance(p[1], bool):
+                #     self.param_masks.append(np.ones(p[0].get_value().shape, dtype=int)
+                #                     * p[1])
+                # else:
+                #     if p[1].shape != p[0].get_value().shape:
+                #         raise ValueError("Provided mask (shape {}) for parameter {} "
+                #                         "(shape {}) has a different shape."
+                #                         .format(p[1].shape, p[0].name, p[0].get_value().shape))
+                #     self.param_masks.append(p[1])
             else:
                 self.param_masks.append(None)
 

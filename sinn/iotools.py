@@ -44,7 +44,7 @@ extensions = ['sin', 'sir', 'dat', 'txt']
 ##########################
 # Public API
 
-def save(filename, data, only_raw=True):
+def save(filename, data, only_raw=True, overwrite=False):
     """Save `data`. By default, only the 'raw' representation is saved, if present.
     Not only is the raw format more future-proof, but it can be an order of
     magnitude more compact.
@@ -52,42 +52,43 @@ def save(filename, data, only_raw=True):
     'raw' method), than save falls back to saving a plain (dill) pickle of 'data'.
     Saving a dill pickle can be forced by passing `only_raw=False`.
     """
-    #os.makedirs(_get_savedir(), exist_ok=True)
-    dirname = os.path.dirname(filename)
-    if dirname != "":
-        os.makedirs(dirname, exist_ok=True)
     try:
-        relname, ext = os.path.splitext(_get_savedir() + filename)
-        ext = ext if ext != "" or ext == ".sir" else ".sin"
-        relpath = relname + ext
-        f, realrelpath = _get_free_file(relpath)
-
-    except IOError:
-        logger.error("Could not create the filename")
-        realrelpath = None
-
-    else:
-        # Also try to save a more future-proof raw datafile
-        saved = False
-        try:
-            #saveraw(os.path.basename(realrelpath), data)
-            saveraw(realrelpath, data)
-            saved = True
-        except AttributeError:
-            # TODO: Use custom error type
+        # First try to save a more future-proof raw datafile
+        saveraw(filename, data, overwrite)
+    except AttributeError:
+        # TODO: Use custom error type
+        if only_raw:
             logger.warning("Unable to save to raw format. "
                            "Will try a plain (dill) pickle dump.")
+        save_non_raw = True
+    else:
+        save_non_raw = not only_raw
 
-        if not only_raw or not saved:
+    if save_non_raw:
+        #os.makedirs(_get_savedir(), exist_ok=True)
+        dirname = os.path.dirname(filename)
+        if dirname != "":
+            os.makedirs(dirname, exist_ok=True)
+        try:
+            relname, ext = os.path.splitext(_get_savedir() + filename)
+            ext = ext if ext != "" or ext == ".sir" else ".sin"
+            relpath = relname + ext
+            if not overwrite:
+                f, realrelpath = _get_free_file(relpath)
+            else:
+                realrelpath = relpath
+                f = open(realrelpath, 'wb')
+        except IOError:
+            logger.error("Could not create the filename")
+            realrelpath = None
+
+        else:
             dill.dump(data, f)
             f.close()
-        else:
-            f.close()
-            os.remove(realrelpath)
 
-    return realrelpath
+        return realrelpath
 
-def saveraw(filename, data):
+def saveraw(filename, data, overwrite=False):
     """Same as `save`, but only saves the raw data."""
     #os.makedirs(_get_savedir(), exist_ok=True)
     dirname = os.path.dirname(filename)
@@ -98,7 +99,11 @@ def saveraw(filename, data):
     if hasattr(data, 'raw'):
         relfilename, relext = os.path.splitext(relpath)
         try:
-            f, rawrelpath = _get_free_file(relfilename + ".sir")
+            if not overwrite:
+                f, rawrelpath = _get_free_file(relfilename + ".sir")
+            else:
+                rawrelpath = relfilename + ".sir"
+                f = open(rawrelpath, 'wb')
         except IOError:
             logger.error("Could not create the filename")
         else:
