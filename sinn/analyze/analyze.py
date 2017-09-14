@@ -149,6 +149,9 @@ def diff(hist, mode='centered'):
             tn = hist.tn - hist.dt
             endidx = hist.t0idx + len(hist)
 
+        # Possibly shorten the length of data, if series was not computed to end
+        endidx = min(hist._cur_tidx.get_value(), endidx)
+
         res = Series(hist, name = "D " + hist.name,
                      t0 = t0, tn = tn)
         res.set( (hist[startidx+2:endidx] - hist[startidx:endidx-2]) / (2*hist.dt) )
@@ -166,6 +169,9 @@ def diff(hist, mode='centered'):
             tn = hist.tn - hist.dt
             endidx = hist.t0idx + len(hist)
 
+        # Possibly shorten the length of data, if series was not computed to end
+        endidx = min(hist._cur_tidx.get_value(), endidx)
+
         res = Series(hist, name = "D " + hist.name,
                      t0 = t0, tn = tn)
         res.set( (hist[startidx+1:endidx] - hist[startidx:endidx-1]) / (hist.dt) )
@@ -182,6 +188,9 @@ def diff(hist, mode='centered'):
 
         tn = hist.tn
         endidx = hist.t0idx + len(hist) + 1
+
+        # Possibly shorten the length of data, if series was not computed to end
+        endidx = min(hist._cur_tidx.get_value(), endidx)
 
         res = histories.Series(hist, name = "D " + hist.name,
                                t0 = t0, tn = tn)
@@ -241,17 +250,21 @@ def smooth(series, amount=None, method='mean', name = None, **kwargs):
         assert(amount is not None)
         if name is None:
             name = series.name + "_smoothed"
+
+        # Possibly shorten the length of data, if series was not computed to end
+        datalen = series._cur_tidx.get_value() - series.t0idx + 1
+        # Create the result (smoothed) series
         res = histories.Series(name = name,
                                t0 = series.t0 + (amount-1)*series.dt/2,
                                #tn = series.tn - (amount-1)*series.dt/2,
-                               tn = series.t0 + (amount-1)*series.dt/2 + (len(series) - amount)*series.dt,
+                               tn = series.t0 + (amount-1)*series.dt/2 + (datalen - amount)*series.dt,
                                    # Calculating tn this way avoids rounding errors that add an extra bin
                                dt = series.dt,
                                shape = series.shape)
-        assert(len(res) == len(series) - amount + 1)
+        assert(len(res) == datalen - amount + 1)
         res.pad(series.t0idx, len(series._tarr) - len(series) - series.t0idx)
             # Add the same amount of padding as series
-        res.set(_running_mean(series[:], amount))
+        res.set(_running_mean(series[:series.t0idx+datalen], amount))
 
         return res
 
