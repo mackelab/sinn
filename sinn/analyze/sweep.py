@@ -6,7 +6,7 @@ author: Alexandre René
 """
 import logging
 import os
-from collections import namedtuple, OrderedDict
+from collections import namedtuple, OrderedDict, Iterable
 from copy import copy
 import numpy as np
 logger = logging.getLogger('sinn.sweep')
@@ -146,6 +146,12 @@ class ParameterSweep:
                 if param.idx is None:
                     param_val = val
                 else:
+                    idx = param.idx
+                    if isinstance(idx, Iterable):
+                        # Indexing rules for arrays and lists are different than for tuples
+                        # We want to treat them all as tuples
+                        idx = tuple(idx)
+
                     try:
                         param_val = copy(new_params_dict[param.name])
                         # Copying ensures that we have a new reference,
@@ -158,21 +164,22 @@ class ParameterSweep:
                             "{}, which is not a parameter of model {}."
                             .format(param.name, str(model)))
                     try:
-                        param_val[param.idx] = val
+                        param_val[idx] = val
                     except IndexError:
                         # The parameter might have an extra dimension
                         # for broadcasting – try without it
                         # TODO Currently will break for params with dim>2
                         if param_val.shape[0] == 1:
-                            param_val[0, param.idx] = val
+                            param_val[0, idx] = val
                         elif param_val.shape[-1] == 1:
-                            param_val[param.idx, 0] = val
+                            param_val[idx, 0] = val
                         else:
-                            # Nope, param.idx really is incompatible
+                            # Nope, idx really is incompatible
                             raise
                 new_params_dict[param.name] = param_val
                 #new_params = new_params._replace(**{param.name: param_val})
             model.update_params(model.Parameters(**new_params_dict))
+                # update_params also resets all histories
             if hasattr(model, 'initialize'):
                 model.initialize()
 
