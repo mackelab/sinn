@@ -85,7 +85,7 @@ def isclose(a, b, rtol=None, atol=None, equal_nan=False):
             rtol = config.rel_tolerance  # floatX precision
         if atol is None:
             atol = config.abs_tolerance  # floatX precision
-        return np.isclose(a, b, config.rel_tolerance, config.abs_tolerance, equal_nan)
+        return np.isclose(a, b, rtol, atol, equal_nan)
 
 def ismultiple(x, base, rtol=None, atol=None):
     """Returns True if `x` is a multiple of `base`, up to the given numerical precision."""
