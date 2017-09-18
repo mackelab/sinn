@@ -113,6 +113,9 @@ class ParameterSweep:
                  for i in range(np.prod(self.shape)) )
 
     def do_sweep(self, output_filename, ippclient=None, debug=False):
+        """
+        Use 'output_filename = None' to indicate not to save the output.
+        """
 
         # variables that will be defined in the engine processes
         model = self._model
@@ -238,7 +241,8 @@ class ParameterSweep:
 
         if not debug:
             res = HeatMap(self.function_label, res_arr, self.params_to_sweep)
-            io.save(output_filename, res)
+            if output_filename is not None:
+                io.save(output_filename, res)
         else:
             # Let the caller decide how to save the debug data
             pass
