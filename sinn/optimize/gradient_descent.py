@@ -162,7 +162,27 @@ class SGD:
         set_params: bool
             If true, call `set_params_to_evols` after loading sgd from file.
             Only has an effect if `sgd_file` is not None. Default is False.
-        """
+
+    Internal treatment of parameter substitution
+    ------------------------------------------
+
+    Transformed variables are stored in the 'substitutions' attribute.
+    This is a dictionary, constructed as 3-element tuples keyed by the
+    Theano variables which are being replaced:
+        self.substitutions = {
+            variable: (new variable, inverse_transform, transform)
+            ...
+        }
+    'new variable' is also a Theano shared variable; this is the one on which the
+    gradient descent operates.
+    The transforms 'inverse_transform' and 'transform' are strings defining the transformations;
+    they must be such that if we define:
+        f = self._make_transform(transform)
+        inv_f = self._make_transform(inverse_transform)
+    then the following equalities are always true:
+        variable == inv_f(new variable)
+        new variable == f(variable)
+    """
 
         self.cost_fn = cost
         self.model = model
@@ -485,6 +505,12 @@ class SGD:
         # If the ground truth of `variable` was set, compute that of `newvar`
         self._augment_ground_truth_with_transforms()
 
+        # Update the fit parameters
+        if variable in self.fitparams:
+            assert(newvar not in self.fitparams)
+            self.fitparams[newvar] = self.fitparams[variable]
+            del self.fitparams[variable]
+
     def _get_nontransformed_param(self, param):
         res = None
         for var, subinfo in self.substitutions.items():
@@ -528,7 +554,7 @@ class SGD:
                 self.fitparams[param] = mask
 
 
-    def get_substituted_cost_graph(self, **kwargs):
+    def get_cost_graph(self, **kwargs):
         # Store the learning rate since it's also used in the convergence test
         if 'lr' in kwargs:
             self._compiled_lr = kwargs['lr']
@@ -543,6 +569,13 @@ class SGD:
                 # is the variable we want in the graph
                 # (e.g. to replace τ by log τ, we need a new variable `logτ`
                 #  and then we would replace in the graph by `10**logτ`.
+
+            for var in self.substitutions:
+                if var in self.fitparams:
+                    logger.warning("The parameter '{}' has been substituted "
+                                   "but is still among the fit params. This is "
+                                   "likely to cause a 'disconnected graph error."
+                                   .format(var.name))
         else:
             replace = None
 
@@ -567,7 +600,7 @@ class SGD:
         else:
             if self.fitparams is None:
                 raise RuntimeError("You must set 'fitparams' before compiling.")
-        cost, statevar_upds, shared_upds = self.get_substituted_cost_graph(**kwargs)
+        cost, statevar_upds, shared_upds = self.get_cost_graph(**kwargs)
 
         logger.info("Compiling the minibatch cost function.")
         # DEBUG (because on mini batches?)
@@ -679,14 +712,20 @@ class SGD:
                 transformedparam = transformedparaminfo[0]
                 transform = self._make_transform(param, transformedparaminfo[2])
                 self.trueparams[transformedparam] = transform(self.trueparams[param])
+            elif transformedparaminfo[0] in self.trueparams:
+                transformedparam = transformedparaminfo[0]
+                inv_transform = self._make_transform(transformedparam, transformedparaminfo[1])
+                self.trueparams[param] = inv_transform(self.trueparams[transformedparam])
 
     def get_param(self, name):
         for param in self.fitparams:
             if param.name == name:
                 return param
-        for param in self.substitutions:
+        for param, subinfo in self.substitutions.items():
             if param.name == name:
                 return param
+            elif subinfo[0].name == name:
+                return subinfo[0]
 
         raise KeyError("No parameter has the name '{}'".format(name))
 
@@ -1186,6 +1225,7 @@ def Adam(cost, params, lr=0.0002, b1=0.1, b2=0.001, e=1e-8, grad_fn=None):
     if isinstance(params, dict):
         # Convert dictionary to a list of (param, mask_descriptor) tuples
         params = list(params.items())
+
     # Extract the gradient mask for each parameter
     for p in params:
         if isinstance(p, tuple):
@@ -1193,7 +1233,7 @@ def Adam(cost, params, lr=0.0002, b1=0.1, b2=0.001, e=1e-8, grad_fn=None):
             tmpparams.append(p[0])
             if isinstance(p[1], bool):
                 param_masks.append(np.ones(p[0].get_value().shape, dtype=int)
-                                  * p[1])
+                                   * p[1])
             else:
                 if p[1].shape != p[0].get_value().shape:
                     raise ValueError("Provided mask (shape {}) for parameter {} "
