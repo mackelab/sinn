@@ -128,12 +128,13 @@ def get_indices(param):
 class SGD:
 
     def __init__(self, cost, model, optimizer,
-                 burnin=None, datalen=None, mbatch_size=None,
+                 start=None, datalen=None, burnin=None, mbatch_size=None,
                  sgd_file=None, set_params=True):
         """
-        Important that burnin + datalen not exceed the amount of data
-        burnin, datalen, mbatch_size should only be omitted when loading from a
+        Important that start + datalen not exceed the amount of data
+        start, datalen, mbatch_size should only be omitted when loading from a
         previously saved SGD instance.
+        The data used to fit corresponds to times [start:start+datalen]
 
         Parameters
         ----------
@@ -148,16 +149,19 @@ class SGD:
             If a class/factory function, should have the signature
               `optimizer(cost, fitparams, **kwargs)`
             where `fitparams` has the same form as the homonymous parameter to `compile`.
-        burnin: float, int
-            Burnin time, in the time units of the model
+        start: float, int
+            Start of the data used in the fit.
         datalen: float, int
             Amount of data on which to evaluate the cost, in the model's time units.
-            Cost will be evaluated up to the time point 'burnin + datalen'.
+            Cost will be evaluated up to the time point 'start + datalen'.
+        burnin: float, int
+            Amount of data discarded at the beginning of every batch. In the model's time units (float)
+            or in number of bins (int).
         mbatch_size: int, float
             Size of minibatches, either in the model's time units (float) or time bins (int).
         sgd_file: str or raw SGD
             File, where an SGD instance was saved. This can be used to continue a fit;
-            in this case, `burnin`, `datalen` and `mbatch_size` are ignored.
+            in this case, `start`, `datalen` and `mbatch_size` are ignored.
             Can be either the already loaded raw data, or a filename to be loaded with iotools.loadraw.
         set_params: bool
             If true, call `set_params_to_evols` after loading sgd from file.
@@ -198,16 +202,18 @@ class SGD:
             # that it has been verified.
 
         if sgd_file is None:
-            if burnin is None:
-                raise ValueError("SGD: Unless an sgd file is provided, the parameter 'burnin' is required.")
+            if start is None:
+                raise ValueError("SGD: Unless an sgd file is provided, the parameter 'start' is required.")
             if datalen is None:
                 raise ValueError("SGD: Unless an sgd file is provided, the parameter 'datalen' is required.")
             if mbatch_size is None:
                 raise ValueError("SGD: Unless an sgd file is provided, the parameter 'mbatch_size' is required")
-            self.burnin = burnin
-            self.burnin_idx = model.get_t_idx(burnin)
+            self.start = start
+            self.start_idx = model.get_t_idx(start)
             self.datalen = datalen
             self.data_idxlen = model.index_interval(datalen)
+            self.burnin = burnin
+            self.burnin_idxlen = model.index_interval(burnin)
             self.mbatch_size = model.index_interval(mbatch_size)
 
             #tidx.tag.test_value = 978
@@ -242,10 +248,12 @@ class SGD:
                 retrieve_fn = lambda attrname: getattr(self, attrname)
             raw[attr] = kwargs.pop(attr) if attr in kwargs else retrieve_fn(attr)
 
-        add_attr('burnin')
-        add_attr('burnin_idx')
+        add_attr('start')
+        add_attr('start_idx')
         add_attr('datalen')
         add_attr('data_idxlen')
+        add_attr('burnin')
+        add_attr('burnin_idxlen')
         add_attr('mbatch_size')
 
         add_attr('curtidx')
@@ -286,8 +294,18 @@ class SGD:
 
         # Using "{}".format(-) on a NumPy array doesn't work, so we
         # convert the integer variables to Python variables.
-        self.burnin = float(raw['burnin'])
-        self.burnin_idx = int(raw['burnin_idx'])
+
+        if 'start' not in raw:
+            # The raw data is not v2 compatible; try v1
+            self.start = float(raw['burnin'])
+            self.start_idx = float(raw['burnin_idx'])
+            self.burnin = 0
+            self.burnin_idx = 0
+        else:
+            self.start = float(raw['start'])
+            self.start_idx = int(raw['start_idx'])
+            self.burnin = int(raw['burnin'])
+            self.burnin_idxlen = int(raw['burnin_idxlen'])
         self.datalen = float(raw['datalen'])
         self.data_idxlen = int(raw['data_idxlen'])
         self.mbatch_size = int(raw['mbatch_size'])
@@ -646,7 +664,7 @@ class SGD:
         # # Compile likelihood function
         # self.model.clear_unlocked_histories()
         # self.model.theano_reset()
-        # #cost = self.cost_fn(self.burnin, self.burnin + self.datalen)
+        # #cost = self.cost_fn(self.start, self.start + self.datalen)
         # cost, cost_updates = self.cost_fn(self.tidx_var, self.tidx_var + self.mbatch_size)
         # if len(replace) > 0:
         #     cost = theano.clone(cost, replace)
@@ -814,8 +832,8 @@ class SGD:
         self.circ_step_i = 0
         self.output_width = 5 # Default width for printing number of steps
         self.step_cost = []
-        self.curtidx = copy.deepcopy(self.burnin_idx)
-                # Copy ensures updating curtidx doesn't also update burnin_idx
+        self.curtidx = copy.deepcopy(self.start_idx)
+                # Copy ensures updating curtidx doesn't also update start_idx
         self.cum_step_time = 0
         self.cum_cost = 0
         self.tot_time = 0
@@ -871,11 +889,11 @@ class SGD:
         clear_output(wait=True)
             #`wait` indicates to wait until something is printed, which avoids flicker
 
-        if self.curtidx > self.burnin_idx + self.data_idxlen - self.mbatch_size:
+        if self.curtidx > self.start_idx + self.data_idxlen - self.mbatch_size - self.burnin_idxlen:
             # We've run through the dataset
             # Reset time index to beginning
-            self.curtidx = copy.deepcopy(self.burnin_idx)
-                # Copy ensures updating curtidx doesn't also update burnin_idx
+            self.curtidx = copy.deepcopy(self.start_idx)
+                # Copy ensures updating curtidx doesn't also update start_idx
             self.model.clear_unlocked_histories()
             if cost_calc == 'cum':
                 self.cost_evol.append(self.cum_cost)
@@ -883,11 +901,11 @@ class SGD:
             self.cum_cost = 0
             self.circ_step_i = 0
 
-            # HACK Fill the data corresponding to the burnin time
+            # HACK Fill the data corresponding to the start time
             #      (hack b/c ugly + repeated in iterate() + does not check indexing)
-            logger.info("Iteration {:>{}} – Moving current index forward to the end of the burnin period."
+            logger.info("Iteration {:>{}} – Moving current index forward to data start."
                         .format(self.step_i, self.output_width))
-            self.model.advance(self.burnin_idx)
+            self.model.advance(self.start_idx + self.burnin_idxlen)
             #for i in range(0, self.burnin_idx, self.mbatch_size):
             #    self._step(i)
             logger.info("Done.")
@@ -917,12 +935,12 @@ class SGD:
 
         if ( cost_calc == 'full'
              and self.step_i % kwargs.get('cost_period', 1) == 0 ):
-            self.cost_evol.append(self.cost(self.burnin_idx, self.data_idxlen))
+            self.cost_evol.append(self.cost(self.start_idx, self.data_idxlen))
 
         # Increment step counter
         self.step_i += 1
         self.circ_step_i += 1
-        self.curtidx += self.mbatch_size
+        self.curtidx += self.mbatch_size + self.burnin_idxlen
 
         # TODO: Use a circular iterator for step_cost, so that a) we don't need circ_step_i
         #       and b) we can test over intervals that straddle a reset of curtidx
@@ -937,7 +955,7 @@ class SGD:
         logger.info("Iteration {:>{}} – <log L> = {:.2f}"
                     .format(self.step_i,
                             self.output_width,
-                            float(sum(self.step_cost[:self.circ_step_i])/(self.curtidx + self.mbatch_size -self.burnin_idx))))
+                            float(sum(self.step_cost[:self.circ_step_i])/(self.curtidx + self.mbatch_size -self.start_idx))))
         if cost_calc == 'full':
             logger.info(" "*(13+self.output_width) + "Last evaluated log L: {}".format(self.cost_evol[-1]))
 
@@ -964,10 +982,10 @@ class SGD:
         # HACK Fill the data corresponding to the burnin time
         #      (hack b/c ugly + repeated in step() + does not check indexing)
         # Possible fix: create another "skip burnin" function, with scan ?
-        logger.info("Moving current index forward to the end of the burnin period.")
+        logger.info("Moving current index forward to data start.")
         #for i in range(0, self.burnin_idx, self.mbatch_size):
         #    self._step(i)
-        self.model.advance(self.burnin_idx)
+        self.model.advance(self.start_idx)
         logger.info("Done.")
 
         t1 = time.perf_counter()
