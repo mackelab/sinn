@@ -896,7 +896,7 @@ class SGD:
                 # Copy ensures updating curtidx doesn't also update start_idx
             self.model.clear_unlocked_histories()
             if cost_calc == 'cum':
-                self.cost_evol.append(self.cum_cost)
+                self.cost_evol.append(np.array((self.step_i, self.cum_cost)))
             #self.model.clear_unlocked_histories()
             self.cum_cost = 0
             self.circ_step_i = 0
@@ -935,7 +935,8 @@ class SGD:
 
         if ( cost_calc == 'full'
              and self.step_i % kwargs.get('cost_period', 1) == 0 ):
-            self.cost_evol.append(self.cost(self.start_idx, self.data_idxlen))
+            self.cost_evol.append(
+                np.array( (self.step_i, self.cost(self.start_idx, self.data_idxlen)) ) )
 
         # Increment step counter
         self.step_i += 1
@@ -945,10 +946,10 @@ class SGD:
         # TODO: Use a circular iterator for step_cost, so that a) we don't need circ_step_i
         #       and b) we can test over intervals that straddle a reset of curtidx
         # Check to see if there have been meaningful changes in the last 10 iterations
-        if ( converged(self.cost_evol, r=conv_res, n=4, m=3) and
+        if ( converged(self.cost_evol[:,1], r=conv_res, n=4, m=3) and
              converged(self.step_cost[:self.circ_step_i], r=conv_res, n=100)
              and all( converged(self.param_evol[p], r=conv_res) for p in self.fitparams) ):
-            logger.info("Converged. log L = {:.2f}".format(float(self.cost_evol[-1])))
+            logger.info("Converged. log L = {:.2f}".format(float(self.cost_evol[-1,1])))
             return ConvergeStatus.CONVERGED
 
         #Print progress  # TODO: move to top of step
@@ -957,7 +958,7 @@ class SGD:
                             self.output_width,
                             float(sum(self.step_cost[:self.circ_step_i])/(self.curtidx + self.mbatch_size -self.start_idx))))
         if cost_calc == 'full':
-            logger.info(" "*(13+self.output_width) + "Last evaluated log L: {}".format(self.cost_evol[-1]))
+            logger.info(" "*(13+self.output_width) + "Last evaluated log L: {}".format(self.cost_evol[-1,1]))
 
         return ConvergeStatus.NOTCONVERGED
 
@@ -1044,7 +1045,7 @@ class SGD:
         if evol is None:
             evol = self.get_evol()
         plt.title("Maximization of likelihood")
-        plt.plot(evol['logL'])
+        plt.plot(evol['logL'][:,0], evol['logL'][:,1])
         plt.xlabel("epoch")
         plt.ylabel("$\log L$")
 
