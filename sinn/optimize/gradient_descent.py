@@ -83,6 +83,7 @@ def meanabsdev(it, n=10, end=-1):
 
 def converged(it, r=0.01, p=0.99, n=10, m=10, abs_th=0.001):
     """
+    NOTE: if 'it' has no len or is not indexable, it is internally converted to a list.
     r: resolution. Identify a difference in means of r*sigma with probability p
     p: certainty of each hypothesis test
     n: length of each test
@@ -91,7 +92,14 @@ def converged(it, r=0.01, p=0.99, n=10, m=10, abs_th=0.001):
             standard deviation (specifically, this amount is added to the std
             to compute the reference deviation)
     """
-    if len(it) < 2*n+m:
+    try:
+        it[-1]  # Check that it is indexable
+        length = len(it)
+    except TypeError:
+        it = list(it)
+        length = len(it)
+
+    if length < 2*n+m:
         return False
     else:
         # Get the threshold that ensures p statistical power
@@ -946,10 +954,11 @@ class SGD:
         # TODO: Use a circular iterator for step_cost, so that a) we don't need circ_step_i
         #       and b) we can test over intervals that straddle a reset of curtidx
         # Check to see if there have been meaningful changes in the last 10 iterations
-        if ( converged(self.cost_evol[:,1], r=conv_res, n=4, m=3) and
+        if ( converged((c[1] for c in self.cost_evol),
+                       r=conv_res, n=4, m=3) and
              converged(self.step_cost[:self.circ_step_i], r=conv_res, n=100)
              and all( converged(self.param_evol[p], r=conv_res) for p in self.fitparams) ):
-            logger.info("Converged. log L = {:.2f}".format(float(self.cost_evol[-1,1])))
+            logger.info("Converged. log L = {:.2f}".format(float(self.cost_evol[-1][1])))
             return ConvergeStatus.CONVERGED
 
         #Print progress  # TODO: move to top of step
@@ -958,7 +967,7 @@ class SGD:
                             self.output_width,
                             float(sum(self.step_cost[:self.circ_step_i])/(self.curtidx + self.mbatch_size -self.start_idx))))
         if cost_calc == 'full':
-            logger.info(" "*(13+self.output_width) + "Last evaluated log L: {}".format(self.cost_evol[-1,1]))
+            logger.info(" "*(13+self.output_width) + "Last evaluated log L: {}".format(self.cost_evol[-1][1]))
 
         return ConvergeStatus.NOTCONVERGED
 
