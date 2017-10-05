@@ -579,6 +579,29 @@ class SGD:
             else:
                 self.fitparams[param] = mask
 
+    def standardize_lr(self, lr, params=None):
+        if params is None:
+            params = self.fitparams.keys()
+
+        if shim.isscalar(lr):
+            lr = {p: lr for p in params}
+        elif isinstance(lr, dict):
+            new_lr = {}
+            for key, val in lr.items():
+                if isinstance(key, str):
+                    p = self.get_param(key)
+                    assert(p not in lr)
+                    new_lr[p] = val
+                else:
+                    assert(shim.isshared(key))
+                    new_lr[p] = val
+            lr = new_lr
+
+        if not (isinstance(lr, dict) and all(p in lr for p in params)):
+            raise ValueError("Learning rate must be specified either as a scalar, "
+                             "or as a dictionary with a key matching each parameter.")
+
+        return lr
 
     def get_cost_graph(self, **kwargs):
         # Store the learning rate since it's also used in the convergence test
@@ -626,7 +649,10 @@ class SGD:
         else:
             if self.fitparams is None:
                 raise RuntimeError("You must set 'fitparams' before compiling.")
-        cost, statevar_upds, shared_upds = self.get_cost_graph(**kwargs)
+
+        lr = self.standardize_lr(kwargs.pop('lr', 0.0002))
+
+        cost, statevar_upds, shared_upds = self.get_cost_graph(lr=lr, **kwargs)
 
         logger.info("Compiling the minibatch cost function.")
         # DEBUG (because on mini batches?)
@@ -641,7 +667,7 @@ class SGD:
         if isinstance(self.optimizer, str):
             if self.optimizer == 'adam':
                 logger.info("Calculating Adam optimizer updates.")
-                optimizer_updates = Adam(-cost, self.fitparams, **kwargs)
+                optimizer_updates = Adam(-cost, self.fitparams, lr=lr, **kwargs)
             else:
                 raise ValueError("Unrecognized optimizer '{}'.".format(self.optimizer))
 
@@ -649,7 +675,7 @@ class SGD:
             # Treat optimizer as a factory class or function
             try:
                 logger.info("Calculating custom optimizer updates.")
-                optimizer_updates = self.optimizer(-cost, self.fitparams, **kwargs)
+                optimizer_updates = self.optimizer(-cost, self.fitparams, lr=lr, **kwargs)
             except TypeError as e:
                 if 'is not callable' not in str(e):
                     # Some other TypeError was triggered; reraise
@@ -957,7 +983,7 @@ class SGD:
         if ( converged((c[1] for c in self.cost_evol),
                        r=conv_res, n=4, m=3) and
              converged(self.step_cost[:self.circ_step_i], r=conv_res, n=100)
-             and all( converged(self.param_evol[p], r=conv_res) for p in self.fitparams) ):
+             and all( converged(self.param_evol[p], r=self._compiled_lr[p]) for p in self.fitparams) ):
             logger.info("Converged. log L = {:.2f}".format(float(self.cost_evol[-1][1])))
             return ConvergeStatus.CONVERGED
 
@@ -971,7 +997,7 @@ class SGD:
 
         return ConvergeStatus.NOTCONVERGED
 
-    def iterate(self, Nmax=int(5e3), lr=None, **kwargs):
+    def iterate(self, Nmax=int(5e3), conv_res=0.001, **kwargs):
         """
         Parameters
         ----------
@@ -981,13 +1007,6 @@ class SGD:
 
         Nmax = int(Nmax)
         self.output_width = int(np.log10(Nmax))
-
-        if lr is not None:
-            # Override the learning rate set during compilation
-            pass
-        else:
-            lr = self._compiled_lr
-        assert(lr is not None)
 
         # HACK Fill the data corresponding to the burnin time
         #      (hack b/c ugly + repeated in step() + does not check indexing)
@@ -1001,7 +1020,7 @@ class SGD:
         t1 = time.perf_counter()
         try:
             for i in range(Nmax):
-                status = self.step(conv_res=lr, **kwargs)
+                status = self.step(conv_res, **kwargs)
                 if status in [ConvergeStatus.CONVERGED, ConvergeStatus.ABORT]:
                     break
         except KeyboardInterrupt:
@@ -1254,6 +1273,13 @@ def Adam(cost, params, lr=0.0002, b1=0.1, b2=0.001, e=1e-8, grad_fn=None):
         # Convert dictionary to a list of (param, mask_descriptor) tuples
         params = list(params.items())
 
+    # Standardize the learning rate form
+    if shim.isscalar(lr):
+        lr = {p: lr for p in params}
+    if not (isinstance(lr, dict) and all(p[0] in lr for p in params)):
+        raise ValueError("Learning rate must be specified either as a scalar, "
+                         "or as a dictionary with a key matching each parameter.")
+
     # Extract the gradient mask for each parameter
     for p in params:
         if isinstance(p, tuple):
@@ -1294,8 +1320,8 @@ def Adam(cost, params, lr=0.0002, b1=0.1, b2=0.001, e=1e-8, grad_fn=None):
     i_t = i + 1.
     fix1 = 1. - (1. - b1)**i_t
     fix2 = 1. - (1. - b2)**i_t
-    lr_t = lr * (T.sqrt(fix2) / fix1)
     for p, g in zip(params, grads):
+        lr_t = lr[p] * (T.sqrt(fix2) / fix1)
         if hasattr(p, 'broadcastable'):
             m = theano.shared(p.get_value() * 0., broadcastable=p.broadcastable)
             v = theano.shared(p.get_value() * 0., broadcastable=p.broadcastable)
@@ -1316,7 +1342,7 @@ def Adam(cost, params, lr=0.0002, b1=0.1, b2=0.001, e=1e-8, grad_fn=None):
 
 class NPAdam:
     """
-    A pure NumPy version of the Adam optimizer
+    A pure NumPy version of the Adam optimizer (Untested.)
 
     params: list
         List of Theano shared variables. Any element may be specified instead
@@ -1385,10 +1411,10 @@ class NPAdam:
         self.i += 1
         fix1 = 1. - (1. - self.b1)**self.i
         fix2 = 1. - (1. - self.b2)**self.i
-        lr_t = lr * (np.sqrt(fix2) / fix1)
 
         p_t = []
         for p, g in zip(params, grads):
+            lr_t = self.lr[p] * (np.sqrt(fix2) / fix1)
             self.m[i] = (b1 * g) + ((1. - b1) * self.m[i])
             self.v[i] = (b2 * g**2) + ((1. - b2) * self.v[i])
             g_t = self.m[i] / (np.sqrt(self.v[i]) + self.e)
