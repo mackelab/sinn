@@ -284,7 +284,8 @@ em
         elif self.use_theano:
             self.compiled_history = None
         self._cur_tidx = shim.shared(np.array(-1, dtype='int64'),
-                                            name = 't idx (' + name + ')')
+                                     name = 't idx (' + name + ')',
+                                     symbolic=self.use_theano)
             # Tracker for the latest time bin for which we
             # know history.
         self._original_tidx = self._cur_tidx
@@ -408,7 +409,8 @@ em
             hist.name = str(raw['name'])
             rethist = hist
         rethist._original_tidx = shim.shared( np.array(int(raw['_cur_tidx']), dtype='int64'),
-                                              name = 't idx (' + rethist.name + ')' )
+                                              name = 't idx (' + rethist.name + ')' ,
+                                              symbolic=use_theano)
         rethist._cur_tidx = rethist._original_tidx
         rethist._data = shim.shared(raw['_data'], name = rethist.name + " data")
         if lock:
@@ -563,7 +565,13 @@ em
 
         key, key_filter, latest = self._parse_key(key)
 
-        if shim.is_theano_object(latest, self._cur_tidx):
+        symbolic_return = True
+            # Indicates that we allow the return value to be symbolic. If false and return
+            # is a graph object, we will force a numerical value by calling 'get_value'
+        if not shim.is_theano_object(key, key_filter, latest) and latest <= self._original_tidx.get_value():
+            # No need to compute anything, even if _cur_tidx is a graph object
+            symbolic_return = False
+        elif shim.is_theano_object(latest, self._cur_tidx):
             # For theano variables, we can't know in advance if we need to compute
             # or not.
             # TODO: always compute, and let compute_up_to decide ?
@@ -584,12 +592,15 @@ em
 
             self.compute_up_to(latest)
 
+        # TODO: Remove. I don't know why we would need to add to inputs.
         # Add `self` to list of inputs
         #if self.use_theano and self not in sinn.inputs:
         if self not in sinn.inputs:
             sinn.inputs[self] = set()
 
         result = self.retrieve(key)
+        if not symbolic_return and shim.is_theano_object(result):
+            result = shim.graph.eval(result, max_cost=10)
         if key_filter is None:
             return result
         else:
@@ -748,7 +759,7 @@ em
 
         return len(before_array), len(after_array)
 
-    def compute_up_to(self, tidx):
+    def compute_up_to(self, tidx, start='symbolic'):
         """Compute the history up to `tidx` inclusive.
 
         Parameters
@@ -765,11 +776,22 @@ em
             NOTE: The index must be positive. Negative indices are treated as
             before 0, and lead to no computation. (I.e. negative indices are
             not subtracted from the end.)
-
+        start: str
+            Computation runs from one past the currently computed index up to `tidx`.
+            The currently computed index may be either
+              - 'symbolic': (default) Updating the starting point later will change
+                the computation. (Current index is part of the computational graph.)
+              - 'numeric': The current value of the current index attribute is
+                retrieved and saved. Resulting function will always start from the same
+                index.
         """
 
+        if start == 'numeric':
+            original_tidx = self._original_tidx.get_value()
+        else:
+            original_tidx = self._original_tidx
         if tidx == 'end':
-            start = self._original_tidx + 1
+            start = original_tidx + 1
             end = self.tnidx
             replace = False
         elif tidx == 'all':
@@ -778,7 +800,7 @@ em
             replace = True
         else:
             shim.check(shim.istype(tidx, 'int'))
-            start = self._original_tidx + 1
+            start = original_tidx + 1
             end = tidx
             replace = False
 
@@ -855,7 +877,7 @@ em
         if not self._iterative:
             batch_computable = True
         #elif (self.use_theano and self._is_batch_computable()):
-        elif self._is_batch_computable():
+        elif self._is_batch_computable(up_to=end):
             batch_computable = True
         else:
             batch_computable = False
@@ -878,7 +900,7 @@ em
             if replace:
                 self._data = self._update_function(tarr[::-1])[::-1]
                 if isinstance(self._data, np.ndarray):
-                    self._data = shim.shared(self._data)
+                    self._data = shim.shared(self._data, symbolic=self.use_theano)
                 self._cur_tidx = end
             else:
                 self.update(slice(start,stop),
@@ -1435,7 +1457,7 @@ em
         return slice(idxstart, idxstop, idxstep)
 
 
-    def _is_batch_computable(self):
+    def _is_batch_computable(self, up_to='end'):
         """
         Returns true if the history can be computed at all time points
         simultaneously.
@@ -1444,6 +1466,13 @@ em
         the result of this function will no longer be valid.
         HACK: sinn.inputs is no longer cleared, so this function should no longer
         be limited to Theano graphs – hopefully that doesn't break anything else.
+
+        Parameters
+        ----------
+        up_to: int
+            Only check batch computability up to the given time index. Default
+            is to check up to the end. Effectively, this adds an additional
+            success condition, when the current time index is >= to `up_to`.
         """
         if not self._iterative:
             return True
@@ -1483,12 +1512,16 @@ em
             # created discretized kernel) are fine, as long as the upstream
             # is included in sinn.inputs.
             retval = True
-        elif all( hist.locked or hist._is_batch_computable()
+        elif all( hist.locked or hist._is_batch_computable(up_to)
                   for hist in input_list):
             # The potential cyclical dependency chain has been broken
             retval = True
         else:
-            retval = False
+            if up_to != 'end':
+                up_to = self.get_t_idx(up_to)
+                retval = (up_to <= self._original_tidx.get_value())
+            else:
+                retval = False
 
         del self._batch_loop_flag
 
@@ -2482,21 +2515,20 @@ class Series(ConvolveMixin, History):
                          t0=t0, tn=tn, dt=dt,
                          shape=shape, **kwargs)
 
-        if self.use_theano:
-            # Make the dimensions where shape is 1 broadcastable
-            # (as they would be with NumPy)
-            data_tensor_broadcast = tuple(
-                [False] + [True if d==1 else 0 for d in self.shape] )
-            self.DataType = shim.getT().TensorType(sinn.config.floatX,
-                                                   data_tensor_broadcast)
-            #self._data = shim.T.zeros(self._tarr.shape + self.shape, dtype=config.floatX)
-            self._data = self.DataType(self.name + ' data')
-            #self.inf_bin = shim.lib.zeros(self.shape, dtype=config.floatX)
-        else:
-            self._data = shim.shared(np.zeros(self._tarr.shape + self.shape, dtype=config.floatX),
-                                     name = self.name + " data",
-                                     borrow = True)
-
+        # if self.use_theano:
+        #     # Make the dimensions where shape is 1 broadcastable
+        #     # (as they would be with NumPy)
+        #     data_tensor_broadcast = tuple(
+        #         [False] + [True if d==1 else 0 for d in self.shape] )
+        #     self.DataType = shim.getT().TensorType(sinn.config.floatX,
+        #                                            data_tensor_broadcast)
+        #     #self._data = shim.T.zeros(self._tarr.shape + self.shape, dtype=config.floatX)
+        #     self._data = self.DataType(self.name + ' data')
+        #     #self.inf_bin = shim.lib.zeros(self.shape, dtype=config.floatX)
+        # else:
+        self._data = shim.shared(np.zeros(self._tarr.shape + self.shape, dtype=config.floatX),
+                                 name = self.name + " data",
+                                 borrow = True)
         self._original_data = self._data
             # Stores a handle to the original data variable, which will appear
             # as an input in the Theano graph
@@ -2557,7 +2589,7 @@ class Series(ConvolveMixin, History):
                     # Ensure that we update at most one step in the future
 
         end = end
-        if shim.is_theano_object(self._data):
+        if self.use_theano:
             if not shim.is_theano_object(value):
                 logger.warning("Updating a Theano array ({}) with a Python value. "
                                "This is likely an error.".format(self.name))
@@ -2596,10 +2628,12 @@ class Series(ConvolveMixin, History):
 
         else:
             if shim.is_theano_object(value):
-                raise ValueError("You are trying to update a pure numpy series ({}) "
-                                 "with a Theano variable. You need to make the "
-                                 "series a Theano variable as well."
-                                 .format(self.name))
+                if not shim.is_computable([value]):
+                    raise ValueError("You are trying to update a pure numpy series ({}) "
+                                     "with a Theano variable. You need to make the "
+                                     "series a Theano variable as well."
+                                     .format(self.name))
+                value = shim.graph.eval(value, max_cost=None)
             if shim.is_theano_object(tidx):
                 raise ValueError("You are trying to update a pure numpy series ({}) "
                                  "with a time idx that is a Theano variable. You need "
@@ -2910,10 +2944,11 @@ class Series(ConvolveMixin, History):
             self._original_tidx.set_value(self.t0idx + len(tarr) - 1)
             self._cur_tidx = self._original_tidx
         else:
-            # HACK If _data is not just a shared variable, it's Theano graph
+            # HACK If _data is not just a shared variable, its Theano graph
             # almost certainly depends on _original_tidx, so it should not be
             # updated
-            self._cur_tidx = shim.shared(self.t0idx + len(tarr) - 1)
+            self._cur_tidx = shim.shared(self.t0idx + len(tarr) - 1,
+                                         symbolic=self.use_theano)
 
         return self
 
