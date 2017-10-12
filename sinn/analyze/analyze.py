@@ -7,7 +7,9 @@ Created Tue Feb 21 2017
 author: Alexandre René
 """
 
-__all__ = ['mean', 'diff', 'smooth', 'subsample', 'plot', 'get_axes', 'get_axis_labels']
+__all__ = ['mean', 'diff', 'smooth', 'subsample',
+           'window_mean', 'window_variance',
+           'plot', 'get_axes', 'get_axis_labels']
 
 import logging
 import collections
@@ -101,8 +103,10 @@ def mean(hist, pop_slices=None, **kwargs):
         res_data = res_data.A
 
     res = histories.Series(hist.hist, name = "<" + hist.name + ">",
-                           shape = res_data.shape[1:])
+                           shape = res_data.shape[1:],
+                           iterative = False)
     res.set( res_data )
+    res.lock()
     return res
 
 def diff(hist, mode='centered'):
@@ -153,9 +157,9 @@ def diff(hist, mode='centered'):
         endidx = min(hist._cur_tidx.get_value(), endidx)
 
         res = Series(hist, name = "D " + hist.name,
-                     t0 = t0, tn = tn)
+                     t0 = t0, tn = tn,
+                     iterative = False)
         res.set( (hist[startidx+2:endidx] - hist[startidx:endidx-2]) / (2*hist.dt) )
-        return res
 
     if mode == 'forward':
         # Remove consumed bins, but only if there's no padding
@@ -173,9 +177,9 @@ def diff(hist, mode='centered'):
         endidx = min(hist._cur_tidx.get_value(), endidx)
 
         res = Series(hist, name = "D " + hist.name,
-                     t0 = t0, tn = tn)
+                     t0 = t0, tn = tn,
+                     iterative = False)
         res.set( (hist[startidx+1:endidx] - hist[startidx:endidx-1]) / (hist.dt) )
-        return res
 
     if mode == 'backward':
         # Remove consumed bins, but only if there's no padding
@@ -193,9 +197,12 @@ def diff(hist, mode='centered'):
         endidx = min(hist._cur_tidx.get_value(), endidx)
 
         res = histories.Series(hist, name = "D " + hist.name,
-                               t0 = t0, tn = tn)
+                               t0 = t0, tn = tn,
+                               iterative = False)
         res.set( (hist[startidx+1:endidx] - hist[startidx:endidx-1]) / (hist.dt) )
-        return res
+
+    res.lock()
+    return res
 
 def smooth(series, amount=None, method='mean', name = None, **kwargs):
     """Smooth the `series` and return as another Series instance.
@@ -233,18 +240,19 @@ def smooth(series, amount=None, method='mean', name = None, **kwargs):
         series_data = series
         series = histories.Series(name = name,
                                   t0 = 0, tn = len(series)-1, dt = 1,
-                                  shape = series.shape[1:])
+                                  shape = series.shape[1:],
+                                  iterative=False)
         series.set(series_data)
 
     series = histories.DataView(series)
          # FIXME: make DataView inherit type, in case one is passed as argument
 
-    # TODO: Update Theano check
-    if hasattr(series, 'use_theano') and series.use_theano:
-        if series.compiled_history is not None:
-            series = series.compiled_history
-        else:
-            raise ValueError("Cannot smooth a Theano array.")
+    # # TODO: Update Theano check
+    # if hasattr(series, 'use_theano') and series.use_theano:
+    #     if series.compiled_history is not None:
+    #         series = series.compiled_history
+    #     else:
+    #         raise ValueError("Cannot smooth a Theano array.")
     if method == 'mean':
         # TODO: Don't move t0 or tn if there is enough padding
         assert(amount is not None)
@@ -260,17 +268,18 @@ def smooth(series, amount=None, method='mean', name = None, **kwargs):
                                tn = series.t0 + (amount-1)*series.dt/2 + (datalen - amount)*series.dt,
                                    # Calculating tn this way avoids rounding errors that add an extra bin
                                dt = series.dt,
-                               shape = series.shape)
+                               shape = series.shape,
+                               iterative = False)
         assert(len(res) == datalen - amount + 1)
         res.pad(series.t0idx, len(series._tarr) - len(series) - series.t0idx)
             # Add the same amount of padding as series
         res.set(_running_mean(series[:series.t0idx+datalen], amount))
+        res.lock()
 
         return res
 
     else:
         raise NotImplementedError
-
 
 def subsample(series, amount):
     """Reduce the number of time bins by averaging over `amount` bins.
@@ -292,11 +301,11 @@ def subsample(series, amount):
     series = histories.DataView(series)
 
     assert(np.issubdtype(np.asarray(amount).dtype, np.int))
-    if hasattr(series, 'use_theano') and series.use_theano:
-        if series.compiled_history is not None:
-            series = series.compiled_history
-        else:
-            raise ValueError("Cannot subsample a Theano array.")
+    # if hasattr(series, 'use_theano') and series.use_theano:
+    #     if series.compiled_history is not None:
+    #         series = series.compiled_history
+    #     else:
+    #         raise ValueError("Cannot subsample a Theano array.")
     newdt = series.dt * amount
     nbins = int( (series.tn - series.t0) // newdt )
         # We might chop off a few bins, if the new dt is not commensurate with
@@ -306,13 +315,41 @@ def subsample(series, amount):
                            tn   = series.t0 + (nbins - 1) * newdt,
                                # nbins-1 because tn is inclusive
                            dt   = newdt,
-                           shape = series.shape)
+                           shape = series.shape,
+                           iterative = False)
     data = series.get_trace()[:nbins*amount]
         # Slicing removes bins which are not commensurate with the subsampling factor
     t0idx = series.t0idx
     res.set(np.sum(data[i : i+nbins*amount : amount] for i in range(amount))/amount)
         # Can't use np.mean on a generator
+    res.lock()
     return res
+
+def window_mean(series, window_len, name=None):
+    if name is None:
+        if hasattr(series, 'name'):
+            name = series.name + "_avg"
+        else:
+            name = "data_avg"
+
+    return smooth(series, amount=window_len, method='mean', name=name)
+
+def window_variance(series, window_len, name=None, mean_series=None):
+    if name is None:
+        if hasattr(series, 'name'):
+            μname = series.name + "_avg"
+            sqrname = series.name + "_sqr"
+        else:
+            μname = "data_avg"
+            sqrname = "data_sqr"
+
+    if mean_series is None:
+        mean_series = smooth(series, amount=window_len, method='mean', name=μname)
+    else:
+        assert(len(mean_series) == len(series))
+    # Return <X²> - <X>²
+    return ( smooth(series**2, amount=window_len, method='mean', name=sqrname)
+             - mean_series**2 )
 
 # ==================================
 # Plotting
@@ -430,11 +467,11 @@ def plot(data, **kwargs):
         # Second line catches a DataView of a Series
         # TODO: Make DataView a derived class of its self.hist within __new__;
         #       then 'isinstance' would work.
-        if hasattr(data, 'use_theano') and data.use_theano:
-            assert(hasattr(data, 'compiled_history'))
-            if data.compiled_history is None:
-                raise ValueError("You need to compile a Theano history before plotting it.")
-            data = data.compiled_history
+        # if hasattr(data, 'use_theano') and data.use_theano:
+        #     assert(hasattr(data, 'compiled_history'))
+        #     if data.compiled_history is None:
+        #         raise ValueError("You need to compile a Theano history before plotting it.")
+        #     data = data.compiled_history
 
         comp_list = kwargs.pop('component', None)
         if comp_list is None:

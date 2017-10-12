@@ -165,7 +165,7 @@ em
         # Derived classes should define this as a class attribute
     instance_counter = 0
 
-    def __init__(self, hist=sinn._NoValue, name=None, *args, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
+    def __init__(self, hist=sinn._NoValue, name=None, *args, time_array=sinn._NoValue, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
                  shape=sinn._NoValue, f=sinn._NoValue, iterative=sinn._NoValue, use_theano=False):
         # TODO: Change `use_theano` to `pure_theano` or something
         """
@@ -180,6 +180,8 @@ em
         ----------
         hist: History instance
             Optional. If passed, will used this history's parameters as defaults.
+        time_array: ndarray (float)
+            The array of times this history samples. If provided, `t0`, `tn` and `dt` are ignored.
         t0: float
             Time at which the history starts.
         tn: float
@@ -217,8 +219,8 @@ em
         # ensure every class has a unique name.
         History.instance_counter += 1
 
-        if self not in sinn.inputs:
-            sinn.inputs[self] = set()
+        # if self not in sinn.inputs:
+        #    sinn.inputs[self] = set()
 
         if name is None:
             name = "history{}".format(self.instance_counter)
@@ -228,12 +230,14 @@ em
                 raise ValueError("The first parameter to the History initializer, "
                                  "if given, must be another history instance. "
                                  "All other parameters should use keywords.")
-            if t0 is sinn._NoValue:
-                t0 = hist.t0
-            if tn is sinn._NoValue:
-                tn = hist.tn
-            if dt is sinn._NoValue:
-                dt = hist.dt
+            if time_array is sinn._NoValue:
+                time_array = hist._tarr[hist.t0idx : hist.t0idx+len(hist)]
+            # if t0 is sinn._NoValue:
+            #     t0 = hist.t0
+            # if tn is sinn._NoValue:
+            #     tn = hist.tn
+            # if dt is sinn._NoValue:
+            #     dt = hist.dt
             if shape is sinn._NoValue:
                 shape = hist.shape
             if f is sinn._NoValue:
@@ -243,10 +247,28 @@ em
             if use_theano is sinn._NoValue:
                 use_theano = hist.use_theano
         else:
-            assert(sinn._NoValue not in [t0, tn, dt, shape])
+            assert(time_array is not sinn._NoValue
+                   or sinn._NoValue not in [t0, tn, dt, shape])
+        if name == 'n_var':  # debug
+            import pdb; pdb.set_trace()
+            pass
         if iterative is sinn._NoValue:
             # Default value
             iterative = True
+        if time_array is not sinn._NoValue:
+            t0 = time_array[0]
+            tn = time_array[-1]
+            dt = time_array[1] - time_array[0]
+            assert( np.all(sinn.isclose(time_array[1:] - time_array[:-1], dt)) )
+        else:
+            # Ensure (tn-t0) is a round multiple of dt
+            tn = np.ceil( (tn - t0)/dt ) * dt + t0
+            time_array = np.arange(t0,
+                                   tn + dt - config.abs_tolerance,
+                                   dt)
+                # 'self.tn+self.dt' ensures the upper bound is inclusive,
+                # -config.abs_tolerance avoids including an extra bin because of rounding errors
+            tn = time_array[-1]   # Remove any risk of mismatch due to rounding
 
         # Determine whether the series data will use Theano.
         # The default depends on whether Theano is loaded. If it is not loaded
@@ -256,8 +278,8 @@ em
         else:
             self.use_theano = use_theano
 
-        super().__init__(t0, np.ceil( (tn - t0)/dt ) * dt + t0)
-            # Set t0 and tn, ensuring (tn - t0) is a round multiple of dt
+        super().__init__(t0, tn)
+            # Set t0 and tn
 
         ############
         # Flags
@@ -305,14 +327,9 @@ em
             self.set_update_function(f)
         self._compute_range = None
 
-        self._tarr = np.arange(self.t0,
-                               self.tn + self.dt - config.abs_tolerance,
-                               self.dt)
-        # 'self.tn+self.dt' ensures the upper bound is inclusive,
-        # -config.abs_tolerance avoids including an extra bin because of rounding errors
-
+        self._tarr = time_array
         self.t0idx = shim.cast(0, self._cur_tidx.dtype)       # the index associated to t0
-        self.tn = self._tarr[-1]                              # remove risk of rounding errors
+        self.tn = tn
         self._unpadded_length = len(self._tarr)     # Save this, because _tarr might change with padding
 
     def __len__(self):
@@ -2941,13 +2958,13 @@ class Series(ConvolveMixin, History):
                 self._data = data
 
         if not shim.is_theano_variable(self._data):
-            self._original_tidx.set_value(self.t0idx + len(tarr) - 1)
+            self._original_tidx.set_value(len(tarr) - 1)
             self._cur_tidx = self._original_tidx
         else:
             # HACK If _data is not just a shared variable, its Theano graph
             # almost certainly depends on _original_tidx, so it should not be
             # updated
-            self._cur_tidx = shim.shared(self.t0idx + len(tarr) - 1,
+            self._cur_tidx = shim.shared(len(tarr) - 1,
                                          symbolic=self.use_theano)
 
         return self
@@ -3074,8 +3091,14 @@ class Series(ConvolveMixin, History):
             new_series.set_range_update_function(lambda tarr: op(self[self.time_array_to_slice(tarr)]))
             new_series.add_input(self)
         else:
-            new_series.set_update_function(lambda t: op(self[t], b))
-            new_series.set_range_update_function(lambda tarr: op(self[self.time_array_to_slice(tarr)], b))
+            if isinstance(b, History):
+                new_series.set_update_function(lambda t: op(self[t], b[t]))
+                new_series.set_range_update_function(
+                    lambda tarr: op(self[self.time_array_to_slice(tarr)],
+                                    b[b.time_array_to_slice(tarr)]))
+            else:
+                new_series.set_update_function(lambda t: op(self[t], b))
+                new_series.set_range_update_function(lambda tarr: op(self[self.time_array_to_slice(tarr)], b))
             if isinstance(b, com.HistoryBase) or shim.is_theano_variable(b):
                 new_series.add_input([self, b])
             else:
@@ -3112,6 +3135,8 @@ class Series(ConvolveMixin, History):
         return self._apply_op(operator.truediv, other)
     def __rtruediv__(self, other):
         return self._apply_op(lambda a,b: b/a, other)
+    def __pow__(self, other, modulo=None):
+        return self._apply_op(lambda a,b: pow(a, b, modulo), other)
     def __floordiv__(self, other):
         return self._apply_op(operator.floordiv, other)
     def __rfloordiv__(self, other):
@@ -3127,6 +3152,8 @@ class Series(ConvolveMixin, History):
 class DataView(HistoryBase):
     """
     Gives direct access to the history data.
+    If the history is not fully computed, the returned history is truncated
+    after the latest computed time point.
 
     Retrieving numerical data varies depending whether a
     history's data is stored as a NumPy, Theano shared or
@@ -3141,7 +3168,10 @@ class DataView(HistoryBase):
 
     def __init__(self, hist):
         self.hist = hist
-        # We don't initialize base class, but let __getattr__ take care of attributes
+        # We don't initialize base class, but let __getattr__ take care of undefined attributes
+        self._tarr = hist._tarr[:hist._original_tidx.get_value()+1]
+        self.tn = self._tarr[-1]
+        self._unpadded_length = len(self._tarr) - self.t0idx
 
     def __getitem__(self, key):
         res = self.hist[key]
