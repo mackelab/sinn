@@ -39,7 +39,7 @@ ParameterAxis = com.ParameterAxis
 # ==================================
 # Data manipulation
 
-def mean(hist, pop_slices=None, **kwargs):
+def mean(hist, pop_slices=None, time_array=None, **kwargs):
     """
     Compute the time-dependent mean, by applying `np.mean` to every time slice
     of `hist`.
@@ -54,6 +54,11 @@ def mean(hist, pop_slices=None, **kwargs):
         and the mean is computed for each slice separately.
         TODO: 2d pop_slices ?
 
+    time_array: 1d array
+        When `hist` is given as a an ndarray, this parameter specifies the
+        corresponding time stops. It is ignored when `hist` is given as a
+        history.
+
     **kwargs:
         Forwarded to `np.mean`. Can be use e.g. to limit the mean to one axis.
 
@@ -61,11 +66,17 @@ def mean(hist, pop_slices=None, **kwargs):
     -------
     History, of same length as hist.
     """
-    hist = histories.DataView(hist)
 
     if isinstance(hist, np.ndarray):
+        assert(hist.ndim > 1)
         data_arr = hist
+        if time_array is None:
+            time_array = np.arange(len(data_arr))
+        hist = histories.Series(time_array = time_array, shape=data_arr.shape[1:])
+        hist.set(data_arr)
+        hist = histories.DataView(hist)
     elif isinstance(hist, histories.HistoryBase):
+        hist = histories.DataView(hist)
         try:
             data_arr = hist.get_trace()
         except AttributeError:
@@ -86,17 +97,21 @@ def mean(hist, pop_slices=None, **kwargs):
             kwargs['axis'] = tuple(ax+1 for ax in kwargs['axis'])
     else:
         # Take mean over all but the time axis
-        if len(data_arr.shape) == 2:
+        if data_arr.ndim == 2:
             kwargs['axis'] = 1 # Sparse arrays – which are always 2D – don't accept axis as a tuple
         else:
             kwargs['axis'] = tuple(range(1, len(data_arr.shape)))
 
     # NOTE: Essential to use the mean method (rather than np.mean): data_arr may be sparse
     if pop_slices is not None:
+        if 'keepdims' not in kwargs and not shim.sparse.issparse(data_arr):
+            kwargs['keepdims'] = True
         res_data = np.concatenate( [ data_arr[:, pop_slice].mean( **kwargs )
                                      for pop_slice in pop_slices ],
                                    axis = 1 )
     else:
+        if 'keepdims' not in kwargs and not shim.sparse.issparse(data_arr):
+            kwargs['keepdims'] = False
         res_data = data_arr.mean(**kwargs)
 
     if isinstance(res_data, np.matrix):
@@ -261,13 +276,19 @@ def smooth(series, amount=None, method='mean', name = None, **kwargs):
 
         # Possibly shorten the length of data, if series was not computed to end
         datalen = series._cur_tidx.get_value() - series.t0idx + 1
+        if datalen < amount:
+            raise ValueError("The smoothing window is wider than the length "
+                             "of data ({} bins vs {} bins)."
+                             .format(amount, datalen))
         # Create the result (smoothed) series
+        t0 = series.t0 + (amount-1)*series.dt/2
         res = histories.Series(name = name,
-                               t0 = series.t0 + (amount-1)*series.dt/2,
-                               #tn = series.tn - (amount-1)*series.dt/2,
-                               tn = series.t0 + (amount-1)*series.dt/2 + (datalen - amount)*series.dt,
-                                   # Calculating tn this way avoids rounding errors that add an extra bin
-                               dt = series.dt,
+                               time_array = np.arange(datalen-amount+1) * series.dt + t0,
+                               # t0 = series.t0 + (amount-1)*series.dt/2,
+                               # #tn = series.tn - (amount-1)*series.dt/2,
+                               # tn = series.t0 + (amount-1)*series.dt/2 + (datalen - amount)*series.dt,
+                               #     # Calculating tn this way avoids rounding errors that add an extra bin
+                               # dt = series.dt,
                                shape = series.shape,
                                iterative = False)
         assert(len(res) == datalen - amount + 1)
@@ -311,10 +332,11 @@ def subsample(series, amount):
         # We might chop off a few bins, if the new dt is not commensurate with
         # the original number of bins.
     res = histories.Series(name = series.name + "_subsampled_by_" + str(amount),
-                           t0   = series.t0,
-                           tn   = series.t0 + (nbins - 1) * newdt,
-                               # nbins-1 because tn is inclusive
-                           dt   = newdt,
+                           time_array = np.arange(nbins) * newdt + series.t0,
+                           #t0 = series.t0,
+                           #tn   = series.t0 + (nbins - 1) * newdt,
+                           #    # nbins-1 because tn is inclusive
+                           #dt   = newdt,
                            shape = series.shape,
                            iterative = False)
     data = series.get_trace()[:nbins*amount]
