@@ -54,6 +54,8 @@ org-todo-keywords
 ** TODO Allow History functions to deal with pure Python _data objects
    (Not just shared variables)
 
+** TODO Catch when caught in a lookup loop (e.g. u[t] requires u[t] requires...)
+   Raise an easier to understand error than "max recursion depth"
 * Priority 3
 
 ** TODO Check that on disk caching is successfully loading
