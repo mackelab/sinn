@@ -305,12 +305,16 @@ class OpCache:
         # if ( (hasattr(self, 'use_theano') and self.use_theano)
         #      or (hasattr(other, 'use_theano') and other.use_theano)
         #      or any(shim.is_theano_variable(arg) for arg in args) ):
-        if config.use_theano():
+        # FIXME: At present practically nothing will be cached. For kernels,
+        #        instead of checking 'locked' state, should check if parameter set corresponds
+        if ( config.use_theano()
+             or (hasattr(self, 'locked') and not self.locked)
+             or (hasattr(other, 'locked') and not other.locked) ):
             return shim.stack( [ self.op(other, arg) for arg in args ] )
 
         ################################################
 
-        # Replace shared variables by their 
+        # Replace shared variables by their
         args = [arg for arg in args]
 
         # Create a set of keys for the cache dictionary

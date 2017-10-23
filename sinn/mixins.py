@@ -101,6 +101,7 @@ class ConvolveMixin(CachedOperation):
         """
         # TODO: Use namedtuple for _conv_cache (.data & .idcs) ?
         # TODO: allow 'kernel' to be a plain function
+        # FIXME: Don't preemptively cache whole convolution; just the queried times.
 
         # Determine history and kernel
         if isinstance(self, com.HistoryBase):
@@ -122,13 +123,15 @@ class ConvolveMixin(CachedOperation):
         if not isinstance(kernel_slice[0], slice):
             raise ValueError("Kernel bounds must be specified as a slice.")
 
+        t_is_scalar = shim.isscalar(t)
+            # Hack to get single length time arrays to still return array
         if shim.isarray(t):
             # Convert time array to a scalar if possible, otherwise a slice
-            # assert(t.ndim == 1)
-            # if len(t) == 1:
-            #     t = t[0]
-            # else:
-            t = history.time_array_to_slice(t)
+            assert(t.ndim == 1)
+            if len(t) == 1:
+                t = t[0]
+            else:
+                t = history.time_array_to_slice(t)
 
         if shim.isscalar(t):
             #tidx = self.get_t_idx(t)
@@ -153,6 +156,9 @@ class ConvolveMixin(CachedOperation):
 
             retval = shim.stack( [ convolve_single_t(t, slc)
                                    for slc in kernel_slice ] )
+            if not t_is_scalar:
+                # t was specified as an array or slice; add time dimension to return value
+                retval = retval[np.newaxis, ...]
 
         else:
             assert(isinstance(t, slice))
