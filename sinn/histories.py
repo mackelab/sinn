@@ -171,10 +171,11 @@ em
         """
         Initialize History object.
         Instead of passing the parameters, another History instance may be passed as
-        first argument. In this case, t0, tn, dt, shape, f and iterative are taken
+        first argument. In this case, time_array, shape and `use_theano` are taken
         from that instance. These can be overridden by passing also a corresponding keyword
         argument.
         Except for a possible history instance, all parameters should be passed as keywords.
+        Note that `iterative` always defaults to True, even when a template history
 
         Parameters
         ----------
@@ -183,16 +184,15 @@ em
         time_array: ndarray (float)
             The array of times this history samples. If provided, `t0`, `tn` and `dt` are ignored.
         t0: float
-            Time at which the history starts.
+            Time at which the history starts. /Deprecated: use `time_array`./
         tn: float
-            Time at which the history ends.
+            Time at which the history ends. /Deprecated: use `time_array`./
         dt: float
-            Timestep.
+            Timestep. /Deprecated: use `time_array`./
         t0idx: int
-            Index corresponding to t0 in the underlying data.
+            Index corresponding to t0 in the underlying data. (Not implemented)
         tnidx: int
-            Index corresponding to tn in the underlying data.
-        (following are keyword-only arguments)
+            Index corresponding to tn in the underlying data. (Not implemented)
         shape: int tuple
             Shape of a history slice at a single point in time.
             E.g. a movie history might store NxN frames in an TxNxN array.
@@ -240,18 +240,15 @@ em
             #     dt = hist.dt
             if shape is sinn._NoValue:
                 shape = hist.shape
-            if f is sinn._NoValue:
-                f = hist._update_function
-            if iterative is sinn._NoValue:
-                iterative = hist._iterative
+            #if f is sinn._NoValue:
+            #    f = hist._update_function
+            # 'hist' does not serve as a default value for 'iterative', since the new history will typically have a different function
             if use_theano is sinn._NoValue:
                 use_theano = hist.use_theano
         else:
             assert(time_array is not sinn._NoValue
-                   or sinn._NoValue not in [t0, tn, dt, shape])
-        if name == 'n_var':  # debug
-            import pdb; pdb.set_trace()
-            pass
+                   or sinn._NoValue not in [t0, tn, dt])
+            assert(shape is not sinn._NoValue)
         if iterative is sinn._NoValue:
             # Default value
             iterative = True
@@ -1962,9 +1959,9 @@ class Spiketrain(ConvolveMixin, History):
             self.pop_slices.append(slice(i, i+pop_size))
             i += pop_size
 
-        # Default to all-to-all connectivity; users should call the set_connectivity
-        # method after initialization if they need to change this
-        self.set_connectivity(np.ones(shape*2))
+        # Force user to explicitly call `set_connectivity` before producing data.
+        # It's too easy otherwise to think that this has been correctly set automatically
+        self.conn_mats = None
 
         super().__init__(hist, name, t0=t0, tn=tn, dt=dt, shape=shape, **kwargs)
 
@@ -2382,8 +2379,12 @@ class Spiketrain(ConvolveMixin, History):
         #    (which is why we use the `multiply` method)
         # 2) `multiply` only returns a sparse array if the argument is also 2D
         #    (But sometimes still returns a dense array ?)
-        # 3) that sparse arrays are always 2D, so A[0,0] is 2D, 1x1 matrix
+        # 3) that sparse arrays are always 2D, so A[0,0] is a 2D, 1x1 matrix
         # 4) The .A attribute of a matrix returns the underlying array
+        # 5) That we do not need to multiply by the step size (dt): This is a discretized
+        #    train of Dirac delta peaks, so to get the effective height of the spike
+        #    when spread over a bin we should first divide by dt. To take the convolution
+        #    we should then also multiply by the dt, cancelling the two.
         if discretized_kernel.ndim == 2 and discretized_kernel.shape[0] == discretized_kernel.shape[1]:
             # 2D discretized kernel: each population feeds into every other with a different kernel
             shim.check(discretized_kernel.shape[0] == len(self.pop_sizes))
@@ -2464,9 +2465,9 @@ class Spiketrain(ConvolveMixin, History):
     def pop_add(self, neuron_term, summand):
         if not shim.is_theano_object(neuron_term, summand):
             assert(len(self.pop_slices) == len(summand))
-            return shim.concatenate([neuron_term[pop_slice] + sum_el
-                                    for pop_slice, sum_el in zip(self.pop_slices, summand)],
-                                    axis=0)
+            return shim.concatenate([neuron_term[..., pop_slice] + sum_el
+                                     for pop_slice, sum_el in zip(self.pop_slices, summand)],
+                                    axis=-1)
         else:
             raise NotImplementedError
 
@@ -2476,9 +2477,9 @@ class Spiketrain(ConvolveMixin, History):
     def pop_mul(self, neuron_term, multiplier):
         if not shim.is_theano_object(neuron_term, multiplier):
             assert(len(self.pop_slices) == len(multiplier))
-            return shim.concatenate([neuron_term[pop_slice] * mul_el
-                                    for pop_slice, mul_el in zip(self.pop_slices, multiplier)],
-                                    axis=0)
+            return shim.concatenate([neuron_term[..., pop_slice] * mul_el
+                                     for pop_slice, mul_el in zip(self.pop_slices, multiplier)],
+                                    axis=-1)
         else:
             raise NotImplementedError
 
@@ -2488,9 +2489,9 @@ class Spiketrain(ConvolveMixin, History):
     def pop_div(self, neuron_term, divisor):
         if not shim.is_theano_object(neuron_term, divisor):
             assert(len(self.pop_slices) == len(divisor))
-            return shim.concatenate( [ neuron_term[pop_slice] / div_el
-                                    for pop_slice, div_el in zip(self.pop_slices, divisor)],
-                                    axis = 0)
+            return shim.concatenate( [ neuron_term[..., pop_slice] / div_el
+                                       for pop_slice, div_el in zip(self.pop_slices, divisor)],
+                                     axis = -1)
         else:
             raise NotImplementedError
 
