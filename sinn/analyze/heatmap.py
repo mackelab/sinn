@@ -77,9 +77,9 @@ class HeatMap:
         raw = {}
         # raw['axes'] = np.array([(ax.name, ax.stops, ax.idx, ax.scale) for ax in self.axes],
         #                        dtype=[('name', object), ('stops', object), ('idx', object), ('scale', object)])
-        raw['axes'] = np.array([ax.label.name, ax.transformed_label.name, ax.label_idx,
-                                ax.stops, ax.format, ax.transform_fn.desc,
-                                ax.inverse_transform_fn.desc],
+        raw['axes'] = np.array([(ax.label.name, ax.transformed_label.name, ax.label_idx,
+                                 ax.stops, ax.format, ax.transform_fn.desc,
+                                 ax.inverse_transform_fn.desc) for ax in self.axes],
                                dtype=[('label', object), ('transformed_label', object),
                                       ('label_idx', object), ('stops', object),
                                       ('format', object), ('transform_fn', object),
