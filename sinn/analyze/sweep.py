@@ -32,12 +32,12 @@ def linspace(low, high, fineness):
     For `linspace`, fineness is the number of stops per increase of 1.
     """
     # Note: lambdas don't play nice with pickling (and thence ipyparallel)
-    def noop(x):
-        return x
+    # def noop(x):
+    #     return x
     return AxisStops(np.linspace(low, high, int((high-low)*fineness),
                                   dtype=sinn.config.floatX),
                      'linear',
-                     noop, noop)
+                     'x -> x', 'x -> x')
 
 
 def logspace(low, high, fineness):
@@ -50,8 +50,8 @@ def logspace(low, high, fineness):
     values of the bounds, not the corresponding exponents to 10.
     """
     # Note: lambdas don't play nice with pickling (and thence ipyparallel)
-    def pow10(x):
-        return 10**x
+    # def pow10(x):
+    #     return 10**x
     return AxisStops(np.logspace(np.log10(low), np.log10(high),
                                  num=int((np.log10(high)-np.log10(low))
                                          * 5*fineness/np.log10(10)),
@@ -59,7 +59,7 @@ def logspace(low, high, fineness):
                                  base=10,
                                  dtype=sinn.config.floatX),
                      'log',
-                     np.log10, pow10)
+                     'x -> np.log10(x)', 'x -> 10**x')
 
 
 class ParameterSweep:
@@ -97,7 +97,10 @@ class ParameterSweep:
         if name not in self._model.Parameters._fields:
             raise ValueError("ParameterSweep: {} is not a model parameter."
                              .format(name))
-        self.params_to_sweep.append(HeatMap.ParameterAxis(name, axis_stops.stops, idx, axis_stops.scale, axis_stops.linearize_fn, axis_stops.inverse_linearize_fn))
+        self.params_to_sweep.append(HeatMap.ParameterAxis(
+            name, label_idx=idx, stops=axis_stops.stops, format='centers',
+            transform_fn = axis_stops.linearize_fn,
+            inverse_transform_fn = axis_stops.inverse_linearize_fn))
         self.shape += (len(axis_stops.stops),)
 
     def set_function(self, function, label):
@@ -240,7 +243,7 @@ class ParameterSweep:
                 res = sweep_f(next(self.param_list()))
 
         if not debug:
-            res = HeatMap(self.function_label, res_arr, self.params_to_sweep)
+            res = HeatMap(self.function_label, 'density', res_arr, self.params_to_sweep)
             if output_filename is not None:
                 io.save(output_filename, res)
         else:
