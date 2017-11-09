@@ -241,7 +241,7 @@ class SGD:
                 rawdata = sinn.iotools.loadraw(sgd_file)
             else:
                 rawdata = sgd_file
-            self.fitparams = OrderedDict()
+            self.fitparams = OrderedDict()   # dict of param:mask pairs
             self.param_evol = {}
             self.from_raw(rawdata)
             if set_params:
@@ -587,17 +587,24 @@ class SGD:
             lr = {p: lr for p in params}
         elif isinstance(lr, dict):
             new_lr = {}
-            for key, val in lr.items():
-                if isinstance(key, str):
-                    p = self.get_param(key)
-                    assert(p not in lr)
-                    new_lr[p] = val
+            default_lr = getattr(lr, 'default', None)
+            for p in params:
+                if p in lr:
+                    assert(shim.isshared(p))
+                    assert(p.name not in lr)
+                    new_lr[p] = lr[p]
+                elif p.name in lr:
+                    new_lr[p] = lr[p.name]
                 else:
-                    assert(shim.isshared(key))
-                    new_lr[p] = val
+                    if default_lr is not None:
+                        new_lr[p] = default_lr
+                    else:
+                        raise KeyError("No learning rate for variable '{}', "
+                                       "and no default learning rate was given."
+                                       .format(key.name))
             lr = new_lr
 
-        if not (isinstance(lr, dict) and all(p in lr for p in params)):
+        else:
             raise ValueError("Learning rate must be specified either as a scalar, "
                              "or as a dictionary with a key matching each parameter.")
 
@@ -642,6 +649,16 @@ class SGD:
         return cost, statevar_upds, shared_upds
 
     def compile(self, fitparams=None, **kwargs):
+        """
+        Parameters
+        ----------
+        **kwargs
+            Most keyword arguments are passed on to 'SGD.get_cost_graph' and
+            the optimizer constructor. Exceptions are the following, which are
+            captured by 'compile':
+              - 'lr': learning_rate. Format must be of a form accepted by
+                      'sgd.standardize_lr'.
+        """
         # Compile step function
 
         if fitparams is not None:
@@ -872,6 +889,7 @@ class SGD:
         self.cum_cost = 0
         self.tot_time = 0
 
+    @staticmethod
     def converged(it, r, p=0.99, n=10, m=10, abs_th=0.001):
         """
         r: resolution. Identify a difference in means of r*sigma with probability p. A smaller r makes the test harder to satisfy; the learning rate is a good starting point for this value.
