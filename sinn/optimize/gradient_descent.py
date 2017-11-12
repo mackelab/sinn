@@ -219,10 +219,10 @@ class SGD:
             self.start = start
             self.start_idx = model.get_t_idx(start)
             self.datalen = datalen
-            self.data_idxlen = model.index_interval(datalen)
+            self.data_idxlen = model.index_interval(datalen, allow_rounding=True)
             self.burnin = burnin
-            self.burnin_idxlen = model.index_interval(burnin)
-            self.mbatch_size = model.index_interval(mbatch_size)
+            self.burnin_idxlen = model.index_interval(burnin, allow_rounding=True)
+            self.mbatch_size = model.index_interval(mbatch_size, allow_rounding=True)
 
             #tidx.tag.test_value = 978
             #shim.gettheano().config.compute_test_value = 'warn'

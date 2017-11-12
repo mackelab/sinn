@@ -1012,7 +1012,7 @@ em
         else:
             return Δt
 
-    def index_interval(self, Δt):
+    def index_interval(self, Δt, allow_rounding=False):
         """
         If Δt is a time (float), convert to index interval by multiplying by dt.
         If Δt is an index (int), do nothing.
@@ -1045,12 +1045,13 @@ em
                                  "of numerical errors. Try using a higher precision type.")
             quotient = Δt / self.dt
             rquotient = shim.round(quotient)
-            try:
-                shim.check( shim.abs(quotient - rquotient) < config.get_abs_tolerance(Δt) / self.dt )
-            except AssertionError:
-                logger.error("Δt: {}, dt: {}".format(Δt, self.dt) )
-                raise ValueError("Tried to convert t=" + str(Δt) + " to an index interval "
-                                 "but its not a multiple of dt.")
+            if not allow_rounding:
+                try:
+                    shim.check( shim.abs(quotient - rquotient) < config.get_abs_tolerance(Δt) / self.dt )
+                except AssertionError:
+                    logger.error("Δt: {}, dt: {}".format(Δt, self.dt) )
+                    raise ValueError("Tried to convert t=" + str(Δt) + " to an index interval "
+                                     "but its not a multiple of dt.")
             return shim.cast_int16( rquotient )
 
     def get_time(self, t):
