@@ -18,7 +18,6 @@ except NameError:
 import mackelab as ml
 import mackelab.plot
 from . import common as com
-from . import analyze
 from .stylelib import color_schemes
 
 __ALL__ = ['HeatMap']
@@ -78,7 +77,7 @@ class HeatMap:
         # raw['axes'] = np.array([(ax.name, ax.stops, ax.idx, ax.scale) for ax in self.axes],
         #                        dtype=[('name', object), ('stops', object), ('idx', object), ('scale', object)])
         raw['axes'] = np.array([(ax.label.name, ax.transformed_label.name, ax.idx,
-                                 ax.stops, ax.format, ax.to.desc,
+                                 ax.stops, ax.format(), ax.to.desc,
                                  ax.back.desc) for ax in self.axes],
                                dtype=[('label', object), ('transformed_label', object),
                                       ('label_idx', object), ('stops', object),
@@ -114,10 +113,8 @@ class HeatMap:
                                     stops = ax['stops'], format = 'centers',
                                     transform_fn = to_desc,
                                     inverse_transform_fn = back_desc)
-                ztype = 'density'
             else:
-                axis = ml.plot.Axis(**ax['label'])
-                ztype = r
+                axis = ml.plot.Axis(**{name: ax[name] for name in ax.dtype.names})
             param_axes.append(axis)
         ztype = raw['ztype'] if version >= 2 else 'density'
         heatmap = cls(str(raw['zlabel']), ztype, raw['data'], param_axes)
@@ -320,7 +317,6 @@ class HeatMap:
             gridvalues = [self.axes[idx].centers.stops for idx in axes]
         elif format in ['edges', 'edge']:
             gridvalues = [self.axes[idx].edges.stops for idx in axes]
-            #gridvalues = [analyze._centers_to_edges(self.axes[i]) for i in axes]
         else:
             raise ValueError("Unrecognized mesh format '{}'. Please use one "
                              " of 'centers', 'edges'.".format(format))
