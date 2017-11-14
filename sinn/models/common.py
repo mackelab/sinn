@@ -117,10 +117,11 @@ class Model(com.ParameterMixin):
             return
 
         if ( any( outhist._cur_tidx.get_value() < len(outhist) - 1 for outhist in outputs )
-             and any( rng is None for rng in rngs) ) :
+             and any( rng is None for rng in rngs)
+             and not all( outhist.locked for outhist in outputs ) ) :
             raise ValueError("Cannot generate {} without the required random number generator(s).".format(str([outhist.name for outhist in outputs])))
-        elif ( all( outhist._cur_tidx.get_value() < len(outhist) - 1 for outhist in outputs )
-             and all( rng is None for rng in rngs) ) :
+        elif ( all( outhist._cur_tidx.get_value() >= len(outhist) - 1 for outhist in outputs )
+             and any( rng is not None for rng in rngs) ) :
             logger.warning("Your random number generator(s) will be unused, "
                            "since your data is already generated.")
 
