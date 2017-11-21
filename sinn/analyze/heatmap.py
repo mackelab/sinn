@@ -7,12 +7,16 @@ author: Alexandre René
 
 import copy
 import operator
+from collections import Iterable
 import numpy as np
 import scipy as sp
+import logging
+logger = logging.getLogger('sinn.analyze')
 try:
+    import matplotlib as mpl
     import matplotlib.pyplot as plt
     import matplotlib.colors as colors
-except NameError:
+except ImportError:
     pass
 
 import mackelab as ml
@@ -61,6 +65,7 @@ class HeatMap:
             self._ceil = None
             self.set_norm(norm)
             self.cmap = 'viridis'
+            self.op_res_type = type(self)
 
             assert( all( len(ax.centers.stops) == s
                          for ax, s in zip(self.axes, self.data.shape ) ) )
@@ -264,6 +269,8 @@ class HeatMap:
         if axes is None:
             axes = tuple(range(len(self.axes)))
         else:
+            if isinstance(axes, str) or not isinstance(axes, Iterable):
+                axes = (axes,)
             assert(len(np.unique(axes)) == len(axes))
                 # Ensure there are no duplicate axes
             assert(len(axes) <= self.ndim and max(axes) < self.ndim)
@@ -347,9 +354,9 @@ class HeatMap:
 
     def get_normalized_data(self, recompute=False):
         logger.warning("Deprecation warning: 'get_normalized_data' is planned for removal.")
-        if self._normalized_data is None or recompute:
-            self._normalized_data = self.data / self.sum()
-        return self._normalized_data
+        #if self._normalized_data is None or recompute:
+        return self.data / self.sum()
+        #return self._normalized_data
 
     def sum(self, axis=None, dtype=None, out=None):
         # Call signature allows calling np.sum() on a heat map.
@@ -366,7 +373,7 @@ class HeatMap:
         if res.ndim == 0:
             return res
         else:
-            remaining_axes = [ax for i, ax in self.axes if i not in axis]
+            remaining_axes = [ax for i, ax in enumerate(self.axes) if i not in axis]
             return type(self)(self.zlabel, self.ztype, res,
                               remaining_axes, self.norm)
 
@@ -501,8 +508,8 @@ class HeatMap:
         """
 
         if b is None:
-            return type(self)(new_label, self.ztype, op(self.data),
-                              self.axes, self.norm)
+            return self.op_res_type(new_label, self.ztype, op(self.data),
+                                    self.axes, self.norm)
         else:
             if isinstance(b, HeatMap):
                 # Check that heat map types are compatible:
@@ -560,8 +567,8 @@ class HeatMap:
 
                 # Interpolate the other heat map
                 shape = tuple(len(ax.stops) for ax in cropped.axes)
-                res_map = type(self)(new_label, self.ztype, np.zeros(shape),
-                                     cropped.axes, self.norm)
+                res_map = self.op_res_type(new_label, self.ztype, np.zeros(shape),
+                                           cropped.axes, self.norm)
                 eval_points = res_map.meshgrid(format='centers')
                 interp_bdata = sp.interpolate.interpn(
                     [ax.stops for ax in bcopy.axes],
@@ -572,8 +579,8 @@ class HeatMap:
                 return res_map
 
             else:
-                return type(self)(new_label, self.ztype, op(self.data, b),
-                                  self.axes, self.norm)
+                return self.op_res_type(new_label, self.ztype, op(self.data, b),
+                                        self.axes, self.norm)
 
     def __abs__(self):
         return self.apply_op('abs({})'.format(self.zlabel),
@@ -702,6 +709,7 @@ class HeatMap:
             Keyword arguments passed to maptplotlib.patches.Ellipse
         """
         # TODO: Deal with higher than 2D heatmaps
+        # FIXME: Only works with Probability (requires mean, cov)
 
         eigvals, eigvecs = np.linalg.eig(self.cov())
         ax = plt.gca()
@@ -713,7 +721,7 @@ class HeatMap:
             color = color_scheme.accents[1]  # Leave more salient accents[0] for user
         e = mpl.patches.Ellipse(xy=self.mean(), width=w, height=h,
                                 angle=np.arctan2(eigvecs[0][1], eigvecs[0][0]),
-                                fill=False, color=color)
+                                fill=False, color=color, **kwargs)
         ax.add_artist(e)
         e.set_clip_box(ax.bbox)
 
@@ -804,7 +812,8 @@ class LogLikelihood(HeatMap):
         return L
 
 class Probability(HeatMap):
-    def __init__(self, zlabel, ztype=None, data=None, param_axes=None, norm='linear', normalized=True):
+    def __init__(self, zlabel, ztype=None, data=None, param_axes=None, 
+                 norm='linear', normalized=True):
         """
         Parameters
         ----------
@@ -820,6 +829,7 @@ class Probability(HeatMap):
             data = src.data if data is None else data
             param_axes = src.axes if param_axes is None else param_axes
             self.__init__(src.zlabel, ztype, data, param_axes, src.norm, src.normalized)
+            self.op_res_type = HeatMap
         else:
             if not isinstance(self, HeatMap):
                 assert( all(arg is not None for arg in [ztype, data, param_axes]) )
@@ -835,7 +845,7 @@ class Probability(HeatMap):
     def mass(self):
         res = super(Probability, self).mass
         if self.normalized:
-            assert(res.sum() == 1)  # Essential that this always be true
+            assert(np.isclose(res.sum(), 1))  # Essential that this always be true
         else:
             assert(0 <= res.sum() <= 1)
         return res
@@ -859,9 +869,9 @@ class Probability(HeatMap):
         are marginalized out.
         """
         ax_idcs = self._get_axis_idcs(axis)
-        if len(axes) == self.ndim:
+        if len(ax_idcs) == self.ndim:
             # Nothing to do
-            logger.waring("Marginalizing over every axis does nothing.")
+            logger.warning("Marginalizing over every axis does nothing.")
             return self
         remaining_idcs = set(range(self.ndim)).difference(ax_idcs)
         return self.mass.sum(axis=remaining_idcs).convert_ztype(self.ztype)
@@ -869,28 +879,26 @@ class Probability(HeatMap):
     def mean(self):
         """Compute the mean along each axis. Data does not need to be normalized."""
         # Same pattern as in 'density'
-        weighted_coords = copy.deepcopy(self.mass)
-        for i, ax in enumerate(self.axes):
-            weighted_coords *= ax.centers.stops.reshape( (-1,) + (1,)*(self.ndim-i-1) )
-        estμ = np.array([weighted_coords.marginalize(i) for i in range(self.ndim)])
-        #estμ = np.array([(pm * ax.centers.stops).sum()
-        #                 for pm, ax in zip(self.get_marginals(), self.axes)])
-        return estμ
+        # TODO: Use message passing to optimize sum-product ?
+            
+        return np.array([ (self.axes[i].centers.stops * self.mass.marginalize(i).data).sum()
+                          for i in range(self.ndim) ])
 
     def cov(self):
         """Compute the empirical covariance matrix."""
         # TODO: use np.cov for speed
         estμ = self.mean()
-        p = self.get_normalized_data()
-        marginals = [self.marginalize(i).data for i in range(self.ndim)]
-        assert( all(pm.ndim == 0 for pm in marginals) )
+        #p = self.get_normalized_data()
+        marginals = [self.mass.marginalize(i).data for i in range(self.ndim)]
+        assert( all(pm.ndim == 1 for pm in marginals) )
         estdiagΣ = [ (pm * (ax.centers.stops - μ)**2).sum()
                      for pm, ax, μ in zip(marginals, self.axes, estμ) ]
         estΣ = np.diag(estdiagΣ)
         for i in range(len(self.axes)):
             for j in range(i+1, len(self.axes)):
-                estΣ[i,j] = (p * np.outer( (self.axes[i].stops - estμ[i]),
-                                           (self.axes[j].stops - estμ[j]) ) ).sum()
+                p = self.mass.marginalize((i, j)).data
+                estΣ[i,j] = (p * np.outer( (self.axes[i].centers.stops - estμ[i]),
+                                           (self.axes[j].centers.stops - estμ[j]) ) ).sum()
                 estΣ[j,i] = estΣ[i,j]
         return estΣ
 
