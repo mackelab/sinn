@@ -20,19 +20,17 @@ except ImportError:
     pass
 
 import mackelab as ml
-import mackelab.plot
 from . import common as com
+from .axis import Axis
 from .stylelib import color_schemes
 
 __ALL__ = ['HeatMap']
 
 class HeatMap:
-    # TODO: Change name to DiscretizedScalarData (synonyme DSD)
-    # changes: HeatMap -> DSD
-    #          hm -> dsd
-    #          heat map -> discretized data
-
-    ParameterAxis = ml.plot.Axis
+    # TODO: Change name to GridData
+    # changes: HeatMap -> GridData
+    #          hm -> griddata
+    #          heat map -> grid data
 
     def __init__(self, zlabel, ztype=None, data=None, param_axes=None, norm='linear'):
         """
@@ -113,13 +111,13 @@ class HeatMap:
                 else:
                     raise RuntimeError("Unrecognized scale '{}' in deprecated file type."
                                        .format(ax['scales']))
-                axis = ml.plot.Axis(ax['name'], "f(" + ax['name'] + ")",
+                axis = Axis(ax['name'], "f(" + ax['name'] + ")",
                                     label_idx = ax['idx'],
                                     stops = ax['stops'], format = 'centers',
                                     transform_fn = to_desc,
                                     inverse_transform_fn = back_desc)
             else:
-                axis = ml.plot.Axis(**{name: ax[name] for name in ax.dtype.names})
+                axis = Axis(**{name: ax[name] for name in ax.dtype.names})
             param_axes.append(axis)
         ztype = raw['ztype'] if version >= 2 else 'density'
         heatmap = cls(str(raw['zlabel']), ztype, raw['data'], param_axes)
@@ -225,11 +223,11 @@ class HeatMap:
             return hm
 
     def axis_stops(self, format='current'):
-        assert(all(isinstance(p, self.ParameterAxis) for p in self.axes))
+        assert(all(isinstance(p, Axis) for p in self.axes))
         return [p.format(format).stops for p in self.axes]
     @property
     def axis_labels(self):
-        assert(all(isinstance(p, self.ParameterAxis) for p in self.axes))
+        assert(all(isinstance(p, Axis) for p in self.axes))
         def get_label(param):
             if param.label_idx is None:
                 return param.name
@@ -418,7 +416,7 @@ class HeatMap:
                 step = 1
                 start = min(lowi, highi)
                 stop = max(lowi, highi)
-            new_axes.append( self.ParameterAxis(
+            new_axes.append( Axis(
                 ax.label, ax.transformed_label,
                 stops=ax.stops[start:stop:step],
                 transform_fn = ax.to,
@@ -727,10 +725,10 @@ class HeatMap:
 
 # The following two methods are deprecated; use the properties instead
 def get_axes(param_axes):
-    assert(all(isinstance(p, self.ParameterAxis) for p in param_axes))
+    assert(all(isinstance(p, Axis) for p in param_axes))
     return [p.stops for p in param_axes]
 def get_axis_labels(param_axes):
-    assert(all(isinstance(p, self.ParameterAxis) for p in param_axes))
+    assert(all(isinstance(p, Axis) for p in param_axes))
     def get_label(param):
         if param.label_idx is None:
             return param.name
@@ -880,7 +878,7 @@ class Probability(HeatMap):
         """Compute the mean along each axis. Data does not need to be normalized."""
         # Same pattern as in 'density'
         # TODO: Use message passing to optimize sum-product ?
-            
+
         return np.array([ (self.axes[i].centers.stops * self.mass.marginalize(i).data).sum()
                           for i in range(self.ndim) ])
 

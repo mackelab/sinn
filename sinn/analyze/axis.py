@@ -1,0 +1,201 @@
+from mackelab.parameters import Transform
+
+ParameterLabel = namedtuple('ParameterLabel', ['name', 'idx'])
+
+class Axis:
+    formats = ['centers', 'edges']
+
+    def __init__(self, label, transformed_label=None, label_idx=None, *args,
+                 stops=None, transformed_stops=None, format='centers',
+                 transform_fn=None, inverse_transform_fn=None):
+        """
+        Must specify exactly one of `stops`, `transformed_stops`.
+        Alternatively, can also provide a transform description as first argument
+        (same format as 'parameters.TransformedVar') along with one of the stops
+        arguments.
+
+        TODO: Implement slicing
+
+        Parameters
+        ----------
+        label: str or ParameterLabel
+
+        transformed_label: str or ParameterLabel
+            If only `label` is provided, defaults to "f(label)".
+
+        label_idx: int, tuple or 'None'
+
+        one of:
+          stops: ndarray
+          transformed_stops: ndarray
+
+        format: str
+
+        transform_fn: callable or str (Transform description)
+
+        inverse_transform_fn: callable or str (Transform description)
+
+
+        Parameters (from TransformVar description)
+        ---------------------------------------
+        label: ParameterSet
+            Transform description
+
+        label_idx: int, tuple or 'None'
+
+        one of:
+          stops: ndarray
+          transformed_stops: ndarray
+
+        format: str
+
+        """
+        if not( (stops is None) != (transformed_stops is None) ):  #xor
+            raise ValueError("Exactly one of `stops`, `transformed_stops` must be specified.")
+
+        if isinstance(format, Callable):
+            format = format()  # In case we pass the format method rather than its evaluation
+        if format not in self.formats:
+            raise ValueError("`format` must be one of {}. It is '{}'."
+                             .format(', '.join(["'"+f+"'" for f in self.formats]),
+                                     format))
+        else:
+            self._format_str = format
+
+        if ( isinstance(label, ParameterLabel)
+             or isinstance(transformed_label, ParameterLabel) ):
+            if label_idx is not None:
+                raise ValueError("The label index is already given by a "
+                                 "ParameterLabel; specifying `label_idx` is ambiguous.")
+            else:
+                if isinstance(label, ParameterLabel):
+                    label_idx = label.idx
+                    if ( isinstance(transformed_label, ParameterLabel)
+                         and tuple(transformed_label.idx) != tuple(label_idx) ):
+                        raise ValueError("Index of `label` and `transformed_label` "
+                                         "don't match.")
+                else:
+                    label_idx = transformed_label.idx
+
+        if isinstance(label, str):
+            label = ParameterLabel(label, label_idx)
+            if transformed_label is None:
+                if transform_fn is None:
+                    transformed_label = label.name
+                else:
+                    transformed_label = "f(" + label.name + ")"
+        if isinstance(transformed_label, str):
+            transformed_label = ParameterLabel(transformed_label, label_idx)
+
+        if isinstance(label, ParameterLabel):
+            if (transform_fn is None) != (inverse_transform_fn is None):
+                raise ValueError("If a transform function is specified, its "
+                                 "inverse must be as well.")
+            self.label = label
+            self.transformed_label = transformed_label
+            if transform_fn is None:
+                self.to = self.back = Transform("x -> x")
+            else:
+                self.to = Transform(transform_fn)
+                self.back = Transform(inverse_transform_fn)
+            if stops is None:
+                self.transformed_stops = transformed_stops
+                self.stops = self.back(transformed_stops)
+            else:
+                self.stops = stops
+                self.transformed_stops = self.to(stops)
+
+        elif isinstance(label, ParameterSet):
+            desc = label # More meaningful name
+            if ( transform_fn is not None or inverse_transform_fn is not None):
+                raise ValueError("Specifying a transform function along with a "
+                                 "transform description is ambiguous.")
+            if transformed_label is not None:
+                raise ValueError("Specifying a transformed label along with a "
+                                 "transform description is ambiguous.")
+            assert(set(['name', 'to', 'back']).issubset(set(desc.keys())))
+
+            label, transformed_label = [lbl.strip()
+                                        for lbl in desc.name.split('->')]
+            self.__init__(label, transformed_label, label_idx,
+                          stops=stops, transformed_stops=transformed_stops,
+                          transform_fn=Transform(desc.to),
+                          inverse_transform_fn=Transform(desc.back))
+
+    def __len__(self):
+        return len(self.stops)
+
+    @property
+    def name(self):
+        """Synonym for `label.name`."""
+        return self.label.name
+    @property
+    def idx(self):
+        return self.label.idx
+
+    @property
+    def widths(self):
+        """
+        Return an ndarray of same length as `centers` giving each bin's width.
+        """
+        edges = self.edges.stops
+        return abs(edges[1:] - edges[:-1])
+
+    def format(self, format_str=None):
+        if format_str is None:
+            return self._format_str
+        else:
+            if format_str == 'current':
+                return self
+            elif format_str == 'edges':
+                return self.edges
+            elif format_str in ['centers', 'centres']:
+                return self.centers
+            else:
+                raise ValueError("Unrecognized axis format '{}'."
+                                 .format(format_str))
+
+    @property
+    def edges(self):
+        """
+        Return an Axis instance where stops correspond to bin edges.
+        If this is already this axis' format, it is simply returned;
+        otherwise, it is converted. E.g. if the current format is 'centers',
+        the returned axis will have stops such that produced bins are
+        centered around the current stops in **transformed** space.
+        """
+        if self._format_str == 'edges':
+            return self
+        elif self._format_str in ['centers', 'centres']:
+            stops = self.transformed_stops
+            dxs = (stops[1:]-stops[:-1])/2
+            newstops = np.concatenate(((stops[0]-dxs[0],),
+                                       (stops[1:] - dxs),
+                                       (stops[-1] + dxs[-1],)))
+            return Axis(self.label, self.transformed_label,
+                        transformed_stops=newstops, format='edges',
+                        transform_fn=self.to, inverse_transform_fn=self.back)
+        else:
+            raise RuntimeError("Unrecognized axis format '{}'."
+                               .format(self._format_str))
+
+    @property
+    def centers(self):
+        """
+        Return an Axis instance where stops correspond to bin centres.
+        If this is already this axis' format, it is simply returned;
+        otherwise, it is converted. E.g. if the current format is 'edges',
+        the returned axis will have stops at the center of each bin
+        in **transformed** space.
+        """
+        if self._format_str in ['centers', 'centres']:
+            return self
+        elif self._format_str == 'edges':
+            stops = self.transformed_stops
+            newstops = (stops[1:]+stops[:-1])/2
+            return Axis(self.label, self.transformed_label,
+                        transformed_stops=newstops, format='centers',
+                        transform_fn=self.to, inverse_transform_fn=self.back)
+        else:
+            raise RuntimeError("Unrecognized axis format '{}'."
+                               .format(self._format_str))
