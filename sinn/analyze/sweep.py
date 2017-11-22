@@ -15,6 +15,7 @@ import theano_shim as shim
 import sinn
 import sinn.iotools as io
 from .heatmap import HeatMap
+from .axis import Axis
 
 AxisStops = namedtuple('AxisStops', ['stops', 'scale', 'linearize_fn', 'inverse_linearize_fn'])
 
@@ -34,7 +35,7 @@ def linspace(low, high, fineness):
     # Note: lambdas don't play nice with pickling (and thence ipyparallel)
     # def noop(x):
     #     return x
-    return AxisStops(np.linspace(low, high, int((high-low)*fineness),
+    return AxisStops(np.linspace(low, high, abs(int((high-low)*fineness)),
                                   dtype=sinn.config.floatX),
                      'linear',
                      'x -> x', 'x -> x')
@@ -53,8 +54,8 @@ def logspace(low, high, fineness):
     # def pow10(x):
     #     return 10**x
     return AxisStops(np.logspace(np.log10(low), np.log10(high),
-                                 num=int((np.log10(high)-np.log10(low))
-                                         * 5*fineness/np.log10(10)),
+                                 num=abs(int((np.log10(high)-np.log10(low))
+                                             * 5*fineness/np.log10(10))),
                                      #5*fineness per decade
                                  base=10,
                                  dtype=sinn.config.floatX),
@@ -97,7 +98,7 @@ class ParameterSweep:
         if name not in self._model.Parameters._fields:
             raise ValueError("ParameterSweep: {} is not a model parameter."
                              .format(name))
-        self.params_to_sweep.append(HeatMap.ParameterAxis(
+        self.params_to_sweep.append(Axis(
             name, label_idx=idx, stops=axis_stops.stops, format='centers',
             transform_fn = axis_stops.linearize_fn,
             inverse_transform_fn = axis_stops.inverse_linearize_fn))
