@@ -9,7 +9,7 @@ Author: Alexandre René
 import numpy as np
 import scipy as sp
 import collections
-from collections import deque
+from collections import deque, Iterable
 import itertools
 import operator
 import logging
@@ -19,10 +19,15 @@ import theano_shim as shim
 import theano_shim.sparse
 import sinn
 import sinn.common as com
+from sinn.common import HistoryBase, PopulationHistoryBase
 import sinn.config as config
 import sinn.mixins as mixins
-HistoryBase = com.HistoryBase
-ConvolveMixin = mixins.ConvolveMixin
+from sinn.mixins import ConvolveMixin
+import sinn.popterm as popterm
+
+###############
+###   Types added to mackelab.iotools at end of module
+###############
 
 
 class History(HistoryBase):
@@ -344,6 +349,14 @@ em
     def tnidx(self):
         return self.t0idx + len(self) - 1
 
+    @property
+    def nprepr(self):
+        return self.raw()
+
+    @classmethod
+    def from_nprerp(cls, nprepr):
+        return cls.from_raw(nprepr)
+
     def raw(self, **kwargs):
         # The raw format is meant for data longevity, and so should
         # seldom, if ever, be changed
@@ -367,6 +380,7 @@ em
             # We do it this way in case kwd substitutions are there to
             # avoid an error (such as _data not having a .get_value() method)
             raw = {}
+            raw['type'] = self.__class__.__name__
             raw['name'] = kwargs.pop('name') if 'name' in kwargs else self.name
             raw['t0'] = kwargs.pop('t0') if 't0' in kwargs else self.t0
             raw['tn'] = kwargs.pop('tn') if 'tn' in kwargs else self.tn
@@ -1236,7 +1250,7 @@ em
             #self._inputs.add(variable)
         if isinstance(variable, (com.HistoryBase, com.KernelBase)):
             sinn.inputs[self].add(variable)
-        elif isinstance(variable, collections.Iterable):
+        elif isinstance(variable, Iterable):
             for x in variable:
                 sinn.inputs[self].add(x)
     add_inputs = add_input
@@ -1542,10 +1556,18 @@ em
 
         return retval
 
+class PopulationHistory(PopulationHistoryBase, History):
+    """
+    History where traces are organized into populations.
+    TODO: At moment just a placeholder history. Eventually the "population" stuff
+          (e.g. the redefinition of 'shape') should be moved here.
+    """
+    pass
+
 # Spiketimes is currently really slow for long data traces (> 5000 time bins)
 # Development efforts have been moved to Spiketrain; maybe in the future if we need
 # to track actual times, we will resurrect development of this class
-class Spiketimes(ConvolveMixin, History):
+class Spiketimes(ConvolveMixin, PopulationHistory):
     """A class to store spiketrains.
     These are stored as times associated to each spike, so there is
     no well-defined 'shape' of a timeslice. Instead, the `shape` parameter
@@ -1885,7 +1907,7 @@ class Spiketimes(ConvolveMixin, History):
         else:
             raise NotImplementedError
 
-class Spiketrain(ConvolveMixin, History):
+class Spiketrain(ConvolveMixin, PopulationHistory):
     """A class to store spiketrains.
     These are stored in a sparse array where spikes are indicated by 1s.
     The `shape` parameter doesn't exactly correspond to a timeslice; instead
@@ -1926,8 +1948,15 @@ class Spiketrain(ConvolveMixin, History):
         **kwargs:
             Extra keyword arguments are passed on to History's initializer
         """
+        self.PopTerm = self.get_popterm
+            # FIXME: At present self.PopTerm is not a classes, which
+            #        can be confusing. If PopTermMeso/PopTermMicro were implemented as metaclasses,
+            #        we could call the metaclass here instead, which would return a proper class
+
         if name is None:
             name = "spiketimes{}".format(self.instance_counter + 1)
+        if hist is not sinn._NoValue and pop_sizes is sinn._NoValue:
+            pop_sizes = hist.pop_sizes
         if pop_sizes is sinn._NoValue:
             raise ValueError("'pop_sizes' is a required parameter.")
         try:
@@ -1982,6 +2011,27 @@ class Spiketrain(ConvolveMixin, History):
         retval._data = retval._data.get_value()[()]
         return retval
 
+    def get_popterm(self, values):
+        if isinstance(values, popterm.PopTerm):
+            return values
+        else:
+            # TODO: Find a way not to instantiate a PopTerm just for 'infer_block_type'
+            dummy_popterm = popterm.PopTermMacro(self.pop_sizes, np.zeros(1), ('Macro',))
+            block_types = dummy_popterm.infer_block_types(values.shape,
+                                                          allow_plain=False)
+            cls = popterm.PopTerm.BlockTypes[block_types[0]]
+            return cls(self.pop_sizes, values, block_types)
+        #elif len(values) == 1:
+            #return popterm.PopTermMacro(self.pop_sizes, values)
+        #elif len(values) == len(self.pop_sizes):
+            #return popterm.PopTermMeso(self.pop_sizes, values)
+        #elif len(values) == sum(self.pop_sizes):
+            #return popterm.PopTermMicro(self.pop_sizes, values)
+        #else:
+            #raise ValueError("Provided values (length {}) neither match the number of "
+                             #"populations ({}) or of elements ({})."
+                             #.format(len(values), len(self.pop_sizes), sum(self.pop_sizes)))
+
     def set_connectivity(self, w):
         """
         Parameters
@@ -1990,6 +2040,7 @@ class Spiketrain(ConvolveMixin, History):
            Rectangular connectivity matrix: Npops x Nneurons. If w[i,j]
            is non zero, than neuron j projects to population i.
         """
+        # TODO: Combine connectivity matrices into a single BroadcastableBlockArray
         self.conn_mats = [ [ (w[to_pop_slice, from_pop_slice])
                              for from_pop_slice in self.pop_slices ]
                            for to_pop_slice in self.pop_slices ]
@@ -2123,7 +2174,7 @@ class Spiketrain(ConvolveMixin, History):
                 return data_arr[tslice, self.pop_slices[pop]]
         elif isinstance(neuron, (int, slice)):
             return data_arr[start:stop, neuron]
-        elif isinstance(neuron, collections.Iterable):
+        elif isinstance(neuron, Iterable):
             idx = (tslice,) + tuple(component)
             return data_arr[idx]
         else:
@@ -2851,7 +2902,7 @@ class Series(ConvolveMixin, History):
             return self._data.get_value()[tslice]
         elif isinstance(component, (int, slice)):
             return self._data.get_value()[tslice, component]
-        elif isinstance(component, collections.Iterable):
+        elif isinstance(component, Iterable):
             idx = (tslice,) + tuple(component)
             return self._data.get_value()[idx]
         else:
@@ -3084,7 +3135,6 @@ class Series(ConvolveMixin, History):
     #####################################################
     # Operator definitions
     #####################################################
-    # TODO: Operations with two Histories (right now I'm assuming scalars or arrays)
 
     def _apply_op(self, op, b=None):
         new_series = Series(self)
@@ -3200,3 +3250,15 @@ class DataView(HistoryBase):
         return self.hist.get_time(*args)
     def get_t_idx(self, *args):
         return self.hist.get_t_idx(*args)
+
+
+
+try:
+    import mackelab.iotools
+except ImportError:
+    pass
+else:
+    mackelab.iotools.add_load_type('History', History)
+    mackelab.iotools.add_load_type('PopulationHistory', PopulationHistory)
+    mackelab.iotools.add_load_type('SpikeTrain', Spiketrain)
+    mackelab.iotools.add_load_type('Series', Series)
