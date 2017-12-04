@@ -1,5 +1,6 @@
 from collections import namedtuple, Callable
 from mackelab.parameters import Transform
+import numpy as np
 
 ParameterLabel = namedtuple('ParameterLabel', ['name', 'idx'])
 
