@@ -20,5 +20,8 @@ setup(
 
       packages=['sinn'],
 
-      install_requires=['numpy', 'scipy', 'dill']
+      install_requires=['numpy >= 1.13',
+                        'scipy',
+                        'dill']
+      # Add mackelab, theano as optional dependency
      )
