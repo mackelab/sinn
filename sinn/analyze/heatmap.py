@@ -70,6 +70,14 @@ class HeatMap:
             #self._marginals = None
             #self._normalized_data = None
 
+    @property
+    def nprepr(self):
+        return self.raw()
+
+    @classmethod
+    def from_nprepr(cls, nprepr):
+        return cls.from_raw(nprepr)
+
     def raw(self):
         """
         Current format version: 2
@@ -77,6 +85,7 @@ class HeatMap:
         # The raw format is meant for data longevity, and so should
         # seldom, if ever, be changed
         raw = {}
+        raw['type'] = self.__class__.__name__
         # raw['axes'] = np.array([(ax.name, ax.stops, ax.idx, ax.scale) for ax in self.axes],
         #                        dtype=[('name', object), ('stops', object), ('idx', object), ('scale', object)])
         raw['axes'] = np.array([(ax.label.name, ax.transformed_label.name, ax.idx,
@@ -903,3 +912,11 @@ class Probability(HeatMap):
 
 class Likelihood(Probability):
     pass
+
+
+try:
+    import mackelab.iotools
+except ImportError:
+    pass
+else:
+    mackelab.iotools.add_load_type('HeatMap', HeatMap)
