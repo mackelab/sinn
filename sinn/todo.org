@@ -1,5 +1,6 @@
 * Priority 1
 ** BUG [Analyze.plot] History names/labels with multiple underscores break if we try to plot legend
+** BUG [History] Compound operations don't work. E.g. : (A-a) * (B-b), with A,B histories.
 ** TODO Memory-less Series (i.e. variable)
    - Include 'get_value' method for easy sequential updating
    - Only update once per t
@@ -14,8 +15,13 @@
    - Idea: implement a HistoryView, which allows indexing of histories
      at lagged times. So call could be `A.lag(3)[t]`
 ** TODO [History] Detect when name is reused, and add suffix.
-** BUG [History] Compound operations don't work. E.g. : (A-a) * (B-b), with A,B histories.
-
+** TODO [gradient-descent] Index with variable names rather than Theano variable.
+   At the moment we first need to load a model first just to have dictionary keys
+   to which to assign traces, etc. This means we need to instantiate a model just to
+   read the results of a fit.
+   Search for 'name indexing' in gradient_descent.py
+** TODO Parameters -> Sumatra Parameters
+** TODO [gradient descent] Don't save parameter evolutions for clamped parameters
 * Priority 2
 ** TODO Make history dependency resolution local
    Don't search sinn.inputs for the list of inputs, but keep the list of inputs
@@ -23,14 +29,13 @@ in the history itself.
 
 ** TODO Make HistoryBase derive from a Node class (or replace by?)
    Then make the elements of _globals.inputs Node instances
-** TODO Parameters metaclass
 ** TODO Parameter replace function for models
    Would take graph, parameter, new name, "to" and "from" conversion functions (e.g. 10** and log)
    Would then take care of cloning the graph, replacing with the "to" converted new parameter
    and setting the value of the shared parameter with the "from" conversion
-*** TODO Deprecate `use_theano` attribute and parameter in History
-    _data should always be a shared variable
-*** TODO Allow combinations of kernels (e.g. uniform + exp)
+** TODO Deprecate `use_theano` attribute and parameter in History
+   _data should always be a shared variable
+** TODO Allow combinations of kernels (e.g. uniform + exp)
 ** TODO Attach list of inputs to history
 ** TODO Allow resizing a History (esp. reducing)
 ** TODO Allow input dependencies to specify a lag
