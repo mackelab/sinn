@@ -350,12 +350,12 @@ em
         return self.t0idx + len(self) - 1
 
     @property
-    def nprepr(self):
+    def repr_np(self):
         return self.raw()
 
     @classmethod
-    def from_nprerp(cls, nprepr):
-        return cls.from_raw(nprepr)
+    def from_repr_np(cls, repr_np):
+        return cls.from_raw(repr_np)
 
     def raw(self, **kwargs):
         # The raw format is meant for data longevity, and so should
@@ -380,7 +380,7 @@ em
             # We do it this way in case kwd substitutions are there to
             # avoid an error (such as _data not having a .get_value() method)
             raw = {}
-            raw['type'] = self.__class__.__name__
+            raw['type'] = type(self).__name__
             raw['name'] = kwargs.pop('name') if 'name' in kwargs else self.name
             raw['t0'] = kwargs.pop('t0') if 't0' in kwargs else self.t0
             raw['tn'] = kwargs.pop('tn') if 'tn' in kwargs else self.tn
@@ -3258,7 +3258,7 @@ try:
 except ImportError:
     pass
 else:
-    mackelab.iotools.add_load_type('History', History)
-    mackelab.iotools.add_load_type('PopulationHistory', PopulationHistory)
-    mackelab.iotools.add_load_type('SpikeTrain', Spiketrain)
-    mackelab.iotools.add_load_type('Series', Series)
+    mackelab.iotools.register_datatype(History)
+    mackelab.iotools.register_datatype(PopulationHistory)
+    mackelab.iotools.register_datatype(Spiketrain)
+    mackelab.iotools.register_datatype(Series)

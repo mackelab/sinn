@@ -11,6 +11,7 @@ import scipy as sp
 #from collections import namedtuple
 import logging
 logger = logging.getLogger("sinn.models.common")
+from inspect import isclass
 
 import theano_shim as shim
 import sinn.config as config
@@ -18,6 +19,34 @@ import sinn.common as com
 import sinn.histories
 import sinn.kernels
 import sinn.diskcache as diskcache
+
+_models = {}
+registered_models = _models.keys()
+    # I don't really like this, but it works. Ideally it would be some kind
+    # of read-only property of the module.
+
+def register_model(model, modelname=None):
+    """
+    Register a subclass of Model.
+    Typically this is called from the module which implements the subclass.
+    If `modelname` is unspecified, `model`'s class name is used.
+    """
+    global _models
+    assert(isclass(model))
+    if modelname is None:
+        modelname = model.__name__
+    assert(isinstance(modelname, str))
+    _models[modelname] = model
+
+def is_registered(modelname):
+    """Returns True if a model is registered with this name."""
+    global _models
+    return modelname in _models
+
+def get_model(modelname, *args, **kwargs):
+    """Retrieves the model associated with the model name. Same arguments as dict.get()."""
+    global _models
+    return _models.get(modelname, *args, **kwargs)
 
 class Model(com.ParameterMixin):
     """Abstract model class.
@@ -49,7 +78,7 @@ class Model(com.ParameterMixin):
     As class methods, these don't require an instance – they can be called on the class directly.
     """
 
-    def __init__(self, params, history=None):
+    def __init__(self, params, reference_history=None):
         # History is optional because more complex models have multiple histories.
         # They should keep track of them themselves.
         # ParameterMixin requires params as a keyword parameter
@@ -71,11 +100,9 @@ class Model(com.ParameterMixin):
         self.history_inputs = sinn.DependencyGraph('model.history_inputs')
         self.compiled = {}
 
-        if history is not None:
-            self.history = history
-            self.add_history(history)
-            if hasattr(self, 'eval'):
-                history.set_update_function(self.eval)
+        if reference_history is not None:
+            self._refhist = reference_history
+            self.add_history(reference_history)  # TODO: Useful ?
 
     @property
     def dt(self):
@@ -413,7 +440,116 @@ class Model(com.ParameterMixin):
         return loglikelihood
 
 
+def Surrogate(model):
+    """
+    Execute `Surrogate(MyModel)` to get a class which can serve as a viable
+    stand-in for `MyModel`.
 
+    The surrogate model completely hides the model's __init__    method,
+    avoiding the instantiation of potentially large data. If there is
+    some initialization you do need, you can add attributes after
+    instantiation, or subclass Surrogate(MyModel).
+
+    Parameters
+    ----------
+    model: class
+        Class the surrogate should mirror
+    """
+    if not issubclass(model, Model):
+        raise ValueError("Can only create surrogates for subclasses of sinn.models.Model.")
+
+    class SurrogateModel(model):
+
+        def __init__(self, params, t0=0, dt=None):
+            """
+            Parameters
+            ----------
+            params:
+                Same parameters as would be passed to create the class
+            t0: float
+                The time corresponding to time index 0. By default this is 0.
+            dt: float
+                The time step. Required in order to use `get_t_idx` and `index_interval`;
+                can be omitted if these functions are not used.
+            """
+            # Since we don't call super().__init__, we need to reproduce
+            # the content of ParameterMixin.__init__
+            self.set_parameters(params)
+            # Set the attributes required for the few provided methods
+            self.t0 = t0
+            self._dt = dt   # dt is a read-only property of Model: can't just set the value
+
+        @property
+        def dt(self):
+            return self._dt
+
+        def get_t_idx(t, allow_rounding=False):
+            if self.dt is None:
+                raise AttributeError("You must provide a timestep 'dt' to the surrogate class "
+                                    "in order to call 'get_t_idx'.")
+            if shim.istype(t, 'int'):
+                return t
+            else:
+                try:
+                    shim.check( (t * sinn.config.get_rel_tolerance(t) < self.dt).all() )
+                except AssertionError:
+                    raise ValueError("You've tried to convert a time (float) into an index "
+                                    "(int), but the value is too large to ensure the absence "
+                                    "of numerical errors. Try using a higher precision type.")
+                t_idx = (t - self.t0) / self.dt
+                r_t_idx = shim.round(t_idx)
+                if (not shim.is_theano_object(r_t_idx) and not allow_rounding
+                    and (abs(t_idx - r_t_idx) > config.get_abs_tolerance(t) / self.dt).all() ):
+                    logger.error("t: {}, t0: {}, t-t0: {}, t_idx: {}, dt: {}"
+                                .format(t, self._tarr[0], t - self._tarr[0], t_idx, self.dt) )
+                    raise ValueError("Tried to obtain the time index of t=" +
+                                    str(t) + ", but it does not seem to exist.")
+                return shim.cast(r_t_idx, dtype = self._cur_tidx.dtype)
+
+        def index_interval(Δt, allow_rounding=False):
+            if self.dt is None:
+                raise AttributeError("You must provide a timestep 'dt' to the surrogate class "
+                                    "in order to call 'index_interval'.")
+            if not shim.is_theano_object(Δt) and abs(Δt) < self.dt - config.abs_tolerance:
+                if Δt == 0:
+                    return 0
+                else:
+                    raise ValueError("You've asked for the index interval corresponding to "
+                                    "Δt = {}, which is smaller than this history's step size "
+                                    "({}).".format(Δt, self.dt))
+            if shim.istype(Δt, 'int'):
+                return Δt
+            else:
+                try:
+                    shim.check( Δt * config.get_rel_tolerance(Δt) < self.dt )
+                except AssertionError:
+                    raise ValueError("You've tried to convert a time (float) into an index "
+                                    "(int), but the value is too large to ensure the absence "
+                                    "of numerical errors. Try using a higher precision type.")
+                quotient = Δt / self.dt
+                rquotient = shim.round(quotient)
+                if not allow_rounding:
+                    try:
+                        shim.check( shim.abs(quotient - rquotient) < config.get_abs_tolerance(Δt) / self.dt )
+                    except AssertionError:
+                        logger.error("Δt: {}, dt: {}".format(Δt, self.dt) )
+                        raise ValueError("Tried to convert t=" + str(Δt) + " to an index interval "
+                                        "but its not a multiple of dt.")
+                return shim.cast_int16( rquotient )
+
+        def clear_unlocked_histories(self):
+            pass
+
+        def theano_reset(self):
+            pass
+
+        def advance(self, t):
+            pass
+
+        def loglikelihood(self, start, batch_size, data=None):
+            pass
+
+    return SurrogateModel
 
 class ModelKernelMixin:
     """

@@ -71,12 +71,12 @@ class HeatMap:
             #self._normalized_data = None
 
     @property
-    def nprepr(self):
+    def repr_np(self):
         return self.raw()
 
     @classmethod
-    def from_nprepr(cls, nprepr):
-        return cls.from_raw(nprepr)
+    def from_repr_np(cls, repr_np):
+        return cls.from_raw(repr_np)
 
     def raw(self):
         """
@@ -919,4 +919,4 @@ try:
 except ImportError:
     pass
 else:
-    mackelab.iotools.add_load_type('HeatMap', HeatMap)
+    mackelab.iotools.register_datatype(HeatMap)
