@@ -1,5 +1,6 @@
 from enum import Enum
-from collections import OrderedDict, deque
+from collections import OrderedDict, deque, namedtuple, Iterable
+import os.path
 import time
 import logging
 import copy
@@ -9,6 +10,7 @@ import scipy as sp
 try:
     import matplotlib as mpl
     import matplotlib.pyplot as plt
+    import matplotlib.ticker
 except ImportError:
     logger.warning("Unable to import matplotlib. Plotting functions "
                    "will not work.")
@@ -18,11 +20,14 @@ from parameters import ParameterSet
 import theano
 import theano.tensor as T
 
+import mackelab as ml
+import mackelab.plot
+import mackelab.iotools
 import theano_shim as shim
 import sinn
 import sinn.analyze as anlz
 import sinn.analyze.heatmap
-import sinn.iotools
+import sinn.models as models
 
 logger = logging.getLogger('sinn.optimize.gradient_descent')
 
@@ -135,21 +140,26 @@ def get_indices(param):
 
 class SGD:
 
-    def __init__(self, cost, model, optimizer,
+    def __init__(self, cost=None, model=None, optimizer=None,
                  start=None, datalen=None, burnin=None, mbatch_size=None,
-                 sgd_file=None, set_params=True):
+                 set_params=False, *args, _hollow_initialization=False):
         """
         Important that start + datalen not exceed the amount of data
-        start, datalen, mbatch_size should only be omitted when loading from a
-        previously saved SGD instance.
         The data used to fit corresponds to times [start:start+datalen]
+
+        The 'hollow_initialization' argument should not be used; it is an internal flag
+        used by `from_repr_np` to indicate that the SGD is being loaded from file and
+        thus most initializations should be skipped, as they are done in `from_repr_np`.
+        Users should load from files by calling this function, which internally calls
+        `__init__()`. When 'hollow_initialization' is true, start, datalen, mbatch_size
+        are optional as they are ignored even if specified.
 
         Parameters
         ----------
         cost: Theano graph
             Theano symbolic variable/graph for the cost function we want to optimize.
             Must derive from parameters and histories found in `model`
-        model: sinn Model
+        model: sinn Model instance
             Provides a handle to the variables appearing in the cost graph.
         optimizer: str | class/factory function
             String specifying the optimizer to use. Possible values:
@@ -167,38 +177,46 @@ class SGD:
             or in number of bins (int).
         mbatch_size: int, float
             Size of minibatches, either in the model's time units (float) or time bins (int).
-        sgd_file: str or raw SGD
-            File, where an SGD instance was saved. This can be used to continue a fit;
-            in this case, `start`, `datalen` and `mbatch_size` are ignored.
-            Can be either the already loaded raw data, or a filename to be loaded with iotools.loadraw.
         set_params: bool
             If true, call `set_params_to_evols` after loading sgd from file.
-            Only has an effect if `sgd_file` is not None. Default is False.
+            Default is False.
 
-    Internal treatment of parameter substitution
-    ------------------------------------------
+        _hollow_initialization: bool
+            For internal use. Indicates that the SGD should only be partially initialized.
 
-    Transformed variables are stored in the 'substitutions' attribute.
-    This is a dictionary, constructed as 3-element tuples keyed by the
-    Theano variables which are being replaced:
-        self.substitutions = {
-            variable: (new variable, inverse_transform, transform)
-            ...
-        }
-    'new variable' is also a Theano shared variable; this is the one on which the
-    gradient descent operates.
-    The transforms 'inverse_transform' and 'transform' are strings defining the transformations;
-    they must be such that if we define:
-        f = self._make_transform(transform)
-        inv_f = self._make_transform(inverse_transform)
-    then the following equalities are always true:
-        variable == inv_f(new variable)
-        new variable == f(variable)
-    """
+        Internal treatment of parameter substitution
+        ------------------------------------------
 
-        self.cost_fn = cost
-        self.model = model
-        self.optimizer = optimizer
+        Transformed variables are stored in the 'substitutions' attribute.
+        This is a dictionary, constructed as 3-element tuples keyed by the
+        Theano variables which are being replaced:
+            self.substitutions = {
+                variable: (new variable, inverse_transform, transform)
+                ...
+            }
+        'new variable' is also a Theano shared variable; this is the one on which the
+        gradient descent operates.
+        The transforms 'inverse_transform' and 'transform' are strings defining the transformations;
+        they must be such that if we define:
+            f = self._make_transform(transform)
+            inv_f = self._make_transform(inverse_transform)
+        then the following equalities are always true:
+            variable == inv_f(new variable)
+            new variable == f(variable)
+        """
+        # TODO: Find a way to save cost function and model to file, for completely seamless reload ?
+        #       (I.e. without requiring subsequent calls to .set_model() and .set_cost())
+
+        if cost is None:
+            def dummy_cost(*args, **kwargs):
+                raise AttributeError("A cost function for this gradient descent was not specified.")
+            self.set_cost(dummy_cost)
+        else:
+            self.cost_fn = cost
+        if model is None:
+            self.model = None
+        else:
+            self.set_model(model)
 
         self.tidx_var = theano.tensor.lscalar('tidx')
         self.mbatch_var = theano.tensor.lscalar('batch_size')
@@ -209,7 +227,15 @@ class SGD:
             # with strings are not malicious. We save a flag for each transform, indicating
             # that it has been verified.
 
-        if sgd_file is None:
+        if _hollow_initialization:
+            self.fitparams = OrderedDict()   # dict of param:mask pairs
+            self.param_evol = {}
+
+        else:
+            self.optimizer = optimizer
+
+            if self.model is None:
+                raise TypeError("Unless loading an SGD saved to a file, the `model` argument is required.")
             if start is None:
                 raise ValueError("SGD: Unless an sgd file is provided, the parameter 'start' is required.")
             if datalen is None:
@@ -233,22 +259,45 @@ class SGD:
                 # Create the state variables other functions may expect;
                 # initialize will be called again after 'fitparams' is set.
 
+    def set_model(self, model):
+        """
+        Parameters
+        ----------
+        model: Model instance
+        """
+        if not isinstance(model, models.Model):
+            raise ValueError("`model` must be a subclass of models.Model.")
+        names = [modelname for modelname in models.registered_models
+                 if models.get_model(modelname) is type(model)]
+        if len(names) == 0:
+            modelname = type(model).__name__
+            models.register_model(type(model))
         else:
-            # TODO: Allow loading both raw (.sir) and sinn pickles (.sin)
-            # TODO: Make from_raw a class method, to be consistent with History ?
-            #       -> Would require saving the cost function as well
-            if isinstance(sgd_file, str):
-                rawdata = sinn.iotools.loadraw(sgd_file)
-            else:
-                rawdata = sgd_file
-            self.fitparams = OrderedDict()   # dict of param:mask pairs
-            self.param_evol = {}
-            self.from_raw(rawdata)
-            if set_params:
-                self.set_params_to_evols()
+            assert(len(names) == 1)
+            modelname = names[0]
+            if modelname != type(model).__name__:
+                logger.warning("The provided model (type '{}') is registered under "
+                               "a different name ('{}')."
+                               .format(type(model).__name__, modelname))
+        self.model = model
+        self.modelname = modelname
+
+    def set_cost(self, cost_function):
+        self.cost_fn = cost_function
+
+    @property
+    def repr_np(self):
+        return self.raw()
+
+    # TODO: Uncomment once swtiched to variable name indexing and we can fully load
+    #       from a file (without an initialized model)
+    # @classmethod
+    # def from_repr_np(cls, repr_np):
+    #     # TODO: Remove 'trust_transforms' when we've switched to using simpleeval
+    #     return cls.from_raw(repr_np, trust_transforms=True)
 
     def raw(self, **kwargs):
-        raw = {}
+        raw = {'version': 3}
 
         def add_attr(attr, retrieve_fn=None):
             # Doing it this way allows to use keywords to avoid errors triggered by getattr(attr)
@@ -275,6 +324,11 @@ class SGD:
         add_attr('step_cost')
         add_attr('cost_evol')
 
+        # v3
+        raw['type'] = type(self).__name__
+        add_attr('optimizer')
+        add_attr('self.model_name')
+
         if self.trueparams is not None:
             raw['true_param_names'] = np.array([p.name for p in self.trueparams])
             for p, val in self.trueparams.items():
@@ -295,89 +349,110 @@ class SGD:
 
         return raw
 
-    def from_raw(self, raw, trust_transforms=False):
+    @classmethod
+    def from_raw(cls, raw, model, trust_transforms=False):
         """
         Don't forget to call `verify_transforms` after this.
         """
+        # TODO: Remove requirement of a model by indexing traces, etc. by name
+        #       rather than variable.
+        # TODO: Allow loading both repr_np (.npr) and sinn pickles (.sin)
 
         # Using "{}".format(-) on a NumPy array doesn't work, so we
         # convert the integer variables to Python variables.
 
+        sgd = cls(_hollow_initialization=True)
+        sgd.set_model(model)  # <<<<<----- Remove this once we have name indexing
         if 'start' not in raw:
             # The raw data is not v2 compatible; try v1
-            self.start = float(raw['burnin'])
-            self.start_idx = float(raw['burnin_idx'])
-            self.burnin = 0
-            self.burnin_idx = 0
+            sgd.start = float(raw['burnin'])
+            sgd.start_idx = float(raw['burnin_idx'])
+            sgd.burnin = 0
+            sgd.burnin_idx = 0
         else:
-            self.start = float(raw['start'])
-            self.start_idx = int(raw['start_idx'])
-            self.burnin = int(raw['burnin'])
-            self.burnin_idxlen = int(raw['burnin_idxlen'])
-        self.datalen = float(raw['datalen'])
-        self.data_idxlen = int(raw['data_idxlen'])
-        self.mbatch_size = int(raw['mbatch_size'])
+            sgd.start = float(raw['start'])
+            sgd.start_idx = int(raw['start_idx'])
+            sgd.burnin = int(raw['burnin'])
+            sgd.burnin_idxlen = int(raw['burnin_idxlen'])
+        sgd.datalen = float(raw['datalen'])
+        sgd.data_idxlen = int(raw['data_idxlen'])
+        sgd.mbatch_size = int(raw['mbatch_size'])
 
-        self.curtidx = int(raw['curtidx'])
-        self.step_i = int(raw['step_i'])
-        self.circ_step_i = int(raw['circ_step_i'])
-        self.output_width = int(raw['output_width'])
-        self.cum_cost = float(raw['cum_cost'])
-        self.cum_step_time = float(raw['cum_step_time'])
-        self.tot_time = float(raw['tot_time'])
+        sgd.curtidx = int(raw['curtidx'])
+        sgd.step_i = int(raw['step_i'])
+        sgd.circ_step_i = int(raw['circ_step_i'])
+        sgd.output_width = int(raw['output_width'])
+        sgd.cum_cost = float(raw['cum_cost'])
+        sgd.cum_step_time = float(raw['cum_step_time'])
+        sgd.tot_time = float(raw['tot_time'])
 
-        self.step_cost = list(raw['step_cost'])
-        self.cost_evol = deque(raw['cost_evol'])
+        sgd.step_cost = list(raw['step_cost'])
+        sgd.cost_evol = deque(raw['cost_evol'])
 
+        if 'version' in raw:
+            # version >= 3
+            if sgd.optimizer is not None:
+                sgd.optimizer = raw['optimizer']
+            sgd.model_name = raw['model_name']
+
+        # Load parameter transforms
         for name in raw['substituted_param_names']:
-            p = None
-            for p in self.model.params:
+            for p in sgd.model.params:
                 if p.name == name:
                     break
-            # Copied from self.transform
+            # Copied from sgd.transform
             # New transformed variable value will be set once the transform string is verified
             newvar = theano.shared(p.get_value(),
                                     broadcastable = p.broadcastable,
                                     name = raw['subs_'+name][0])
             inverse_transform = raw['subs_'+name][1]
             transform = raw['subs_'+name][2]
-            self.substitutions[p] = (newvar, inverse_transform, transform)
-            self._verified_transforms[p] = trust_transforms
+            sgd.substitutions[p] = (newvar, inverse_transform, transform)
+            sgd._verified_transforms[p] = trust_transforms
 
+        # Load true parameters
         if 'true_param_names' in raw:
-            self.trueparams = {}
+            sgd.trueparams = {}
             for name in raw['true_param_names']:
                 p = None
-                for q in self.model.params:
+                for q in sgd.model.params:
                     if q.name == name:
                         p = q
                         break
                 # fitparam might also be transformed from a base model parameter
-                for q, subinfo in self.substitutions.items():
+                for q, subinfo in sgd.substitutions.items():
                     if subinfo[0].name == name:
                         p = subinfo[0]
                         break
                 assert(p is not None)
-                self.trueparams[p] = raw['true_param_val_' + name]
+                sgd.trueparams[p] = raw['true_param_val_' + name]
         else:
-            self.trueparams = None
+            sgd.trueparams = None
 
+        # Load fit parameters
         fit_param_names = raw['fit_param_names']
         for name in fit_param_names:
             p = None
-            for q in self.model.params:
+            for q in sgd.model.params:
                 if q.name == name:
                     p = q
                     break
             # fitparam might also be transformed from a base model parameter
-            for q, subinfo in self.substitutions.items():
+            for q, subinfo in sgd.substitutions.items():
                 if subinfo[0].name == name:
                     p = subinfo[0]
                     break
             assert(p is not None)
-            self.fitparams[p] = raw['mask_' + name]
-            self.param_evol[p] = deque(raw['evol_' + name])
+            sgd.fitparams[p] = raw['mask_' + name]
+            sgd.param_evol[p] = deque(raw['evol_' + name])
 
+        # Set the parameters to the last value of their respective evolutions
+        # (We can expect the evolutions to be non-empty, since we are loading from file;
+        # otherwise it just prints a warning.)
+        sgd.set_params_to_evols()
+
+
+        return sgd
 
     def verify_transforms(self, trust_automatically=False):
         """
@@ -734,6 +809,11 @@ class SGD:
                 logger.warning("Unable to set parameter '{}': evol is empty"
                                .format(param.name))
             else:
+                if np.all(evol[-1].shape != param.shape.eval()):
+                    raise TypeError("Trying to set parameter '{}' (shape {}) with "
+                                    "its final value (shape {}).\n"
+                                    "Are you certain the correct model was set ?"
+                                    .format(param.name, param.shape.eval(), evol[-1].shape))
                 param.set_value(evol[-1])
                 original_param = self._get_nontransformed_param(param)
                 if original_param is not None:
@@ -787,16 +867,26 @@ class SGD:
                 self.trueparams[param] = inv_transform(self.trueparams[transformedparam])
 
     def get_param(self, name):
-        for param in self.fitparams:
-            if param.name == name:
-                return param
-        for param, subinfo in self.substitutions.items():
-            if param.name == name:
-                return param
-            elif subinfo[0].name == name:
-                return subinfo[0]
+        if shim.isshared(name):
+            # 'name' is actually already a parameter
+            # We just check that it's actually part of the SGD, and return it back
+            if (name in self.fitparams
+                or name in self.substitutions
+                or name in (sub[0] for sub in self.substitutions.values())):
+                return name
+            else:
+                raise KeyError("The parameter '{}' is not attached to this SGD.")
+        else:
+            for param in self.fitparams:
+                if param.name == name:
+                    return param
+            for param, subinfo in self.substitutions.items():
+                if param.name == name:
+                    return param
+                elif subinfo[0].name == name:
+                    return subinfo[0]
 
-        raise KeyError("No parameter has the name '{}'".format(name))
+            raise KeyError("No parameter has the name '{}'".format(name))
 
     def set_param_values(self, new_params, mask=None):
         """
@@ -1062,6 +1152,7 @@ class SGD:
 
     def get_evol(self):
         """
+        DEPRECATED: Use trace() instead.
         Return a dictionary storing the evolution of the cost and parameters.
 
         Parameters
@@ -1079,6 +1170,26 @@ class SGD:
                  for param in self.fitparams }
         evol['logL'] = np.array([val for val in self.cost_evol])
         return evol
+
+    @property
+    def trace(sgdself):
+        class TraceDict:
+            def __getitem__(dictself, param):
+                pname = sgdself.get_param(param)
+                # Convert deque to ndarray
+                # TODO: Allow strides, to avoid allocating ginormous arrays
+                return np.array([val for val in sgdself.param_evol[pname]])
+        return TraceDict()
+
+    @property
+    def trace_stops(self):
+        # Should match the traces, e.g. if we allow them to have strides
+        refevol = next(iter(self.param_evol.values()))
+        return np.arange(len(refevol))
+
+    @property
+    def cost_trace(self):
+        return np.array([val for val in self.cost_evol])
 
     def stats(self):
         return {'number iterations': self.step_i,
@@ -1226,6 +1337,213 @@ class SGD:
         else:
             raise ValueError( "Overlays are not currently supported for base data of "
                               "type {}.".format( str(type(basedata)) ) )
+
+class FitCollection:
+    ParamID = namedtuple("ParamID", ['name', 'idx'])
+    Fit = namedtuple("Fit", ['parameters', 'data'])
+
+    def __init__(self, model):
+        #self.data_root = data_root
+        self.model = model
+        self.fits = []
+        self.reffit = None
+            # Reference fit, used for obtaining fit parameters
+            # We assume all fits were done on the same model and same parameters
+        #self.recordstore = RecordStore(db_records)
+        #self.recordstore = recordstore # HACK
+        #if data_root is not None:
+            #self.load_fits()
+        #self.heatmap = heatmap
+
+    def load(self, fit_list):
+        """
+        Parameters
+        ----------
+        fit_list: iterable
+            Each element of iterable should have attributes 'parameters'
+            and 'datapath'.
+        """
+
+        # Load the fits
+        try:
+            logger.info("Loading {} fits...".format(len(fit_list)))
+        except TypeError:
+            pass # fit_list may be iterable without having a length
+        for fit in fit_list:
+            #params = fit.parameters
+            #record.datapath = os.path.join(record.datastore.root,
+                                           #record.output_data[0].path)
+
+            # TODO: Remove when we don't need to read .sir files anymore
+            if os.path.splitext(fit.datapath)[-1] == '.sir':
+                # .sir was renamed to .npr
+                input_format = 'npr'
+            else:
+                # Get format from file extension
+                input_format = None
+            data = ml.iotools.load(fit.datapath, input_format=input_format)
+            if isinstance(data, np.lib.npyio.NpzFile):
+                #data = SGD.from_repr_np(data) # <<-- TODO: Use once we have name indexing
+                data = SGD.from_raw(data, self.model, trust_transforms=True)
+            # TODO: Check if sgd is already loaded ?
+            self.fits.append( FitCollection.Fit(fit.parameters, data) )
+            #self.sgds[-1].verify_transforms(trust_automatically=True)
+            #self.sgds[-1].set_params_to_evols()
+            #sgd.record = record
+
+        if len(self.fits) > 0:
+            self.reffit = self.fits[0]
+        else:
+            logger.warning("No fit files were found.")
+
+    def plot_cost(self):
+        pass
+
+    def plot(self, param, idx=None, numpoints=150,
+             keep_range=5,
+             keep_color='#BA3A05', discard_color='#BBBBBB', true_color='#222222',
+             linewidth=(2.5, 0.8), logscale=None,
+             xticks=1, yticks=3):
+        """
+        Parameters
+        ----------
+        param: str
+            Parameter to plot.
+        idx: int, tuple, slice or None
+            For multi-valued parameters, the component(s) to plot.
+            The default value of 'None' plots all of them.
+        keep_range: float
+            Parameter traces who's ultimate loglikelihood is within
+            this amount of the maximum logL will be coloured as 'kept'.
+        [colors]:
+            All colors can be set to `None` to deactivate plotting of their
+            associated trace.
+          keep_color: matplotlib color
+              Color to use for the 'kept' traces.
+          discard_color: matplotlib color
+              Color to use for the 'discarded' traces.
+          true_color: matplotlib color
+              Color to use for the horizontal line indicating the true parameter value.
+        linewidth: size 2 tuple
+            Linewidths to use for the plot of the 'kept' and 'discarded'
+            fits. Index 0 corresponds to 'kept', index 1 to 'discarded'.
+        logscale: bool or None
+            True: Use log scale for y-axis
+            False: Don't use log scale for y-axis
+            None: Use log scale for y-axis only if parameter was transformed.
+                  (Default)
+        xticks, yticks: float, array or matplotlib.Ticker.Locator instance
+            int: Number of ticks. Passed as 'numticks' argument to LinearLocator.
+            float: Use this value as a base for MultipleLocator. Ticks will
+                 be placed at multiples of these values.
+            list/array: Fixed tick locations.
+            Locator instance: Will call ax.[xy]axis.set_major_locator()
+                with this locator.
+        """
+
+        # Definitions
+        logLs = [fit.data.cost_evol[-1][1] for fit in self.fits]
+        maxlogL = max(logLs)
+
+        def get_color(logL):
+            # Do the interpolation in hsv space ensures intermediate colors are OK
+            keephsv = mpl.colors.rgb_to_hsv(mpl.colors.to_rgb(keep_color))
+            discardhsv = (mpl.colors.rgb_to_hsv(mpl.colors.to_rgb(discard_color))
+                          if discard_color is not None else np.array([0, 0, 1]))
+            r = (maxlogL - logL) / keep_range
+            return mpl.colors.hsv_to_rgb(((1 - r) * keephsv + r * discardhsv))
+
+        # Get parameter variable matching the parameter name
+        pname = param
+        param = self.reffit.data.get_param(param)
+
+        # Get the stops (x axis), and figure out what stride we need to show the desired
+        # no. of points
+        trace_stops = [ fit.data.trace_stops for fit in self.fits ]
+        trace_idcs = [ range(len(stops)) for stops in trace_stops ]
+        tot_stops = max( len(idcs) for idcs in trace_idcs )
+        stride = int( np.rint( tot_stops // numpoints ) )
+        for i, idcs in enumerate(trace_idcs):
+            trace_idcs[i] = list(idcs[::-stride][::-1])
+                # Stride backwards to keep last point
+            if trace_idcs[i][0] != 0:
+                # Make sure to include first values
+                trace_idcs[i] = [0] + trace_idcs[i]
+            trace_idcs[i] = np.array(trace_idcs[i])
+            trace_stops[i] = trace_stops[i][trace_idcs[i]]
+        # Get the associated traces, inverting the transform if necessary
+        if param in self.reffit.data.substitutions:
+            transformed_param = self.reffit.data.substitutions[param][0]
+            inverse = self.reffit.data.substitutions[param][1]
+            traces = [ inverse(fit.data.trace[transformed_param][idcs])
+                       for fit, idcs in zip(self.fits, trace_idcs) ]
+        else:
+            traces = [ fit.data.trace[param][idcs]
+                       for fit, idcs in zip(self.fits, trace_idcs) ]
+
+        # Standardize the `idx` argument
+        if idx is None:
+            idx = (slice(None),)
+        elif isinstance(idx, (int, slice)):
+            idx = (idx,)
+
+        # Loop over the traces
+        for trace, stops, logL in zip(traces, trace_stops, logLs):
+            # Set plotting parameters
+            if logL > maxlogL - keep_range:
+                if true_color is None:
+                    continue
+                kwargs = {'color': get_color(logL),
+                          'zorder': 1,
+                          'linewidth': linewidth[0]}
+            else:
+                if discard_color is None:
+                    continue
+                kwargs = {'color': discard_color,
+                          'zorder': -1,
+                          'linewidth': linewidth[1]}
+
+            # Draw plot
+            plt.plot(stops, trace[(slice(None),) + idx], **kwargs)
+
+        # Set the y scale (log or not)
+        if logscale is None:
+            logscale = (param in self.reffit.data.substitutions)
+        if logscale:
+            plt.yscale('log')
+
+        # Draw the true value line
+        if true_color is not None:
+            truevals = np.array(self.reffit.data.trueparams[param])
+            for trueval in truevals[idx].flat:
+                plt.axhline(trueval, color=true_color, zorder=0)
+
+        # Set the tick frequency
+        ax = plt.gca()
+        for axis, ticks in zip([ax.xaxis, ax.yaxis], [xticks, yticks]):
+            if isinstance(ticks, int):
+                if axis is ax.yaxis:
+                    vmin = min(trace.min() for trace in traces)
+                    vmax = max(trace.max() for trace in traces)
+                else:
+                    vmin = min(stops.min() for stops in trace_stops)
+                    vmax = max(stops.max() for stops in trace_stops)
+                if ticks == 0:
+                    continue
+                elif ticks == 1:
+                    axis.set_ticks([vmax])
+                else:
+                    axis.set_major_locator(ml.plot.LinearTickLocator(
+                        vmin, vmax, numticks=ticks))
+            elif isinstance(ticks, float):
+                axis.set_major_locator(mpl.ticker.MultipleLocator(ticks))
+            elif isinstance(ticks, Iterable):
+                axis.set_ticks(ticks)
+            elif isinstance(ticks, mpl.ticker.Locator):
+                axis.set_major_locator(ticks)
+            else:
+                raise ValueError("Unrecognized tick placement specifier '{}'."
+                                 .format(ticks))
 
 #######################################
 #
