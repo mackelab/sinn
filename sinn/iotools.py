@@ -49,7 +49,7 @@ extensions = ['sin', 'sir', 'dat', 'txt']
 def save(file, data, format='npr', overwrite=False):
     ml.iotools.save(file, data, format, overwrite)
 
-def saveraw(filename, data, overwrite=False):
+def saveraw(file, data, overwrite=False):
     ml.iotools.save(file, data, 'npr', overwrite)
 
 def load(filename, types=None, load_function=None, input_format=None):

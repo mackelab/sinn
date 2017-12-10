@@ -442,7 +442,7 @@ class PopTerm(np.ndarray):
             return type(self)(self.pop_sizes, op(self._data), self.block_types)
 
         elif isinstance(b, PopTerm):
-            if b.pop_sizes != self.pop_sizes:
+            if np.any(b.pop_sizes != self.pop_sizes):
                 raise TypeError("Population terms must have the same population sizes.")
             block_types = self.expand_block_types(self, b)
             a1 = self.expand_blocks(block_types).view(np.ndarray)
