@@ -58,15 +58,16 @@ class PopTerm(np.ndarray):
     # BlockTypes: Defined at bottow of module
     # BlockNames: Defined at bottow of module
     # BlockLevels: Defined at bottow of module
+    # shim_class = ShimmedPopTerm
 
     def __new__(cls, pop_sizes, values, block_types):
-        expected_size = ( 1 if cls is PopTermMacro
-                          else len(pop_sizes) if cls is PopTermMeso
-                          else sum(pop_sizes) if cls is PopTermMicro
+        expected_size = ( 1 if issubclass(cls, PopTermMacro)
+                          else len(pop_sizes) if issubclass(cls, PopTermMeso)
+                          else sum(pop_sizes) if issubclass(cls, PopTermMicro)
                           else None )
         assert(len(block_types) == np.asarray(values).ndim)
-        assert(cls is cls.BlockTypes[block_types[0]])
-        if cls is not PopTermPart:
+        assert(issubclass(cls, cls.BlockTypes[block_types[0]]))
+        if not issubclass(cls, PopTermPart):
             assert(expected_size is not None)
             if len(values) != expected_size:
                 raise ValueError("Provided values (length {}) not commensurate with the "
@@ -594,7 +595,17 @@ class PopTermMacro(PopTerm):
     """
     pass
 
+class ShimmedPopTerm(PopTerm, shim.ShimmedShared):
+    pass
 
+class ShimmedPopTermMicro(PopTermMicro, shim.ShimmedShared):
+    pass
+
+class ShimmedPopTermMeso(PopTermMeso, shim.ShimmedShared):
+    pass
+
+class ShimmedPopTermMacro(PopTermMacro, shim.ShimmedShared):
+    pass
 
 PopTerm.BlockTypes = {'Micro': PopTermMicro,
                       'Meso': PopTermMeso,
@@ -609,3 +620,7 @@ PopTerm.BlockLevels = {'Micro': 0,
                        'Macro': 2,
                        'Plain': None}
 
+PopTerm.shim_class = ShimmedPopTerm
+PopTermMicro.shim_class = ShimmedPopTermMicro
+PopTermMeso.shim_class = ShimmedPopTermMeso
+PopTermMacro.shim_class = ShimmedPopTermMacro

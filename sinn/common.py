@@ -606,16 +606,19 @@ class ParameterMixin:
                 #      to keep the reference to the original variable
                 param_dict[key] = val
             else:
+                if not isinstance(val, np.ndarray):
+                    val = np.asarray(val)
                 if isinstance(self.Parameter_info[key], tuple):
                     # TODO: Find a way to cast to dtype without making and then dereferencing an array
                     param_dict[key] = None
-                    temp_val = np.asarray(val, dtype=self.Parameter_info[key][0])
+                    temp_val = val.astype(self.Parameter_info[key][0],
+                                           copy=False)
                     # Check if we should ensure parameter is 2d.
                     try:
                         if self.Parameter_info[key][2]:
                             # Also wrap scalars in a 2D matrix so they play nice with algorithms
                             if temp_val.ndim < 2:
-                                param_dict[key] = shim.shared( shim.add_axes(np.asarray(temp_val), 2 - temp_val.ndim),
+                                param_dict[key] = shim.shared( shim.add_axes(temp_val, 2 - temp_val.ndim),
                                                                name = key )
                     except KeyError:
                         pass
@@ -623,8 +626,9 @@ class ParameterMixin:
                         # `ensure_2d` is either False or unset
                         param_dict[key] = shim.shared(temp_val, name = key)
                 else:
-                    param_dict[key] = shim.shared(np.asarray(val, dtype=self.Parameter_info[key]),
-                                                  name=key)
+                    param_dict[key] = shim.shared(
+                        val.astype(self.Parameter_info[key], copy=False),
+                        name=key)
         return self.Parameters(**param_dict)
 
     def set_parameters(self, params):
