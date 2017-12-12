@@ -2,6 +2,7 @@ import numpy as np
 import copy
 from collections import Iterable
 import itertools
+from numbers import Number
 
 import theano_shim as shim
 from sinn.common import PopulationHistoryBase
@@ -133,7 +134,7 @@ class PopTerm(np.ndarray):
             return res
         else:
             if key is None:
-                block_types = ('Plain',) + self.block_types
+                block_types = ('Macro',) + self.block_types
             elif isinstance(key, Iterable) and not isinstance(key, (str, bytes)):
                 # Expand the Ellipsis, if one is present
                 if Ellipsis in key:
@@ -148,13 +149,13 @@ class PopTerm(np.ndarray):
                         # We replace those dimensions by ':' (i.e. slice(None))
                     assert(dim_diff >= 0)
                     key = key[:ellidx] + (slice(None),)*dim_diff + key[ellidx+1:]
-                assert(len(key) == res.ndim)
+                #assert(len(key) == res.ndim)
                 # Adapt the block_types to the result's new shape
                 block_types = self.block_types
                 for i, dimkey in enumerate(key):
                     if dimkey is None:
                         # np.newaxis: add an axis to the block types
-                        block_types = block_types[:i] + ('Plain',) + block_types[i:]
+                        block_types = block_types[:i] + ('Macro',) + block_types[i:]
                     elif isinstance(dimkey, int):
                         # collapse this dimension in the block types
                         block_types = block_types[:i] + block_types[i+1:]
@@ -237,12 +238,12 @@ class PopTerm(np.ndarray):
         # Check that shapes are compatible
         # Iterating from the end ensures that we discard the extra
         # initial dimensions in popterm1 or popterm2
-        for bt1, size1, bt2, size2 in zip(popterm1.block_types[::-1],
+        for bt1, size1, bt2, size2 in zip(bts1[::-1],
                                           popterm1.shape[::-1],
-                                          popterm2.block_types[::-1],
+                                          bts2[::-1],
                                           popterm2.shape[::-1]):
-            if ( ( (bt1 == 'Plain' and size1 != 1)
-                   or (bt2 == 'Plain' and size2 != 1) )
+            if ( ( (bt1 == 'Plain' or bt2 == 'Plain')
+                   and (size1 != 1 and size2 != 1) )
                  and (size1 != size2) ) :
                 raise ShapeError("Plain array shapes are incompatible.\n "
                                  + "  {} ({})\n".format(popterm1.shape,
@@ -253,28 +254,33 @@ class PopTerm(np.ndarray):
         # If one term has more dimensions, split those off:
         # they don't need to be expanded
         Δi = len(bts1) - len(bts2)
+        shape1 = popterm1.shape
+        shape2 = popterm2.shape
         if Δi > 0:
             bts  = bts1[:Δi]
             bts1 = bts1[Δi:]
+            shape1 = popterm1.shape[Δi:]
         elif Δi < 0:
             Δi = abs(Δi)
             bts  = bts2[:Δi]
             bts2 = bts2[Δi:]
+            shape2 = popterm2.shape[Δi:]
         else:
             bts = ()
 
         # For the remaining terms, take whichever is 'largest' at each position
-        return bts + tuple(PopTerm._largest_block(bt1, bt2)
-                           for bt1, bt2 in zip(bts1, bts2))
+        return bts + tuple(bt1 if size1 > size2 else bt2
+                           for bt1, size1, bt2, size2
+                           in zip(bts1, shape1, bts2, shape2))
 
-    @staticmethod
-    def _largest_block(bt1, bt2):
-        for bt in ['Micro', 'Meso', 'Macro', 'Plain']:
-            # Ordered from smallest to largest scale: return the first hit
-            if bt1 == bt or bt2 == bt:
-                return bt
-        raise ValueError("Unrecognized block type(s) '{}', '{}'"
-                         .format(bt1, bt2))
+    # @staticmethod
+    # def _largest_block(bt1, bt2):
+    #     for bt in ['Micro', 'Meso', 'Macro', 'Plain']:
+    #         # Ordered from smallest to largest scale: return the first hit
+    #         if bt1 == bt or bt2 == bt:
+    #             return bt
+    #     raise ValueError("Unrecognized block type(s) '{}', '{}'"
+    #                      .format(bt1, bt2))
 
     def expand_blocks(self, block_types):
         if isinstance(block_types, str):
@@ -403,7 +409,7 @@ class PopTerm(np.ndarray):
             selfidx = [i for i, e in enumerate(inputs) if e is self]
             if len(selfidx) == 0:
                 return NotImplemented
-            selfidx = selfidx[0] # We just need *an* operand that is 'self'
+            selfidx = selfidx[0] # We just need any operand that is 'self'
             inputs = inputs[:selfidx] + inputs[selfidx+1:]
             #assert( all( i is not self for i in inputs ) )
                 # assert(self not in inputs) calls __eq__, which leads to recursion error
@@ -437,8 +443,8 @@ class PopTerm(np.ndarray):
         return block_types
 
     def _apply_op(self, op, b=None):
-        #FIXME: We assume op returns something of same (evtl. broadcasted) shape is the inputs
-        #       This is not true e.g. for .max()
+        #FIXME: We assume op returns something of same (possibly broadcasted) shape as the inputs
+        #       This is not always true, e.g. for .max()
         if b is None:
             return type(self)(self.pop_sizes, op(self._data), self.block_types)
 
@@ -459,20 +465,29 @@ class PopTerm(np.ndarray):
             #     raise TypeError("Population terms must have the same population sizes.")
             # return op(self._data, b)
 
-        elif isinstance(b, (int, float)):
+        elif isinstance(b, Number):
             return type(self)(self.pop_sizes, op(self._data, b),
                               self.block_types)
 
         elif isinstance(b, np.ndarray):
-            # Infer block types from the array shape:
-            # Dimensions beyond 'self' always remain 'Plain';
-            # for the dimensions that align with self, assign the block
-            # level that matches the shape, if it exists, other assign 'Plain'
-            startdim = max(0, b.ndim - self.ndim)
-            block_types = ('Plain',) * startdim
-            block_types += self.infer_block_types(b.shape[startdim:])
-            cls = self.BlockTypes[block_types[0]]
-            return op(self, cls(self.pop_sizes, b, block_types))
+            if b.ndim == 0:
+                return type(self)(self.pop_sizes, op(self._data, b),
+                                  self.block_types)
+            else:
+                # Infer block types from the array shape:
+                # Dimensions beyond 'self' always remain 'Plain';
+                # for the dimensions that align with self, assign the block
+                # level that matches the shape, if it exists, other assign 'Plain'
+                startdim = b.ndim - self.ndim
+                block_types = self.infer_block_types(b.shape[:startdim])
+                    # 'block_types' is used only to cast 'b': it does not need to
+                    # include self's block type
+                block_types += self.infer_block_types(b.shape[startdim:])
+                cls = self.BlockTypes[block_types[0]]
+                return op(self, cls(self.pop_sizes, b, block_types))
+
+        else:
+            raise TypeError("Unrecognized operand type '{}'.".format(type(b)))
 
     # Array methods
     # FIXME: Make max, min as ufuncs
@@ -574,7 +589,6 @@ class PopTermMicro(PopTerm):
     (e.g. SpikeTrain)
     One entry per population member
     """
-    # TODO: Subclass ndarray and implement the ufuncs as suggested in https://docs.scipy.org/doc/numpy/neps/ufunc-overrides.html#recommendations-for-implementing-binary-operations
     pass
 
 class PopTermMeso(PopTerm):
