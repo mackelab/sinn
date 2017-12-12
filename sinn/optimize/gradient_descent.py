@@ -1474,11 +1474,13 @@ class FitCollection:
         # Get the associated traces, inverting the transform if necessary
         if param in self.reffit.data.substitutions:
             transformed_param = self.reffit.data.substitutions[param][0]
-            inverse = self.reffit.data.substitutions[param][1]
-            traces = [ inverse(fit.data.trace[transformed_param][idcs])
+            inverse = self.reffit.data._make_transform(
+                param,
+                self.reffit.data.substitutions[param][1])
+            traces = [ inverse(fit.data.trace[transformed_param.name][idcs])
                        for fit, idcs in zip(self.fits, trace_idcs) ]
         else:
-            traces = [ fit.data.trace[param][idcs]
+            traces = [ fit.data.trace[param.name][idcs]
                        for fit, idcs in zip(self.fits, trace_idcs) ]
 
         # Standardize the `idx` argument
@@ -1514,7 +1516,8 @@ class FitCollection:
 
         # Draw the true value line
         if true_color is not None:
-            truevals = np.array(self.reffit.data.trueparams[param])
+            shape = param.get_value().shape
+            truevals = np.array(self.reffit.data.trueparams[param]).reshape(shape)
             for trueval in truevals[idx].flat:
                 plt.axhline(trueval, color=true_color, zorder=0)
 
