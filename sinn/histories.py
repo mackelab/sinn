@@ -2463,6 +2463,9 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
                   for from_pop_idx in range(len(self.pop_sizes)) ],
                 axis = 0 ) )
 
+        elif discretized_kernel.ndim == 1 and discretized_kernel.shape[0] == sum(self.pop_sizes):
+            return hist_subarray.multiply( discretized_kernel[kernel_slice][::-1] ).sum(axis=0).A[0, :]
+
         else:
             raise NotImplementedError
 
