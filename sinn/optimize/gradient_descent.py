@@ -420,7 +420,6 @@ class SGD:
         # v3
         raw['type'] = type(self).__name__
         add_attr('optimizer')
-        add_attr('model_name')
         add_attr('cost_format')
 
         if self.trueparams is not None:
@@ -488,7 +487,6 @@ class SGD:
             # version >= 3
             if sgd.optimizer is not None:
                 sgd.optimizer = raw['optimizer']
-            sgd.model_name = raw['model_name']
             sgd.cost_format = ran['cost_format']
             sgd._cost_evol = deque(raw['_cost_evol'])
         else:
@@ -1475,13 +1473,15 @@ class FitCollection:
             #self.load_fits()
         #self.heatmap = heatmap
 
-    def load(self, fit_list):
+    def load(self, fit_list, **kwargs):
         """
         Parameters
         ----------
         fit_list: iterable
             Each element of iterable should have attributes 'parameters'
             and 'outputpath'.
+        **kwargs:
+            Keyword arguments are passed on to mackelab.iotools.load()
         """
 
         # Load the fits
@@ -1495,13 +1495,18 @@ class FitCollection:
                                            #record.output_data[0].path)
 
             # TODO: Remove when we don't need to read .sir files anymore
-            if os.path.splitext(fit.outputpath)[-1] == '.sir':
-                # .sir was renamed to .npr
-                input_format = 'npr'
+            if 'input_format' in kwargs:
+                input_format = kwargs.pop('input_format')
             else:
-                # Get format from file extension
-                input_format = None
-            data = ml.iotools.load(fit.outputpath, input_format=input_format)
+                if os.path.splitext(fit.outputpath)[-1] == '.sir':
+                    # .sir was renamed to .npr
+                    input_format = 'npr'
+                else:
+                    # Get format from file extension
+                    input_format = None
+
+            data = ml.iotools.load(fit.outputpath, input_format=input_format,
+                                   **kwargs)
             if isinstance(data, np.lib.npyio.NpzFile):
                 #data = SGD.from_repr_np(data) # <<-- TODO: Use once we have name indexing
                 data = SGD.from_raw(data, self.model, trust_transforms=True)
