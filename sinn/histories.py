@@ -411,6 +411,8 @@ em
             Will be passed along to the class constructor
             Exists to allow specialization in derived classes.
         """
+        if not isinstance(raw, np.lib.npyio.NpzFile):
+            raise TypeError("'raw' data must be a Numpy archive.")
         hist =  cls(name = str(raw['name']),
                     t0 = float(raw['t0']), tn = float(raw['tn']), dt = float(raw['dt']),
                     shape = tuple(raw['shape']),

@@ -84,6 +84,8 @@ class HeatMap:
         """
         # The raw format is meant for data longevity, and so should
         # seldom, if ever, be changed
+        if not isinstance(raw, np.lib.npyio.NpzFile):
+            raise TypeError("'raw' data must be a Numpy archive.")
         raw = {}
         raw['type'] = self.__class__.__name__
         # raw['axes'] = np.array([(ax.name, ax.stops, ax.idx, ax.scale) for ax in self.axes],
