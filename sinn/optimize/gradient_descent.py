@@ -133,6 +133,70 @@ def get_indices(param):
 
 ##########################################
 #
+# Types of cost
+#
+##########################################
+
+class Cost:
+    """
+    'Cost' classes are simple mixin classes that add conversion methods to
+    different cost types.
+    These methods are implemented as properties, so they are called without brackets.
+    All formats must provide at a minimum be convertible to `cost`, which may be
+    anything that can be interpreted as a cost (i.e. that optimization would
+    seek to minimize).
+    """
+    # self conversions (e.g. logL -> logL) are already defined by default
+    conversions = {
+        'cost' : {},
+        'logL' : {
+            'cost' : lambda x: -x,
+            '-logL': lambda x: -x,
+            'L'    : lambda x: shim.exp(x)
+        },
+        '-logL' : {
+            'cost' : lambda x: x,
+            'logL' : lambda x: -x,
+            'L'    : lambda x: shim.exp(-x)
+        },
+        'L' : {
+            'cost' : lambda x: -x,
+            'logL' : lambda x: shim.log(x),
+            '-logL': lambda x: -shim.log(x)
+        }
+    }
+    def __init__(self, value, format):
+        if format not in self.conversions:
+            raise ValueError("Unrecognized format '{}'. Possible values are {}."
+                             .format(format, ', '.join(self.conversions.keys())))
+        self.value = value
+        self.format = format
+
+    def to(self, format):
+        if format == self.format:
+            return self.value
+        else:
+            targets = self.conversions[self.format]
+            if format in targets:
+                return targets[format](self.value)
+            else:
+                raise ValueError("Unrecognized format '{}'. Possible values are {}."
+                                 .format(format, ', '.join(targets.keys())))
+    @property
+    def cost(self):
+        return self.to('cost')
+    @property
+    def logL(self):
+        return self.to('logL')
+    @property
+    def negLogL(self):
+        return self.to('-logL')
+    @property
+    def L(self):
+        return self.to('L')
+
+##########################################
+#
 # Stochastic gradient descent
 #
 ##########################################
@@ -140,7 +204,7 @@ def get_indices(param):
 
 class SGD:
 
-    def __init__(self, cost=None, model=None, optimizer=None,
+    def __init__(self, cost=None, cost_format='cost', model=None, optimizer=None,
                  start=None, datalen=None, burnin=None, mbatch_size=None,
                  set_params=False, *args, _hollow_initialization=False):
         """
@@ -159,6 +223,15 @@ class SGD:
         cost: Theano graph
             Theano symbolic variable/graph for the cost function we want to optimize.
             Must derive from parameters and histories found in `model`
+        cost_format: str
+            Indicates how the cost function should be interpreted. This will affect e.g.
+            whether the algorithm attempts to minimize or maximize the value. One of:
+              + 'logL' : log-likelihood
+              + 'negLogL' or '-logL': negative log-likelihood
+              + 'L' : likelihood
+              + 'cost': An arbitrary cost to minimize. Conversion to other formats will
+                   not be possible.
+            May also be a subclass of `Cost`.
         model: sinn Model instance
             Provides a handle to the variables appearing in the cost graph.
         optimizer: str | class/factory function
@@ -213,6 +286,9 @@ class SGD:
             self.set_cost(dummy_cost)
         else:
             self.cost_fn = cost
+
+        self.cost_format = cost_format
+
         if model is None:
             self.model = None
         else:
@@ -258,6 +334,23 @@ class SGD:
             self.initialize()
                 # Create the state variables other functions may expect;
                 # initialize will be called again after 'fitparams' is set.
+
+    # def make_cost(cost):
+    #     if isinstance(cost, Cost):
+    #         # CostType has already been mixed in
+    #         if CostType is not None and not isinstance(cost, CostType):
+    #             raise TypeError("Trying to make cost a {}, but it is already of type {}"
+    #                             .format(CostType.__name__, type(cost).__name__))
+    #     else:
+    #         if CostType is None:
+    #             CostType = self.CostType
+    #         cost.__class__ = type(type(cost).__name__ + "_" + CostType.__name__,
+    #                             (CostType, type(cost)),
+    #                             {})
+    #     return cost
+
+    def Cost(self, cost):
+        return Cost(cost, self.cost_format)
 
     def set_model(self, model):
         """
@@ -322,12 +415,13 @@ class SGD:
         add_attr('tot_time')
 
         add_attr('step_cost')
-        add_attr('cost_evol')
+        add_attr('_cost_evol')
 
         # v3
         raw['type'] = type(self).__name__
         add_attr('optimizer')
-        add_attr('self.model_name')
+        add_attr('model_name')
+        add_attr('cost_format')
 
         if self.trueparams is not None:
             raw['true_param_names'] = np.array([p.name for p in self.trueparams])
@@ -360,6 +454,8 @@ class SGD:
 
         # Using "{}".format(-) on a NumPy array doesn't work, so we
         # convert the integer variables to Python variables.
+        if not isinstance(raw, np.lib.npyio.NpzFile):
+            raise TypeError("'raw' data must be a Numpy archive.")
 
         sgd = cls(_hollow_initialization=True)
         sgd.set_model(model)  # <<<<<----- Remove this once we have name indexing
@@ -387,13 +483,17 @@ class SGD:
         sgd.tot_time = float(raw['tot_time'])
 
         sgd.step_cost = list(raw['step_cost'])
-        sgd.cost_evol = deque(raw['cost_evol'])
 
         if 'version' in raw:
             # version >= 3
             if sgd.optimizer is not None:
                 sgd.optimizer = raw['optimizer']
             sgd.model_name = raw['model_name']
+            sgd.cost_format = ran['cost_format']
+            sgd._cost_evol = deque(raw['_cost_evol'])
+        else:
+            sgd.cost_format = 'logL'
+            sgd._cost_evol = deque(raw['cost_evol'])
 
         # Load parameter transforms
         for name in raw['substituted_param_names']:
@@ -756,10 +856,12 @@ class SGD:
         #self.cost = theano.function([self.tidx_var], updates=cost_updates)
         #logger.info("Done compilation.")
 
+        cost_to_min = self.Cost(cost).cost
+            # Ensure we have a cost to minimize (and not, e.g., a likelihood)
         if isinstance(self.optimizer, str):
             if self.optimizer == 'adam':
                 logger.info("Calculating Adam optimizer updates.")
-                optimizer_updates = Adam(-cost, self.fitparams, lr=lr, **kwargs)
+                optimizer_updates = Adam(cost_to_min, self.fitparams, lr=lr, **kwargs)
             else:
                 raise ValueError("Unrecognized optimizer '{}'.".format(self.optimizer))
 
@@ -767,7 +869,7 @@ class SGD:
             # Treat optimizer as a factory class or function
             try:
                 logger.info("Calculating custom optimizer updates.")
-                optimizer_updates = self.optimizer(-cost, self.fitparams, lr=lr, **kwargs)
+                optimizer_updates = self.optimizer(cost_to_min, self.fitparams, lr=lr, **kwargs)
             except TypeError as e:
                 if 'is not callable' not in str(e):
                     # Some other TypeError was triggered; reraise
@@ -809,11 +911,11 @@ class SGD:
                 logger.warning("Unable to set parameter '{}': evol is empty"
                                .format(param.name))
             else:
-                if np.all(evol[-1].shape != param.shape.eval()):
+                if np.all(evol[-1].shape != shim.eval(param.shape)):
                     raise TypeError("Trying to set parameter '{}' (shape {}) with "
                                     "its final value (shape {}).\n"
                                     "Are you certain the correct model was set ?"
-                                    .format(param.name, param.shape.eval(), evol[-1].shape))
+                                    .format(param.name, shim.eval(param.shape), evol[-1].shape))
                 param.set_value(evol[-1])
                 original_param = self._get_nontransformed_param(param)
                 if original_param is not None:
@@ -967,7 +1069,7 @@ class SGD:
         else:
             self.param_evol = {}
 
-        self.cost_evol = deque([])
+        self._cost_evol = deque([])
 
         self.step_i = 0
         self.circ_step_i = 0
@@ -1038,7 +1140,7 @@ class SGD:
                 # Copy ensures updating curtidx doesn't also update start_idx
             self.model.clear_unlocked_histories()
             if cost_calc == 'cum':
-                self.cost_evol.append(np.array((self.step_i, self.cum_cost)))
+                self._cost_evol.append(np.array((self.step_i, self.cum_cost)))
             #self.model.clear_unlocked_histories()
             self.cum_cost = 0
             self.circ_step_i = 0
@@ -1077,7 +1179,7 @@ class SGD:
 
         if ( cost_calc == 'full'
              and self.step_i % kwargs.get('cost_period', 1) == 0 ):
-            self.cost_evol.append(
+            self._cost_evol.append(
                 np.array( (self.step_i, self.cost(self.start_idx, self.data_idxlen)) ) )
 
         # Increment step counter
@@ -1088,11 +1190,11 @@ class SGD:
         # TODO: Use a circular iterator for step_cost, so that a) we don't need circ_step_i
         #       and b) we can test over intervals that straddle a reset of curtidx
         # Check to see if there have been meaningful changes in the last 10 iterations
-        if ( converged((c[1] for c in self.cost_evol),
+        if ( converged((c[1] for c in self._cost_evol),
                        r=conv_res, n=4, m=3) and
              converged(self.step_cost[:self.circ_step_i], r=conv_res, n=100)
              and all( converged(self.param_evol[p], r=self._compiled_lr[p]) for p in self.fitparams) ):
-            logger.info("Converged. log L = {:.2f}".format(float(self.cost_evol[-1][1])))
+            logger.info("Converged. log L = {:.2f}".format(float(self._cost_evol[-1][1])))
             return ConvergeStatus.CONVERGED
 
         #Print progress  # TODO: move to top of step
@@ -1101,7 +1203,7 @@ class SGD:
                             self.output_width,
                             float(sum(self.step_cost[:self.circ_step_i])/(self.curtidx + self.mbatch_size -self.start_idx))))
         if cost_calc == 'full':
-            logger.info(" "*(13+self.output_width) + "Last evaluated log L: {}".format(self.cost_evol[-1][1]))
+            logger.info(" "*(13+self.output_width) + "Last evaluated log L: {}".format(self._cost_evol[-1][1]))
 
         return ConvergeStatus.NOTCONVERGED
 
@@ -1168,7 +1270,7 @@ class SGD:
         """
         evol = { param.name: np.array([val for val in self.param_evol[param]])
                  for param in self.fitparams }
-        evol['logL'] = np.array([val for val in self.cost_evol])
+        evol['logL'] = np.array([val for val in self._cost_evol])
         return evol
 
     @property
@@ -1179,6 +1281,15 @@ class SGD:
                 # Convert deque to ndarray
                 # TODO: Allow strides, to avoid allocating ginormous arrays
                 return np.array([val for val in sgdself.param_evol[pname]])
+            def keys(dictself):
+                for param in sgdself.param_evol.keys():
+                    yield param.name
+            def values(dictself):
+                for param in sgdself.param_evol.keys():
+                    yield dictself[param]
+            def items(dictself):
+                for param in sgdself.param_evol.keys():
+                    yield param.name, dictself[param]
         return TraceDict()
 
     @property
@@ -1189,8 +1300,17 @@ class SGD:
 
     @property
     def cost_trace(self):
-        return np.array([val for val in self.cost_evol])
+        return np.array([self.Cost(val[1]) for val in self._cost_evol])
 
+    @property
+    def cost_trace_stops(self):
+        return np.array([val[0] for val in self._cost_evol])
+
+    @property
+    def MLE(self):
+        return {name: trace[-1] for name, trace in self.trace.items()}
+
+    @property
     def stats(self):
         return {'number iterations': self.step_i,
                 'total time (s)' : self.tot_time,
@@ -1361,7 +1481,7 @@ class FitCollection:
         ----------
         fit_list: iterable
             Each element of iterable should have attributes 'parameters'
-            and 'datapath'.
+            and 'outputpath'.
         """
 
         # Load the fits
@@ -1371,17 +1491,17 @@ class FitCollection:
             pass # fit_list may be iterable without having a length
         for fit in fit_list:
             #params = fit.parameters
-            #record.datapath = os.path.join(record.datastore.root,
+            #record.outputpath = os.path.join(record.datastore.root,
                                            #record.output_data[0].path)
 
             # TODO: Remove when we don't need to read .sir files anymore
-            if os.path.splitext(fit.datapath)[-1] == '.sir':
+            if os.path.splitext(fit.outputpath)[-1] == '.sir':
                 # .sir was renamed to .npr
                 input_format = 'npr'
             else:
                 # Get format from file extension
                 input_format = None
-            data = ml.iotools.load(fit.datapath, input_format=input_format)
+            data = ml.iotools.load(fit.outputpath, input_format=input_format)
             if isinstance(data, np.lib.npyio.NpzFile):
                 #data = SGD.from_repr_np(data) # <<-- TODO: Use once we have name indexing
                 data = SGD.from_raw(data, self.model, trust_transforms=True)
@@ -1395,6 +1515,14 @@ class FitCollection:
             self.reffit = self.fits[0]
         else:
             logger.warning("No fit files were found.")
+
+    @property
+    def MLE(self):
+        return self.fits[self.MLE_idex].MLE
+
+    @property
+    def MLE_index(self):
+        return np.argmax([fit.data.cost_trace[-1].logL for fit in self.fits])
 
     def plot_cost(self):
         pass
@@ -1442,7 +1570,7 @@ class FitCollection:
         """
 
         # Definitions
-        logLs = [fit.data.cost_evol[-1][1] for fit in self.fits]
+        logLs = [fit.data.cost_trace[-1].logL for fit in self.fits]
         maxlogL = max(logLs)
 
         def get_color(logL):
