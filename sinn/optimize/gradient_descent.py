@@ -166,6 +166,7 @@ class Cost:
         }
     }
     def __init__(self, value, format):
+        format = str(format)  # normalize input (it may e.g. be a numpy string)
         if format not in self.conversions:
             raise ValueError("Unrecognized format '{}'. Possible values are {}."
                              .format(format, ', '.join(self.conversions.keys())))
@@ -177,6 +178,7 @@ class Cost:
             return self.value
         else:
             targets = self.conversions[self.format]
+            targets.append(self.format)
             if format in targets:
                 return targets[format](self.value)
             else:
@@ -204,7 +206,7 @@ class Cost:
 
 class SGD:
 
-    def __init__(self, cost=None, cost_format='cost', model=None, optimizer=None,
+    def __init__(self, cost=None, cost_format=None, model=None, optimizer=None,
                  start=None, datalen=None, burnin=None, mbatch_size=None,
                  set_params=False, *args, _hollow_initialization=False):
         """
@@ -231,7 +233,7 @@ class SGD:
               + 'L' : likelihood
               + 'cost': An arbitrary cost to minimize. Conversion to other formats will
                    not be possible.
-            May also be a subclass of `Cost`.
+            May also be a subclass of `Cost`. (TODO)
         model: sinn Model instance
             Provides a handle to the variables appearing in the cost graph.
         optimizer: str | class/factory function
@@ -286,6 +288,9 @@ class SGD:
             self.set_cost(dummy_cost)
         else:
             self.cost_fn = cost
+            if cost_format is None:
+                raise ValueError("The 'cost_format' argument is mandatory "
+                    "when a cost function is provided.")
 
         self.cost_format = cost_format
 
@@ -304,11 +309,13 @@ class SGD:
             # that it has been verified.
 
         if _hollow_initialization:
+            self.optimizer = None
             self.fitparams = OrderedDict()   # dict of param:mask pairs
             self.param_evol = {}
 
         else:
             self.optimizer = optimizer
+                # FIXME: Raise error when optimizer is None ?
 
             if self.model is None:
                 raise TypeError("Unless loading an SGD saved to a file, the `model` argument is required.")
@@ -375,8 +382,9 @@ class SGD:
         self.model = model
         self.modelname = modelname
 
-    def set_cost(self, cost_function):
+    def set_cost(self, cost_function, cost_format):
         self.cost_fn = cost_function
+        self.cost_format = cost_format
 
     @property
     def repr_np(self):
@@ -485,9 +493,9 @@ class SGD:
 
         if 'version' in raw:
             # version >= 3
-            if sgd.optimizer is not None:
-                sgd.optimizer = raw['optimizer']
-            sgd.cost_format = ran['cost_format']
+            if not hasattr(sgd, 'optimizer') or sgd.optimizer is None:
+                sgd.optimizer = str(raw['optimizer'])
+            sgd.cost_format = str(raw['cost_format'])
             sgd._cost_evol = deque(raw['_cost_evol'])
         else:
             sgd.cost_format = 'logL'
@@ -1489,14 +1497,22 @@ class FitCollection:
             logger.info("Loading {} fits...".format(len(fit_list)))
         except TypeError:
             pass # fit_list may be iterable without having a length
+
+
+        # TODO: Remove when we don't need to read .sir files
+        if 'input_format' in kwargs:
+            default_input_format = kwargs.pop('input_format')
+        else:
+            default_input_format = None
+
         for fit in fit_list:
             #params = fit.parameters
             #record.outputpath = os.path.join(record.datastore.root,
                                            #record.output_data[0].path)
 
             # TODO: Remove when we don't need to read .sir files anymore
-            if 'input_format' in kwargs:
-                input_format = kwargs.pop('input_format')
+            if default_input_format is not None:
+                input_format = default_input_format
             else:
                 if os.path.splitext(fit.outputpath)[-1] == '.sir':
                     # .sir was renamed to .npr
@@ -1892,3 +1908,17 @@ class NPAdam:
             g_t = self.m[i] / (np.sqrt(self.v[i]) + self.e)
             p_t = p - (lr_t * g_t)
         return updates
+
+
+################
+#
+# Type registration with mackelab.iotools
+#
+################
+
+try:
+    import mackelab.iotools
+except ImportError:
+    pass
+else:
+    mackelab.iotools.register_datatype(SGD)
