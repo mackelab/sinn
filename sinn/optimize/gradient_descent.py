@@ -178,12 +178,13 @@ class Cost:
             return self.value
         else:
             targets = self.conversions[self.format]
-            targets.append(self.format)
             if format in targets:
                 return targets[format](self.value)
             else:
+                target_names = list(targets.keys())
+                target_names.append(self.format)
                 raise ValueError("Unrecognized format '{}'. Possible values are {}."
-                                 .format(format, ', '.join(targets.keys())))
+                                 .format(format, ', '.join(target_names)))
     @property
     def cost(self):
         return self.to('cost')
@@ -285,7 +286,7 @@ class SGD:
         if cost is None:
             def dummy_cost(*args, **kwargs):
                 raise AttributeError("A cost function for this gradient descent was not specified.")
-            self.set_cost(dummy_cost)
+            self.set_cost(dummy_cost, None)
         else:
             self.cost_fn = cost
             if cost_format is None:
@@ -718,12 +719,19 @@ class SGD:
             self.fitparams[newvar] = self.fitparams[variable]
             del self.fitparams[variable]
 
+    @property
+    def _transformed_params(self):
+        return [subinfo[0] for subinfo in self.substitutions.values()]
+
     def _get_nontransformed_param(self, param):
         res = None
         for var, subinfo in self.substitutions.items():
             if subinfo[0] is param:
                 assert(res is None)
                 res = var
+        if res is None:
+            assert(param in self.fitparams)
+            res = param
         return res
 
     def set_fitparams(self, fitparams):
@@ -923,8 +931,8 @@ class SGD:
                                     "Are you certain the correct model was set ?"
                                     .format(param.name, shim.eval(param.shape), evol[-1].shape))
                 param.set_value(evol[-1])
-                original_param = self._get_nontransformed_param(param)
-                if original_param is not None:
+                if param in self._transformed_params:
+                    original_param = self._get_nontransformed_param(param)
                     subinfo = self.substitutions[original_param]
                     original_param.set_value(self._make_transform(original_param, subinfo[1])(param.get_value()))
 
@@ -1314,7 +1322,20 @@ class SGD:
 
     @property
     def MLE(self):
-        return {name: trace[-1] for name, trace in self.trace.items()}
+        def invert(name, val):
+            param = self.get_param(name)
+            if param not in self._transformed_params:
+                return name, val
+            else:
+                original_param = self._get_nontransformed_param(param)
+                inverse = self._make_transform(original_param,
+                                               self.substitutions[original_param][1])
+                return original_param.name, inverse(val)
+        return {origname: val for origname, val
+                in ( invert(name, trace[-1])
+                     for name, trace in self.trace.items()) }
+        #TODO: Use following once transforms use ml.parameters.Transform
+        #return {name: trace[-1].back for name, trace in self.trace.items()}
 
     @property
     def stats(self):
@@ -1539,7 +1560,7 @@ class FitCollection:
 
     @property
     def MLE(self):
-        return self.fits[self.MLE_idex].MLE
+        return self.fits[self.MLE_index].data.MLE
 
     @property
     def MLE_index(self):
