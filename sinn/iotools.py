@@ -42,9 +42,11 @@ import mackelab as ml
 import mackelab.iotools
 
 extensions = ['sin', 'sir', 'dat', 'txt']
+known_types = {}
 
 ##########################
 # Public API
+# DEPRECATED: Use mackelab.iotools
 
 def save(file, data, format='npr', overwrite=False):
     ml.iotools.save(file, data, format, overwrite)
@@ -54,8 +56,11 @@ def saveraw(file, data, overwrite=False):
 
 def load(filename, types=None, load_function=None, input_format=None):
     global known_types
-    types = known_types.copy().update(types)
-    return ml.load(filename, types, load_function, input_format)
+    if types is not None:
+        types = known_types.copy().update(types)
+    else:
+        types = known_types
+    return ml.iotools.load(filename, types, load_function, input_format)
 
 def loadraw(filename, basedir=None, return_path=False):
     fn, ext = os.path.splitext(filename)
