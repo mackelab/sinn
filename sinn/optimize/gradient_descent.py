@@ -139,7 +139,7 @@ def get_indices(param):
 
 class Cost:
     """
-    'Cost' classes are simple mixin classes that add conversion methods to
+    'Cost' classes are interface objects that provide conversion methods to
     different cost types.
     These methods are implemented as properties, so they are called without brackets.
     All formats must provide at a minimum be convertible to `cost`, which may be
@@ -147,6 +147,7 @@ class Cost:
     seek to minimize).
     """
     # self conversions (e.g. logL -> logL) are already defined by default
+    # conversion functions must work with numpy arrays
     conversions = {
         'cost' : {},
         'logL' : {
@@ -185,6 +186,13 @@ class Cost:
                 target_names.append(self.format)
                 raise ValueError("Unrecognized format '{}'. Possible values are {}."
                                  .format(format, ', '.join(target_names)))
+
+    # Redirect attribute access to the stored value while keeping the Cost interface
+    def __getitem__(self, key):
+        return Cost(self.value[key], self.format)
+    def __getattr__(self, attr):
+        return Cost(getattr(self.value, attr), self.format)
+
     @property
     def cost(self):
         return self.to('cost')
@@ -1314,7 +1322,8 @@ class SGD:
 
     @property
     def cost_trace(self):
-        return np.array([self.Cost(val[1]) for val in self._cost_evol])
+        return self.Cost(np.fromiter((val[1] for val in self._cost_evol),
+                                     dtype=float, count=len(self._cost_evol)))
 
     @property
     def cost_trace_stops(self):
@@ -1566,14 +1575,46 @@ class FitCollection:
     def MLE_index(self):
         return np.argmax([fit.data.cost_trace[-1].logL for fit in self.fits])
 
-    def plot_cost(self):
-        pass
+    def plot_cost(self, **kwargs):
+        """
+        Parameters
+        ----------
+        numpoints: int
+            Number of points to plot. Defalut is 150.
+        keep_range: float
+            Parameter traces who's ultimate loglikelihood is within
+            this amount of the maximum logL will be coloured as 'kept'.
+        [colors]:
+            All colors can be set to `None` to deactivate plotting of their
+            associated trace.
+          keep_color: matplotlib color
+              Color to use for the 'kept' traces.
+          discard_color: matplotlib color
+              Color to use for the 'discarded' traces.
+          true_color: matplotlib color
+              Color to use for the horizontal line indicating the true parameter value.
+        linewidth: size 2 tuple
+            Linewidths to use for the plot of the 'kept' and 'discarded'
+            fits. Index 0 corresponds to 'kept', index 1 to 'discarded'.
+        logscale: bool or None
+            True: Use log scale for y-axis
+            False: Don't use log scale for y-axis
+            None: Use log scale for y-axis only if parameter was transformed.
+                  (Default)
+        xticks, yticks: float, array or matplotlib.Ticker.Locator instance
+            int: Number of ticks. Passed as 'numticks' argument to LinearLocator.
+            float: Use this value as a base for MultipleLocator. Ticks will
+                 be placed at multiples of these values.
+            list/array: Fixed tick locations.
+            Locator instance: Will call ax.[xy]axis.set_major_locator()
+                with this locator.
+        """
+        #traces = fitcoll.fits[0].data.cost_trace.logL
+        traces = (fit.data.cost_trace.logL for fit in self.fits)
+        stops = (fit.data.cost_trace_stops for fit in self.fits)
+        self._plot(stops, traces, **kwargs)
 
-    def plot(self, param, idx=None, numpoints=150,
-             keep_range=5,
-             keep_color='#BA3A05', discard_color='#BBBBBB', true_color='#222222',
-             linewidth=(2.5, 0.8), logscale=None,
-             xticks=1, yticks=3):
+    def plot(self, param, idx=None, *args, true_color='#222222', **kwargs):
         """
         Parameters
         ----------
@@ -1582,6 +1623,92 @@ class FitCollection:
         idx: int, tuple, slice or None
             For multi-valued parameters, the component(s) to plot.
             The default value of 'None' plots all of them.
+        numpoints: int
+            Number of points to plot. Defalut is 150.
+        keep_range: float
+            Parameter traces who's ultimate loglikelihood is within
+            this amount of the maximum logL will be coloured as 'kept'.
+        [colors]:
+            All colors can be set to `None` to deactivate plotting of their
+            associated trace.
+          keep_color: matplotlib color
+              Color to use for the 'kept' traces.
+          discard_color: matplotlib color
+              Color to use for the 'discarded' traces.
+          true_color: matplotlib color
+              Color to use for the horizontal line indicating the true parameter value.
+        linewidth: size 2 tuple
+            Linewidths to use for the plot of the 'kept' and 'discarded'
+            fits. Index 0 corresponds to 'kept', index 1 to 'discarded'.
+        logscale: bool or None
+            True: Use log scale for y-axis
+            False: Don't use log scale for y-axis
+            None: Use log scale for y-axis only if parameter was transformed.
+                  (Default)
+        xticks, yticks: float, array or matplotlib.Ticker.Locator instance
+            int: Number of ticks. Passed as 'numticks' argument to LinearLocator.
+            float: Use this value as a base for MultipleLocator. Ticks will
+                 be placed at multiples of these values.
+            list/array: Fixed tick locations.
+            Locator instance: Will call ax.[xy]axis.set_major_locator()
+                with this locator.
+        """
+        # Get parameter variable matching the parameter name
+        pname = param
+        param = self.reffit.data.get_param(param)
+
+        # Get the associated traces, inverting the transform if necessary
+        #trace_stops = [ fit.data.trace_stops for fit in self.fits ]
+        #trace_idcs = [ range(len(stops)) for stops in trace_stops ]
+        # TODO: Use lambda to avoid evaluating inverse on non-plotted points
+        if param in self.reffit.data.substitutions:
+            transformed_param = self.reffit.data.substitutions[param][0]
+            inverse = self.reffit.data._make_transform(
+                param,
+                self.reffit.data.substitutions[param][1])
+            traces = [ inverse(fit.data.trace[transformed_param.name])
+                       for fit in self.fits ]
+        else:
+            traces = [ fit.data.trace[param.name]
+                       for fit in self.fits ]
+
+        # Standardize the `idx` argument
+        if idx is None:
+            idx = (slice(None),)
+        elif isinstance(idx, (int, slice)):
+            idx = (idx,)
+
+        # Create iterable of traces for the right component
+        plot_traces = (trace[(slice(None),) + idx] for trace in traces)
+
+        # Set default value for log scale
+        logscale = kwargs.get('logscale', None)
+        if logscale is None:
+            logscale = (param in self.reffit.data.substitutions)
+        kwargs['logscale'] = logscale
+
+        # Plot
+        trace_stops = ( fit.data.trace_stops for fit in self.fits )
+        self._plot(trace_stops, plot_traces, **kwargs)
+
+        # Draw the true value line
+        if true_color is not None:
+            shape = param.get_value().shape
+            truevals = np.array(self.reffit.data.trueparams[param]).reshape(shape)
+            for trueval in truevals[idx].flat:
+                plt.axhline(trueval, color=true_color, zorder=0)
+
+
+    def _plot(self, stops, traces, numpoints=150,
+             keep_range=5,
+             keep_color='#BA3A05', discard_color='#BBBBBB',
+             linewidth=(2.5, 0.8), logscale=None,
+             xticks=1, yticks=3):
+        """
+        Parameters
+        ----------
+        numpoints: int
+            Number of points to plot. Defalut is 150.
         keep_range: float
             Parameter traces who's ultimate loglikelihood is within
             this amount of the maximum logL will be coloured as 'kept'.
@@ -1623,13 +1750,9 @@ class FitCollection:
             r = (maxlogL - logL) / keep_range
             return mpl.colors.hsv_to_rgb(((1 - r) * keephsv + r * discardhsv))
 
-        # Get parameter variable matching the parameter name
-        pname = param
-        param = self.reffit.data.get_param(param)
-
         # Get the stops (x axis), and figure out what stride we need to show the desired
         # no. of points
-        trace_stops = [ fit.data.trace_stops for fit in self.fits ]
+        trace_stops = list(stops)
         trace_idcs = [ range(len(stops)) for stops in trace_stops ]
         tot_stops = max( len(idcs) for idcs in trace_idcs )
         stride = int( np.rint( tot_stops // numpoints ) )
@@ -1641,29 +1764,13 @@ class FitCollection:
                 trace_idcs[i] = [0] + trace_idcs[i]
             trace_idcs[i] = np.array(trace_idcs[i])
             trace_stops[i] = trace_stops[i][trace_idcs[i]]
-        # Get the associated traces, inverting the transform if necessary
-        if param in self.reffit.data.substitutions:
-            transformed_param = self.reffit.data.substitutions[param][0]
-            inverse = self.reffit.data._make_transform(
-                param,
-                self.reffit.data.substitutions[param][1])
-            traces = [ inverse(fit.data.trace[transformed_param.name][idcs])
-                       for fit, idcs in zip(self.fits, trace_idcs) ]
-        else:
-            traces = [ fit.data.trace[param.name][idcs]
-                       for fit, idcs in zip(self.fits, trace_idcs) ]
-
-        # Standardize the `idx` argument
-        if idx is None:
-            idx = (slice(None),)
-        elif isinstance(idx, (int, slice)):
-            idx = (idx,)
+        plot_traces = [trace[idcs] for trace, idcs in zip(traces, trace_idcs)]
 
         # Loop over the traces
-        for trace, stops, logL in zip(traces, trace_stops, logLs):
+        for trace, stops, logL in zip(plot_traces, trace_stops, logLs):
             # Set plotting parameters
             if logL > maxlogL - keep_range:
-                if true_color is None:
+                if keep_color is None:
                     continue
                 kwargs = {'color': get_color(logL),
                           'zorder': 1,
@@ -1676,28 +1783,19 @@ class FitCollection:
                           'linewidth': linewidth[1]}
 
             # Draw plot
-            plt.plot(stops, trace[(slice(None),) + idx], **kwargs)
+            plt.plot(stops, trace, **kwargs)
 
         # Set the y scale (log or not)
-        if logscale is None:
-            logscale = (param in self.reffit.data.substitutions)
         if logscale:
             plt.yscale('log')
-
-        # Draw the true value line
-        if true_color is not None:
-            shape = param.get_value().shape
-            truevals = np.array(self.reffit.data.trueparams[param]).reshape(shape)
-            for trueval in truevals[idx].flat:
-                plt.axhline(trueval, color=true_color, zorder=0)
 
         # Set the tick frequency
         ax = plt.gca()
         for axis, ticks in zip([ax.xaxis, ax.yaxis], [xticks, yticks]):
             if isinstance(ticks, int):
                 if axis is ax.yaxis:
-                    vmin = min(trace.min() for trace in traces)
-                    vmax = max(trace.max() for trace in traces)
+                    vmin = min(trace.min() for trace in plot_traces)
+                    vmax = max(trace.max() for trace in plot_traces)
                 else:
                     vmin = min(stops.min() for stops in trace_stops)
                     vmax = max(stops.max() for stops in trace_stops)
