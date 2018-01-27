@@ -427,7 +427,7 @@ def plot(data, **kwargs):
           TODO: Implement for Heatmap
     Returns
     -------
-    A list of the created axes.
+    A list of the return values of the plotting calls.
 
     """
     if isinstance(data, histories.History):
@@ -471,17 +471,17 @@ def plot(data, **kwargs):
                 assert(isinstance(label, collections.Iterable))
                 labels = label
 
-        ax = plt.gca()
         # Loop over the components, plotting each separately
         # Plotting separately allows to assign a label to each
+        lines = []
         if comp_list is None:
-            plt.plot(np.arange(len(data)), data)
+            lines.extend( plt.plot(np.arange(len(data)), data) )
 
         else:
             for comp, label in zip(comp_list, labels):
                 idx = (slice(None),) + comp
-                plt.plot(np.arange(len(data)), data[idx], label=label, **kwargs)
-        return ax
+                lines.extend( plt.plot(np.arange(len(data)), data[idx], label=label, **kwargs) )
+        return lines
 
     elif ( isinstance(data, histories.Series)
            or ( isinstance(data, histories.DataView)
@@ -515,14 +515,14 @@ def plot(data, **kwargs):
             assert(isinstance(label, collections.Iterable))
             labels = label
 
-        ax = plt.gca()
         # Loop over the components, plotting each separately
         # Plotting separately allows to assign a label to each
+        lines = []
         for comp, label in zip(comp_list, labels):
-            plt.plot(data.get_time_array(time_slice=tslice),
-                     data.get_trace(comp, time_slice=tslice),
-                     label=label, **kwargs)
-        return ax
+            lines.extend( plt.plot(data.get_time_array(time_slice=tslice),
+                                   data.get_trace(comp, time_slice=tslice),
+                                   label=label, **kwargs) )
+        return lines
 
     elif ( isinstance(data, histories.Spiketrain)
            or ( isinstance(data, histories.DataView)
@@ -537,31 +537,30 @@ def plot(data, **kwargs):
             # Make sure there's a space to separate the population number
             baselabel += ' '
 
-        ax = plt.gca()
-
         tarr = data._tarr[data._data.row]
         tstart = data._tarr[data.get_t_idx(tslice.start)]
         tend = data._tarr[data.get_t_idx(tslice.stop)-1]
             # We do 'tarr[idx-1]' to avoid indexing beyond the end of _tarr
         tidcs = np.where(np.logical_and(tstart <= tarr, tarr <= tend))[0]
+        lines = []
         for i, popslice in enumerate(data.pop_slices):
             popidcs = np.where(np.logical_and(popslice.start <= data._data.col,
                                             data._data.col < popslice.stop))[0]
             idcs = np.intersect1d(tidcs, popidcs)
 
-            plt.scatter(data._tarr[data._data.row[idcs]],
-                        data._data.col[idcs]*lineheight,
-                        s = markersize,
-                        linestyle = linestyle,
-                        label = baselabel + str(i),
-                        alpha = alpha)
+            lines.extend( plt.scatter(data._tarr[data._data.row[idcs]],
+                                      data._data.col[idcs]*lineheight,
+                                      s = markersize,
+                                      linestyle = linestyle,
+                                      label = baselabel + str(i),
+                                      alpha = alpha )  )
 
         # Set the axis limits to see the whole time range
         # (if the beginning or end is empty, it would otherwise be truncated)
         margin = (tend - tstart) / 20
         plt.xlim( (tstart-margin, tend+margin) )
 
-        return ax
+        return lines
 
     elif isinstance(data, heatmap.HeatMap):
         # TODO: Override keyword arguments with **kwargs
@@ -593,7 +592,8 @@ def plot(data, **kwargs):
             ax.spines[side].set_color('none')
         cb.outline.set_visible(False)
 
-        return ax, cb
+        #return ax, cb
+        return [quadmesh]
 
     else:
         logger.warning("Plotting of {} data is not currently supported."
