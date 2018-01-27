@@ -126,6 +126,9 @@ class Axis:
 
     def __len__(self):
         return len(self.stops)
+    def __str__(self):
+        return self.name + ' ({:.3}:{:.3}:{.3})'.format(a.stops[0], a.stops[1],
+                                                        (a.stops[-1]-a.stops[0])/len(self))
 
     @property
     def name(self):

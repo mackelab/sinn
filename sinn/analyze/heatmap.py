@@ -27,10 +27,10 @@ from .stylelib import color_schemes
 __ALL__ = ['HeatMap']
 
 class HeatMap:
-    # TODO: Change name to GridData
-    # changes: HeatMap -> GridData
-    #          hm -> griddata
-    #          heat map -> grid data
+    # TODO: Change name to ScalarGridData
+    # changes: HeatMap -> ScalarGridData
+    #          hm -> scalargriddata
+    #          heat map -> scalar grid data
 
     def __init__(self, zlabel, ztype=None, data=None, param_axes=None, norm='linear'):
         """
@@ -123,10 +123,10 @@ class HeatMap:
                     raise RuntimeError("Unrecognized scale '{}' in deprecated file type."
                                        .format(ax['scales']))
                 axis = Axis(ax['name'], "f(" + ax['name'] + ")",
-                                    label_idx = ax['idx'],
-                                    stops = ax['stops'], format = 'centers',
-                                    transform_fn = to_desc,
-                                    inverse_transform_fn = back_desc)
+                            label_idx = ax['idx'],
+                            stops = ax['stops'], format = 'centers',
+                            transform_fn = to_desc,
+                            inverse_transform_fn = back_desc)
             else:
                 axis = Axis(**{name: ax[name] for name in ax.dtype.names})
             param_axes.append(axis)
@@ -721,6 +721,9 @@ class HeatMap:
         # FIXME: Only works with Probability (requires mean, cov)
 
         eigvals, eigvecs = np.linalg.eig(self.cov())
+        sort_idcs = np.argsort(abs(eigvals))[::-1]
+        eigvals = eigvals[sort_idcs]
+        eigvecs = eigvecs[:,sort_idcs]
         ax = plt.gca()
         w = width * np.sqrt(eigvals[0])
         h = width * np.sqrt(eigvals[1])
@@ -729,7 +732,7 @@ class HeatMap:
             color_scheme = color_schemes.cmaps[self.cmap]
             color = color_scheme.accents[1]  # Leave more salient accents[0] for user
         e = mpl.patches.Ellipse(xy=self.mean(), width=w, height=h,
-                                angle=np.arctan2(eigvecs[0][1], eigvecs[0][0]),
+                                angle=np.arctan2(eigvecs[1,0], eigvecs[0,0])*180/np.pi,
                                 fill=False, color=color, **kwargs)
         ax.add_artist(e)
         e.set_clip_box(ax.bbox)
@@ -871,16 +874,33 @@ class Probability(HeatMap):
         else:
             return self
 
-    def marginalize(self, axis):
+    def marginalize(self, axis, warn_if_no_action=True):
         # 'axis' matches the signature of 'sum'
         """
         Return a new heat map over only the specified axes; the others
         are marginalized out.
+        If no marginalization is performed (i.e. if every axis is listed in `axis`),
+        a warning is sent to the logger. This can be disabled by setting `warn_if_no_action`
+        to True.
+
+        Parameters
+        ----------
+        axis: int, tuple of ints
+            The axis/axes to keep. In other words, the marginalization is carried
+            out over all *other* axes.
+
+        warn_if_no_action: bool
+            Set to False to disable printing a warning if no action is taken. Default is True.
+
+        Returns
+        -------
+        HeatMap of dimension d, where d is the number axes in `axis`.
         """
         ax_idcs = self._get_axis_idcs(axis)
         if len(ax_idcs) == self.ndim:
             # Nothing to do
-            logger.warning("Marginalizing over every axis does nothing.")
+            if warn_if_no_action:
+                logger.warning("Marginalizing over every axis does nothing.")
             return self
         remaining_idcs = set(range(self.ndim)).difference(ax_idcs)
         return self.mass.sum(axis=remaining_idcs).convert_ztype(self.ztype)
@@ -905,7 +925,7 @@ class Probability(HeatMap):
         estΣ = np.diag(estdiagΣ)
         for i in range(len(self.axes)):
             for j in range(i+1, len(self.axes)):
-                p = self.mass.marginalize((i, j)).data
+                p = self.mass.marginalize((i, j), warn_if_no_action=False).data
                 estΣ[i,j] = (p * np.outer( (self.axes[i].centers.stops - estμ[i]),
                                            (self.axes[j].centers.stops - estμ[j]) ) ).sum()
                 estΣ[j,i] = estΣ[i,j]
