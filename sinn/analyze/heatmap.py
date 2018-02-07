@@ -80,14 +80,13 @@ class HeatMap:
 
     def raw(self):
         """
-        Current format version: 2
+        Current format version: 3
         """
         # The raw format is meant for data longevity, and so should
-        # seldom, if ever, be changed
-        if not isinstance(raw, np.lib.npyio.NpzFile):
-            raise TypeError("'raw' data must be a Numpy archive.")
+        # seldom be changed
         raw = {}
         raw['type'] = self.__class__.__name__
+        raw['version'] = 3
         # raw['axes'] = np.array([(ax.name, ax.stops, ax.idx, ax.scale) for ax in self.axes],
         #                        dtype=[('name', object), ('stops', object), ('idx', object), ('scale', object)])
         raw['axes'] = np.array([(ax.label.name, ax.transformed_label.name, ax.idx,
@@ -104,10 +103,15 @@ class HeatMap:
 
     @classmethod
     def from_raw(cls, raw):
-        if 'ztype' not in raw:
-            version = 1
+        if not isinstance(raw, np.lib.npyio.NpzFile):
+            raise TypeError("'raw' data must be a Numpy archive.")
+        if 'version' in raw:
+            version = raw['version']
         else:
-            version = 2
+            if 'ztype' not in raw:
+                version = 1
+            else:
+                version = 2
         param_axes = []
         for ax in raw['axes']:
             #if set(['name', 'stops', 'idx', 'scale']).issubset(ax.keys()):
