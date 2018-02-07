@@ -191,8 +191,12 @@ class Model(com.ParameterMixin):
 
     def update_params(self, new_params):
         """
-        The `locked` attribute of histories is used to determine whether
-        they need to be recomputed.
+        Update model parameters. Clears all histories except those whose `locked`
+        attribute is True, as well as any kernel which depends on these parameters.
+
+        Parameters
+        ----------
+        new_params: same type as model.params
         """
         def gettype(param):
             return type(param.get_value()) if shim.isshared(param) else type(param)
