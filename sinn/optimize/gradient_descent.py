@@ -43,9 +43,6 @@ class ConvergeStatus(Enum):
     NOTCONVERGED = 1
     ABORT = 2
 
-# DEBUG ?
-debug_flags = {}
-
 ######################################
 #
 # General use functions
@@ -1648,6 +1645,9 @@ class FitCollection:
                   (Default)
         xticks, yticks: float, array or matplotlib.Ticker.Locator instance
             int: Number of ticks. Passed as 'numticks' argument to LinearLocator.
+                 Special case: If 0 is given, the axis is removed entirely.
+                 If required, it can be added back with
+                 `plt.gca().spines['left|right|top|bottom'].set_visible(True)`
             float: Use this value as a base for MultipleLocator. Ticks will
                  be placed at multiples of these values.
             list/array: Fixed tick locations.
@@ -1732,6 +1732,9 @@ class FitCollection:
                   (Default)
         xticks, yticks: float, array or matplotlib.Ticker.Locator instance
             int: Number of ticks. Passed as 'numticks' argument to LinearLocator.
+                 Special case: If 0 is given, the axis is removed entirely.
+                 If required, it can be added back with
+                 `plt.gca().spines['left|right|top|bottom'].set_visible(True)`
             float: Use this value as a base for MultipleLocator. Ticks will
                  be placed at multiples of these values.
             list/array: Fixed tick locations.
@@ -1801,7 +1804,12 @@ class FitCollection:
                     vmin = min(stops.min() for stops in trace_stops)
                     vmax = max(stops.max() for stops in trace_stops)
                 if ticks == 0:
-                    continue
+                    if axis is ax.yaxis:
+                        ax.spines['left'].set_visible(False)
+                        ax.spines['right'].set_visible(False)
+                    else:
+                        ax.spines['bottom'].set_visible(False)
+                        ax.spines['top'].set_visible(False)
                 elif ticks == 1:
                     axis.set_ticks([vmax])
                 else:

@@ -475,12 +475,12 @@ def plot(data, **kwargs):
         # Plotting separately allows to assign a label to each
         lines = []
         if comp_list is None:
-            lines.extend( plt.plot(np.arange(len(data)), data) )
+            lines.append( plt.plot(np.arange(len(data)), data) )
 
         else:
             for comp, label in zip(comp_list, labels):
                 idx = (slice(None),) + comp
-                lines.extend( plt.plot(np.arange(len(data)), data[idx], label=label, **kwargs) )
+                lines.append( plt.plot(np.arange(len(data)), data[idx], label=label, **kwargs) )
         return lines
 
     elif ( isinstance(data, histories.Series)
@@ -519,7 +519,7 @@ def plot(data, **kwargs):
         # Plotting separately allows to assign a label to each
         lines = []
         for comp, label in zip(comp_list, labels):
-            lines.extend( plt.plot(data.get_time_array(time_slice=tslice),
+            lines.append( plt.plot(data.get_time_array(time_slice=tslice),
                                    data.get_trace(comp, time_slice=tslice),
                                    label=label, **kwargs) )
         return lines
@@ -548,7 +548,7 @@ def plot(data, **kwargs):
                                             data._data.col < popslice.stop))[0]
             idcs = np.intersect1d(tidcs, popidcs)
 
-            lines.extend( plt.scatter(data._tarr[data._data.row[idcs]],
+            lines.append( plt.scatter(data._tarr[data._data.row[idcs]],
                                       data._data.col[idcs]*lineheight,
                                       s = markersize,
                                       linestyle = linestyle,
