@@ -5,6 +5,8 @@ import time
 import logging
 import copy
 
+logger = logging.getLogger('sinn.optimize.gradient_descent')
+
 import numpy as np
 import scipy as sp
 try:
@@ -29,8 +31,6 @@ import sinn
 import sinn.analyze as anlz
 import sinn.analyze.heatmap
 import sinn.models as models
-
-logger = logging.getLogger('sinn.optimize.gradient_descent')
 
 #######################################
 #
