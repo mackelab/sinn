@@ -57,6 +57,22 @@ def flush_log_queue():
 logger = logging.getLogger('sinn')
 
 ###########################
+# Type registration
+#
+# Registering a type allows a load function to reconstruct it from its numpy_repr.
+# Types are registered under a typename, which is by default should be the type's __name__ attribute.
+
+# We use import guards to avoid making 'mackelab' a hard dependency: it's just the provider of the
+# save/load functions
+try:
+    from mackelab.iotools import register_datatype, find_registered_typename
+except ImportError:
+    def register_datatype(type):
+        return
+    def find_registered_typename(type):
+        return type.__name__
+
+###########################
 # Utility functions
 
 def clip_probabilities(prob_array,

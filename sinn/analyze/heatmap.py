@@ -19,7 +19,7 @@ try:
 except ImportError:
     pass
 
-import mackelab as ml
+import sinn
 from . import common as com
 from .axis import Axis
 from .stylelib import color_schemes
@@ -939,10 +939,4 @@ class Probability(HeatMap):
 class Likelihood(Probability):
     pass
 
-
-try:
-    import mackelab.iotools
-except ImportError:
-    pass
-else:
-    mackelab.iotools.register_datatype(HeatMap)
+sinn.common.register_datatype(HeatMap)

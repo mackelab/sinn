@@ -18,15 +18,15 @@ logger = logging.getLogger("sinn.history")
 import theano_shim as shim
 import theano_shim.sparse
 import sinn
-import sinn.common as com
-from sinn.common import HistoryBase, PopulationHistoryBase
+from sinn.common import HistoryBase, PopulationHistoryBase, KernelBase
 import sinn.config as config
 import sinn.mixins as mixins
 from sinn.mixins import ConvolveMixin
 import sinn.popterm as popterm
 
+
 ###############
-###   Types added to mackelab.iotools at end of module
+###   Types are registered at end of module
 ###############
 
 
@@ -380,7 +380,12 @@ em
             # We do it this way in case kwd substitutions are there to
             # avoid an error (such as _data not having a .get_value() method)
             raw = {}
-            raw['type'] = type(self).__name__
+            raw['type'] = sinn.common.find_registered_typename(type(self))
+                 # find_registered_typename returns the closest registered type name in the hierarchy
+                 # E.g. if we are saving a subclass of Series, this will return the name under which
+                 # that class was registered, and if it wasn't registered, the name under which
+                 # 'Series' is registered. This ensures that ml.iotools.load() is always able to
+                 # reconstruct the series afterwards.
             raw['name'] = kwargs.pop('name') if 'name' in kwargs else self.name
             raw['t0'] = kwargs.pop('t0') if 't0' in kwargs else self.t0
             raw['tn'] = kwargs.pop('tn') if 'tn' in kwargs else self.tn
@@ -1250,7 +1255,7 @@ em
             # Not sure why a string would be an input, but it guards against the next line
             sinn.inputs[self].add(variable)
             #self._inputs.add(variable)
-        if isinstance(variable, (com.HistoryBase, com.KernelBase)):
+        if isinstance(variable, (HistoryBase, KernelBase)):
             sinn.inputs[self].add(variable)
         elif isinstance(variable, Iterable):
             for x in variable:
@@ -3156,7 +3161,7 @@ class Series(ConvolveMixin, History):
             else:
                 new_series.set_update_function(lambda t: op(self[t], b))
                 new_series.set_range_update_function(lambda tarr: op(self[self.time_array_to_slice(tarr)], b))
-            if isinstance(b, com.HistoryBase) or shim.is_theano_variable(b):
+            if isinstance(b, HistoryBase) or shim.is_theano_variable(b):
                 new_series.add_input([self, b])
             else:
                 new_series.add_input(self)
@@ -3257,13 +3262,7 @@ class DataView(HistoryBase):
         return self.hist.get_t_idx(*args)
 
 
-
-try:
-    import mackelab.iotools
-except ImportError:
-    pass
-else:
-    mackelab.iotools.register_datatype(History)
-    mackelab.iotools.register_datatype(PopulationHistory)
-    mackelab.iotools.register_datatype(Spiketrain)
-    mackelab.iotools.register_datatype(Series)
+sinn.common.register_datatype(History)
+sinn.common.register_datatype(PopulationHistory)
+sinn.common.register_datatype(Spiketrain)
+sinn.common.register_datatype(Series)
