@@ -3,7 +3,7 @@ and can be batch-computed. This makes them suitable as external inputs.
 Since these essentially behave as functions, we refer to them as 'history functions'.
 
 To define a new history function, make a new class which derives from
-IterativeSeries and define two functions:
+SeriesFunction and defines two functions:
   - init_params(self, [random_stream], param1, param2...) -> shape
     Takes the function parameters and stores them in the instance. This is to allow them
     being called in the definition of the update function. The way parameters are stored
@@ -26,7 +26,12 @@ import theano_shim as shim
 import sinn
 from sinn.histories import Series
 
+__all__ = ['Sin', 'GaussianWhiteNoise', 'Constant', 'Step']
+
 class SeriesFunction(Series):
+    """
+    Base class for series functions. Not useful on its own.
+    """
     requires_rng = False
 
     def __init__(self, ref_hist=sinn._NoValue, name=None, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
@@ -38,10 +43,83 @@ class SeriesFunction(Series):
         super().__init__(hist=ref_hist, name=name, t0=t0, tn=tn, dt=dt, shape=shape, iterative=False)
         self.set_update_function(self.update_function)
 
+class Constant(SeriesFunction):
+
+    def init_params(self, value):
+        logger.warning("The 'Constant' series function has not been tested in production.")
+        self.value = value
+        return value.shape
+
+    def update_function(self, t):
+        if shim.isscalar(t):
+            return self.value
+        else:
+            assert(t.ndim == 1)
+            return shim.tile(self.value, t.shape[0] + (1,)*self.ndim)
+
+
+class Step(SeriesFunction):
+
+    def init_params(self, baseline=0, height=None, start=None, stop=None, interval='half-open'):
+        """
+        Parameters
+        ----------
+        baseline: float
+            Value outside the step; defaults to 0
+        height: float
+            Height of the step. Added to `baseline`.
+        start: float
+            Start of the step. Always in time units, never in bin units.
+        stop: float
+            End of the step. Always in time units, never in bin units.
+        interval: str
+            Whether or not to include the end points within the step. An included point will
+            be at `baseline + height`, an excluded point at `baseline`. Possible values are:
+              - 'closed' : Include both start and stop points.
+              - 'open'   : Exclude both start and stop points.
+              - 'half-open' : (Default) Include start point, exclude stop point.
+              - 'half-open-inverted' : Exclude start point, include start point.
+        """
+
+        # ensure all required parameters were provided
+        for arg in ('height', 'start', 'stop'):
+            if vars()[arg] is None:
+                raise ValueError("'{}' is a required argument.".format(arg))
+        if interval not in ['closed', 'open', 'half-open', 'half-open-inverted']:
+            raise ValueError("'interval' argument is '{}'. It must be one of "
+                             "'closed', 'open', 'half-open' or 'half-open-inverted'"
+                             .format(interval))
+
+        self.baseline = baseline
+        self.baseline_plus_height = baseline + height
+        #self.start = start
+        #self.stop = stop
+
+        if interval in ('closed', 'half-open'):
+            self.left_cmp = lambda t: t >= start
+        else:
+            self.left_cmp = lambda t: t > start
+        if interval in ('closed', 'half-open-inverted'):
+            self.right_cmp = lambda t: t <= stop
+        else:
+            self.right_cmp = lambda t: t < stop
+
+        return self.baseline_plus_height.shape
+            # `baseline + height` result is already broadcasted to the correct shape
+
+    def update_function(self, t):
+        if not shim.isscalar(t):
+            ndim = self.ndim
+            if ndim == 0:
+                ndim = 1
+            t = shim.add_axes(t, ndim, 'after')
+        return shim.switch( shim.and_(self.left_cmp(t), self.right_cmp(t)),
+                            self.baseline_plus_height, self.baseline )
+
 class Sin(SeriesFunction):
     # TODO: Allow Theano parameters
 
-    def init_params( self, baseline=0, amplitude=None, frequency=None, period=None, phase=0, unit='Hz'):
+    def init_params(self, baseline=0, amplitude=None, frequency=None, period=None, phase=0, unit='Hz'):
         """
         If 'unit' is 'Hz', frequency gives the number of cycles per unit time,
         while phase is a shift in numbers of cycles. I.e. both frequency and phase
@@ -76,14 +154,14 @@ class Sin(SeriesFunction):
             shape = np.broadcast(self.baseline, np.broadcast(
                 self.amplitude, np.broadcast(self.frequency, self.phase))).shape
         except ValueError:
-            raise ValueError("The parameters 'amplitude', 'frequency' and 'phase' have incompatible "
-                             "dimensions: {}, {}, {}."
-                             .format(self.amplitude.shape, self.frequency.shape, self.phase.shape))
+            raise ValueError("The arguments 'baseline', 'amplitude', 'frequency' and 'phase' have incompatible "
+                             "dimensions: {}, {}, {}, {}."
+                             .format(self.baseline.shape, self.amplitude.shape, self.frequency.shape, self.phase.shape))
         return shape
 
     def update_function(self, t):
         if not shim.isscalar(t):
-            ndim = len(self.shape)
+            ndim = self.ndim
             if ndim == 0:
                 ndim = 1
             t = shim.add_axes(t, ndim, 'after')
