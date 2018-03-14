@@ -9,21 +9,12 @@ logger = logging.getLogger('sinn.optimize.gradient_descent')
 
 import numpy as np
 import scipy as sp
-try:
-    import matplotlib as mpl
-    import matplotlib.pyplot as plt
-    import matplotlib.ticker
-except ImportError:
-    logger.warning("Unable to import matplotlib. Plotting functions "
-                   "will not work.")
 from parameters import ParameterSet
-
 
 import theano
 import theano.tensor as T
 
 import mackelab as ml
-import mackelab.plot
 import mackelab.iotools
 from mackelab.optimizers import Adam, NPAdam
 import theano_shim as shim
@@ -31,6 +22,15 @@ import sinn
 import sinn.analyze as anlz
 import sinn.analyze.heatmap
 import sinn.models as models
+
+try:
+    import matplotlib as mpl
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker
+    import mackelab.plot
+except ImportError:
+    logger.warning("Unable to import matplotlib. Plotting functions "
+                   "will not work.")
 
 #######################################
 #
@@ -294,12 +294,10 @@ class SGD:
                 raise AttributeError("A cost function for this gradient descent was not specified.")
             self.set_cost(dummy_cost, None)
         else:
-            self.cost_fn = cost
             if cost_format is None:
                 raise ValueError("The 'cost_format' argument is mandatory "
                     "when a cost function is provided.")
-
-        self.cost_format = cost_format
+            self.set_cost(cost, cost_format)
 
         if model is None:
             self.model = None
@@ -373,7 +371,7 @@ class SGD:
         model: Model instance
         """
         if not isinstance(model, models.Model):
-            raise ValueError("`model` must be a subclass of models.Model.")
+            raise ValueError("`model` must be an instance of models.Model.")
         names = [modelname for modelname in models.registered_models
                  if models.get_model(modelname) is type(model)]
         if len(names) == 0:
@@ -1380,8 +1378,8 @@ class SGD:
             plt.plot(evol[param.name].reshape(len(evol[param.name]), -1))
                 # Flatten the parameter values
             plt.title(param.name)
-            plt.xlabel("epoch")
-            plt.legend(["${}_{{{}}}$".format(param.name, ', '.join(str(i) for i in idx))
+            plt.xlabel("iterations")
+            plt.legend(["${{{}}}_{{{}}}$".format(param.name, ', '.join(str(i) for i in idx))
                         for idx in get_indices(param)])
                         #for i in range(param.get_value().shape[0])
                         #for j in range(param.get_value().shape[0])])
@@ -1503,11 +1501,19 @@ class FitCollection:
         self.reffit = None
             # Reference fit, used for obtaining fit parameters
             # We assume all fits were done on the same model and same parameters
+        self._iterator = None
         #self.recordstore = RecordStore(db_records)
         #self.recordstore = recordstore # HACK
         #if data_root is not None:
             #self.load_fits()
         #self.heatmap = heatmap
+
+    # Make collection iterable
+    def __iter__(self):
+        self._iterator = iter(self.fits)
+        return self
+    def __next__(self):
+        return next(self._iterator).data
 
     def load(self, fit_list, **kwargs):
         """
@@ -1701,10 +1707,10 @@ class FitCollection:
 
 
     def _plot(self, stops, traces, numpoints=150,
-             keep_range=5,
-             keep_color='#BA3A05', discard_color='#BBBBBB',
-             linewidth=(2.5, 0.8), logscale=None,
-             xticks=1, yticks=3):
+              keep_range=5,
+              keep_color='#BA3A05', discard_color='#BBBBBB',
+              linewidth=(2.5, 0.8), logscale=None,
+              xticks=1, yticks=3):
         """
         Parameters
         ----------
