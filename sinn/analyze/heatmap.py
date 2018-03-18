@@ -7,7 +7,7 @@ author: Alexandre René
 
 import copy
 import operator
-from collections import Iterable
+from collections import OrderedDict, Iterable, Sequence, namedtuple
 import numpy as np
 import scipy as sp
 import logging
@@ -19,7 +19,11 @@ try:
 except ImportError:
     pass
 
+from parameters import ParameterSet
+
 import sinn
+import mackelab as ml
+import mackelab.utils
 from mackelab.stylelib import colorschemes
 
 from . import common as com
@@ -29,9 +33,11 @@ __ALL__ = ['HeatMap']
 
 class HeatMap:
     # TODO: Change name to ScalarGridData
-    # changes: HeatMap -> ScalarGridData
-    #          hm -> scalargriddata
-    #          heat map -> scalar grid data
+    # changes: HeatMap -> ScalarArrayData
+    #          hm -> scalararraydata
+    #          heat map -> scalar array data
+    # TODO: Remove 'cmap' attribute from data object;
+    #       keep it within the plotting functions
 
     def __init__(self, zlabel, ztype=None, data=None, param_axes=None, norm='linear'):
         """
@@ -302,7 +308,7 @@ class HeatMap:
             axes = tuple(axes)
         return axes
 
-    def meshgrid(self, axes=None, format='centers'):
+    def meshgrid(self, axes=None, format='centers', transformed=False):
         """
         Return a grid of the heat map's domain, in the same form as meshgrid.
 
@@ -324,20 +330,26 @@ class HeatMap:
                 discretization cell. This is the format expected by many
                 plotting functions, such as matplotlib's `pcolormesh`.
             Some minor variations (such as the singular 'center') are also
-            recognized but should not be relied up.
+            recognized but should not be relied upon.
+        transformed: bool
+            Whether to use the stops of the transformed or non-transformed
+            axis. Default (False) is to use those of the non-transformed axis.
 
         Returns
+        -------
         list of arrays
              If there are n axes, the returned list contains n arrays.
              Each has n dimensions, and is composed of tuples on length n.
         """
 
-        axes = self._get_axis_idcs(axes)
+        axes = [self.axes[idx] for idx in self._get_axis_idcs(axes)]
+        if transformed:
+            axes = [axis.transformed for axis in axes]
 
         if format in ['centers', 'centres', 'center', 'centre']:
-            gridvalues = [self.axes[idx].centers.stops for idx in axes]
+            gridvalues = [axis.centers.stops for axis in axes]
         elif format in ['edges', 'edge']:
-            gridvalues = [self.axes[idx].edges.stops for idx in axes]
+            gridvalues = [axis.edges.stops for axis in axes]
         else:
             raise ValueError("Unrecognized mesh format '{}'. Please use one "
                              " of 'centers', 'edges'.".format(format))
@@ -644,7 +656,7 @@ class HeatMap:
     # Plotting
     ########################
 
-    def heatmap(self, axes=None, collapse_method=None, **kwargs):
+    def heatmap(self, axes=None, collapse_method=None, transformed=False, **kwargs):
         """
         TODO: Support plotting more than 2 axes
 
@@ -668,18 +680,19 @@ class HeatMap:
         """
         axes = self._get_axis_idcs(axes)
         if len(axes) == 2:
-            return self.heatmap2d(axes, collapse_method, **kwargs)
+            return self.heatmap2d(axes, collapse_method, transformed, **kwargs)
         else:
             raise NotImplementedError("Only 2d heatmaps are currently implemented.")
 
-    def heatmap2d(self, axes=None, collapse_method=None, **kwargs):
+    def heatmap2d(self, axes=None, collapse_method=None, transformed=False, **kwargs):
         assert(len(axes) == 2)
         axes = self._get_axis_idcs(axes)  # Convert all 'axes' to a list of ints
         datahm = self.collapse(collapse_method, axes)
         data = np.moveaxis(datahm.data, axes, np.arange(len(axes)))
             # Permute the data for the given axes
 
-        ax1_grid, ax2_grid = datahm.meshgrid(axes=axes, format='edges')
+        ax1_grid, ax2_grid = datahm.meshgrid(axes=axes, format='edges',
+                                             transformed=transformed)
         zmin = datahm.floor #max(datahm.floor, data.min())
         zmax = datahm.ceil  #min(datahm.ceil, data.max())
         quadmesh = plt.pcolormesh(ax1_grid, ax2_grid,
@@ -725,22 +738,23 @@ class HeatMap:
         # TODO: Deal with higher than 2D heatmaps
         # FIXME: Only works with Probability (requires mean, cov)
 
-        eigvals, eigvecs = np.linalg.eig(self.cov())
-        sort_idcs = np.argsort(abs(eigvals))[::-1]
-        eigvals = eigvals[sort_idcs]
-        eigvecs = eigvecs[:,sort_idcs]
-        ax = plt.gca()
-        w = width * np.sqrt(eigvals[0])
-        h = width * np.sqrt(eigvals[1])
-        color = kwargs.pop('color', None)
-        if color is None:
-            color_scheme = color_schemes.cmaps[self.cmap]
-            color = color_scheme.accents[1]  # Leave more salient accents[0] for user
-        e = mpl.patches.Ellipse(xy=self.mean(), width=w, height=h,
-                                angle=np.arctan2(eigvecs[1,0], eigvecs[0,0])*180/np.pi,
-                                fill=False, color=color, **kwargs)
-        ax.add_artist(e)
-        e.set_clip_box(ax.bbox)
+        anlz.plot_stddev_ellipse(self, width, **kwargs)
+        # eigvals, eigvecs = np.linalg.eig(self.cov())
+        # sort_idcs = np.argsort(abs(eigvals))[::-1]
+        # eigvals = eigvals[sort_idcs]
+        # eigvecs = eigvecs[:,sort_idcs]
+        # ax = plt.gca()
+        # w = width * np.sqrt(eigvals[0])
+        # h = width * np.sqrt(eigvals[1])
+        # color = kwargs.pop('color', None)
+        # if color is None:
+        #     color_scheme = colorschemes.cmaps[self.cmap]
+        #     color = color_scheme.accents[1]  # Leave more salient accents[0] for user
+        # e = mpl.patches.Ellipse(xy=self.mean(), width=w, height=h,
+        #                         angle=np.arctan2(eigvecs[1,0], eigvecs[0,0])*180/np.pi,
+        #                         fill=False, color=color, **kwargs)
+        # ax.add_artist(e)
+        # e.set_clip_box(ax.bbox)
 
 # The following two methods are deprecated; use the properties instead
 def get_axes(param_axes):
@@ -939,5 +953,639 @@ class Probability(HeatMap):
 
 class Likelihood(Probability):
     pass
+
+
+#################################
+#################################
+#
+# Collection
+#
+#################################
+#################################
+
+try:
+    import pymc3
+    pymc_MultiTrace = pymc3.backends.base.MultiTrace
+except ImportError:
+    pymc_MultiTrace = None
+
+class MarginalCollection:
+    ParamDim = namedtuple('ParamDim', ['modelname', 'transformedname',
+                                       'tracename', 'displayname',
+                                       'desc', 'longdesc',
+                                       'idx', 'flatidx',
+                                       'to_desc', 'back_desc'])
+    Marker = namedtuple('Marker', ['pos', 'color'])
+    AxisFormat = namedtuple('AxesFormat', ['key', 'scale', 'visible', 'apply'])
+
+    # TODO: Remove flat_idx ?
+
+    def __init__(self, data, params, maxexpand=3, markers=None,
+                 histogram_kwargs=None, colorscheme=None, **kwargs):
+        """
+        Construct a collection of GridData objects
+
+        Parameters
+        ---------------
+        data: sequence of GridData | PyMC3 MultiTrace
+            The data for which we want to compute marginals.
+        maxexpand: float
+            If markers fall outside the boundary of the 2D histograms, these
+            will be extended sufficiently to include the markers, up to a
+            factor `maxexpand`. Bounds will not be expanded if not required to
+            include a marker.
+            Default value of 3 is useful for exploration – it allows to see
+            how far true values may be from the posterior, without reducing
+            the posterior to a single point.
+            For publication plots, a value of 1 is recommended: this ensures
+            that 2D plots line up with the 1D plots on the grid's diagonal.
+        markers:
+            List of points where a marker will be plotted on top of the heat maps
+            (each point is an array with as many elements as the data has dimensions).
+        colorscheme: str | HeatmapColorScheme
+            Passed on to `set_colorscheme()`.
+        histogram_kwargs: dictionary
+            Dictionary of keyword arguments to pass to `numpy.histogramdd`.
+        **kwargs:
+            Additional keyword arguments are passed to the HeatMap constructor.
+        """
+
+        # Set internal variables
+        if maxexpand < 1:
+            maxexpand = 1
+            logger.warning("`maxexpand` argument must not be less than 1.")
+        self.params = params
+
+        # Get the parameters and data
+        if isinstance(data, Sequence) and isinstance(data[0], GridData):
+            # Use Sequence instead of Iterable to ensure `data[0]` doesn't eat the first element
+            raise NotImplementedError("Building a collection from ArrayData objects is not yet implemented.")
+
+        elif pymc_MultiTrace is not None and isinstance(data, pymc_MultiTrace):
+            marginals1D, marginals2D = self.marginals_from_mcmc(data, params,
+                                                                histogram_kwargs,
+                                                                **kwargs)
+        else:
+            raise ValueError("Unsupported data type '{}'.".format(type(data)))
+
+        self.marginals1D = marginals1D
+        self.marginals2D = marginals2D
+        self.maxexpand = maxexpand
+        # Colorscheme must be set before markers
+        if colorscheme is None:
+            self.set_colorscheme()
+        else:
+            self.set_colorscheme(colorscheme)
+        self.set_markers(markers)
+        self.set_transformed(False)
+        self.axes_format = {}  # Dictionary of functions to apply to specific plot axes (aka spines)
+
+    @staticmethod
+    def marginals_from_mcmc(traces, params, histogram_kwargs, threshold=1e-5, **kwargs):
+        """
+        Construct the 1D and 2D marginals for MCMC traces
+
+        Parameters
+        ---------------
+        traces: PyMC3 MultiTrace
+            The MCMC trace or traces for which we want to compute marginals.
+        params: list of ParamDim
+            Flat list of ParamDim
+        histogram_kwargs: dictionary
+            Dictionary of keyword arguments to pass to `numpy.histogramdd`.
+        threshold: float
+            To remove outliers, the range of the marginal is allowed to shrink. `Threshold`
+            is the maximum total probability mass that may be removed, with either end of
+            the interval removing at most have that value.
+            This behaviour can be overridden by providing a value for 'range' in `histogram_kwargs`.
+            NOTE: It's currently only possible to provide a single set of histogram keyword
+            arguments, so if range is provided, all plots will have the same.
+        **kwargs:
+            Additional keyword arguments are passed to the HeatMap constructor.
+        """
+        # TODO: Allow parameter-specific histogram_kwargs (e.g. range, weights)
+        flat_params = params
+        if threshold <= 0:
+            raise ValueError("`threshold` must be strictly positive")
+
+        histogram_kwargs = dict(histogram_kwargs) if histogram_kwargs is not None else {}
+
+
+        # Get indices to the flattened array, skipping masked components
+        flat_idcs = [0]
+        keys = list(flat_params.keys())
+        for i in range(1, len(keys)):
+            if flat_params[keys[i]].tracename == flat_params[keys[i-1]].tracename:
+                flat_idcs.append(flat_idcs[i-1] + 1)
+            else:
+                flat_idcs.append(0)
+
+        # TODO: Rather than stack traces and create new array, just create
+        #       a list of (varname, idx) tuples and access `traces` directly
+        data = np.stack(traces[param.tracename][:,i]
+                        for param, i in zip(flat_params.values(), flat_idcs)).T
+
+        # Get 1D marginals
+        marginals1D = params.newdict()
+        for i, param in enumerate(flat_params.values()):
+            # Get a first histogram to compute the bin range
+            if histogram_kwargs.get('range', None) is None:
+                # Set any parameter that might affect the calculation of the probability mass
+                bins = histogram_kwargs.get('bins', 'auto')
+                weights = histogram_kwargs.get('weights', None)
+                freq, edges = np.histogram(data[:,i], bins=bins, weights=weights)
+                pmass = freq / freq.sum()
+                # Remove tails with probability mass below threshold
+                # Left tail
+                lefti = -1  # We are guaranteed at least one pass through the `while`,
+                cum = 0     # so start lefti one below its maximum value
+                while cum < threshold / 2:
+                    lefti += 1
+                    cum += pmass[lefti]
+                # Right tail
+                righti = len(edges) # Start one beyond the maximum possible value of righti
+                cum = 0
+                while cum < threshold / 2:
+                    righti -= 1
+                    cum += pmass[righti-1]   # -1 because `righti` corresponds to right of bin
+                hist_kwds = histogram_kwargs.copy()
+                hist_kwds['range'] = (edges[lefti], edges[righti])
+            else:
+                # 'range' is explicitly specified: just use that
+                hist_kwds = histogram_kwargs
+            # Now that we have the bins, compute the histogram we will actually use
+            freq, edges = np.histogram(data[:,i], **hist_kwds)
+            # Construct the associated axis
+            axis = Axis(param.modelname, param.transformedname, param.idx,
+                        transformed_stops=edges, format='edges',
+                        transform_fn=param.to_desc,
+                        inverse_transform_fn=param.back_desc)
+            marginals1D[param.displayname] = Probability('p', 'mass', freq, [axis],
+                                                         normalized=True, **kwargs)
+
+        # TODO: Reuse the 1D axes
+        # Get 2D marginals
+        marginals2D = params.newdict()
+        # Loop over all combinations with j != i
+        flp_list = list(flat_params.values())
+        for i, parami in enumerate(flp_list):
+            for j, paramj in enumerate(flp_list):
+                if i != j:
+                    # Ensure that 2D histogram has same bins as 1D
+                    # There are also more options for automatically setting bins for 1D histograms,
+                    # which this allows to exploit for the 2D histogram
+                    xedges = marginals1D[parami.displayname].axes[0].edges.transformed_stops
+                    yedges = marginals1D[paramj.displayname].axes[0].edges.transformed_stops
+                        # Transformed stops because he data are in the transformed space
+                    # Get histogram
+                    histogram_kwargs['bins'] = [xedges, yedges]
+                    freq, edges = np.histogramdd(data[:,(i,j)], **histogram_kwargs)
+                    assert((edges[0] == xedges).all(), (edges[1] == yedges).all())
+                    # Recover the axis
+                    axes = [Axis(param.modelname, param.transformedname, param.idx,
+                                 transformed_stops=edgelst, format='edges',
+                                 transform_fn=param.to_desc,
+                                 inverse_transform_fn=param.back_desc)
+                            for param, edgelst in zip( [parami, paramj],
+                                                        edges )]
+                    key = (parami.displayname, paramj.displayname)
+                    assert(key not in marginals2D)
+                    marginals2D[key] = (Probability('p', 'mass', freq, axes,
+                                                    normalized=True, **kwargs))
+                    if np.isnan(marginals2D[key].data).any():
+                        import pdb; pdb.set_trace()
+                        pass
+
+        return marginals1D, marginals2D
+
+    def set_colorscheme(self, scheme="viridis"):
+        """
+        Parameters
+        ----------
+        scheme: str | HeatmapColorScheme
+            Either a string or a HeatmapColorScheme, as defined in mackelab.stylelib.colorschemes.
+            If a string, the corresponding scheme in mackelab.stylelib.colorschemes.cmaps is selected.
+        """
+        if isinstance(scheme, str):
+            self.colorscheme = ml.stylelib.colorschemes.cmaps[scheme]
+        else:
+            self.colorscheme = scheme
+
+    def set_markers(self, markers=None, colors=None):
+        # Standardize `markers` format
+        if isinstance(markers, (dict, ParameterSet)):
+            # `markers` is treated as a list of dicts, one dict per marker
+            markers = (markers,)
+        elif markers is None:
+            markers = ()
+
+        # Standardize `colors` format
+        if colors is None:
+            try:
+                colors = self.colorscheme.accents[0]
+            except (AttributeError, KeyError):
+                raise AttributeError("'colorscheme' was improperly set.")
+        if isinstance(colors, str) or not isinstance(colors, Iterable):
+            colors = (colors,)
+        elif not isinstance(colors, Sequence):
+            # `colors` is probably a consumable iterable
+            colors = tuple(colors)
+        if len(colors) != len(markers):
+            if len(colors) != 1:
+                raise ValueError("`colors` argument must either be of length 1 or "
+                                 "of the same length as `markers`.")
+            colors = tuple(colors)*len(markers)
+
+        self.markers = [self.Marker(pos, color) for pos, color in zip(markers, colors)]
+
+    def set_transformed(self, transformed_axes):
+        """
+        Parameters
+        ----------
+        transformed_axes: bool | list of bool
+            Whether to plot the transformed or non-transformed axes. Can be
+            specified independently for each axis by passing a list of bools,
+            one bool per axis.
+            This parameter only has an effect if `data` is not already a data grid,
+            e.g. when `data` is an MCMC trace.
+        """
+        # TODO: Allow `transformed_axes` to be an unsanitized dict
+
+        if not isinstance(transformed_axes, Iterable):
+            transformed_axes = (transformed_axes,)*len(self.params)
+        elif len(transformed_axes) == 1:
+            transformed_axes = tuple(transformed_axes)*len(self.params)
+        elif len(transformed_axes) != len(self.params):
+            raise ValueError("`transformed_axes` must have as many elements as `params`, "
+                             "or be a scalar.")
+
+        self.transformed = self.params.newdict()
+        for name, transformed in zip(self.params, transformed_axes):
+            self.transformed[name] = transformed
+
+    def set_axis(self, key, scale='lin', visible=None, apply=None):
+        """
+        Parameters
+        ----------
+        key: str
+            The spines associated to `key` will be affected.
+        scale: str
+            Will be passed to `ax.set_[xy]scale` on the relevant axes.
+        visible: list of str
+            List of positions ('top', 'right', 'bottom', 'left') where
+            the axis should be drawn.
+        fn: callable
+            Apply arbitrary operations to the axes.
+            Required signature: `(mpl.Axes axes, mpl.Axis axis)`
+            `axis` will be either an instance of XAxis or YAxis, which
+            can be used to apply operations only to the x or y axis.
+
+        Examples
+        --------
+        To override the tick locator and set axis stops and labels explicitly:
+
+        >>> marginals = MarginalCollection([…])
+        >>> def format_plot(ax, axis):
+        ...     axis.set_ticks([1, 4, 10])
+        ...     axis.set_ticklabels(['A', 'B', 'C'])
+        >>>> marginals.set_axis(apply = format_plot)
+        """
+        self.axes_format[key] = self.AxisFormat(key, scale, visible, apply)
+
+    def format_axis(self, key, axes, axis):
+        if key in self.axes_format:
+            # Set which spines are visible
+            format = self.axes_format[key]
+            if format.visible is not None:
+                for side, spine in axes.spines.items():
+                    if (isinstance(axis, mpl.axis.XAxis)
+                        or isinstance(axis, mpl.axis.YAxis)):
+                        if side in format.visible:
+                            spine.set_visible(True)
+                        else:
+                            spine.set_visible(False)
+
+            # Set the axis scale
+            if isinstance(axis, mpl.axis.XAxis):
+                axes.set_xscale(format.scale)
+            elif isinstance(axis, mpl.axis.YAxis):
+                axes.set_yscale(format.scale)
+
+            # Arbitrary formatting
+            if format.apply is not None:
+                format.apply(axes, axis)
+
+    def plot_marginal1D(self, key):
+        hm = self.marginals1D[key].density
+        param = self.params[key]
+        parami_markers = [marker.pos[param.modelname].flatten()[param.flatidx]
+                          for marker in self.markers]
+        colors = [marker.color for marker in self.markers]
+        if self.transformed[key]:
+            to_desc = self.params[key].to_desc
+            if to_desc is not None:
+                transform = ml.parameters.Transform(to_desc)
+                parami_markers = [transform(marker) for marker in parami_markers]
+        axis = hm.axes[0]
+        if self.transformed[key]:
+            axis = axis.transformed
+
+        ax = plt.gca()
+        stops = (axis.edges.transformed_stops[:-1] if self.transformed[key]
+                 else axis.edges.stops[:-1])
+        bar = ax.bar(stops, hm.data, axis.widths);
+        for mark, color in zip(parami_markers, colors):
+            ax.axvline(x=mark, color=color, zorder=2)
+        ax.set_yticks([])
+
+        # Apply custom user formatting, if any
+        self.format_axis(key, ax, ax.xaxis)
+
+    def plot_marginal2D(self, keyi, keyj, stddevs=None, **kwargs):
+        """
+        Parameters
+        ----------
+        ...
+        stddevs: list of dictionaries
+            Each dictionary is a set of keyword arguments to plot_stddev_ellipse().
+            'width' is required; all other parameters are optional. Default values are:
+              - alpha: 0.85
+              - color: self.colorscheme.accents[0]
+              - zorder: 1
+              - linewidth: 1.5
+        **kwargs:
+            Keyword arguments passed to `GridData.heatmap()`.
+        """
+        hm = self.marginals2D[(keyj, keyi)].density
+            # Invert keyi, keyj to put column parameter (j) on x axis
+            # – it's easier to visually project the marginals this way
+        parami, paramj = self.params[keyi], self.params[keyj]
+        parami_markers = [marker.pos[parami.modelname].flatten()[parami.flatidx]
+                          for marker in self.markers]
+        paramj_markers = [marker.pos[paramj.modelname].flatten()[paramj.flatidx]
+                          for marker in self.markers]
+        if self.transformed[keyi]:
+            to_desc = self.params[keyi].to_desc
+            if to_desc is not None:
+                transform = ml.parameters.Transform(to_desc)
+                parami_markers = [transform(marker) for marker in parami_markers]
+        if self.transformed[keyj]:
+            to_desc = self.params[keyj].to_desc
+            if to_desc is not None:
+                transform = ml.parameters.Transform(to_desc)
+                paramj_markers = [transform(marker) for marker in paramj_markers]
+        colors = [marker.color for marker in self.markers]
+            # TODO: Don't recreate these lists every time we plot
+        maxexpand = self.maxexpand
+
+        if self.transformed[keyi] != self.transformed[keyj]:
+            raise NotImplementedError("Only setting 'transformed' globally is currently supported.")
+        hm.set_cmap(self.colorscheme.name)
+        ax, cb = hm.heatmap(transformed=self.transformed[keyi], **kwargs,);
+        ax.set_facecolor(self.colorscheme.min)
+        cb.remove()
+
+        # Draw stddev ellipses
+        if stddevs is None:
+            stddevs = ()
+        for stddev in stddevs:
+            # Check that required parameters are there
+            if 'width' not in stddev:
+                raise ValueError("You must specify at least a width for each stddev ellipse.")
+            # Set defaults
+            stddev_kwds = {'alpha': 0.85,
+                           'color': self.colorscheme.accents[0],
+                           'zorder': 1,
+                           'linewidth': 1.5}
+            # Replace defaults with passed parameters
+            stddev_kwds.update(stddev)
+            # Draw stddev ellipse
+            hm.plot_stddev_ellipse(**stddev_kwds)
+
+        # Possibly expand the plot region if it doesn't include some of the markers
+        xlim, ylim = np.array(plt.xlim()), np.array(plt.ylim())
+        xwidth, yheight = xlim[1]-xlim[0], ylim[1]-ylim[0]
+        for marki, markj, color in zip(parami_markers, paramj_markers, colors):
+            ax.scatter(markj, marki, s=20, c=color, zorder=2)
+                # Recall that histograms set their x-axis to j-parameter
+        newxlim, newylim = np.array(plt.xlim()), np.array(plt.ylim())
+        if maxexpand*(xlim[1] - xlim[0]) < (newxlim[1] - newxlim[0]):
+            if xlim[1] < newxlim[1]:
+                ax.set_xlim(right=xlim[0]+maxexpand*xwidth)
+            else:
+                ax.set_xlim(left=xlim[1]-maxexpand*xwidth)
+        if maxexpand*(ylim[1] - ylim[0]) < (newylim[1] - newylim[0]):
+            if ylim[1] < newylim[1]:
+                ax.set_ylim(top=ylim[0]+maxexpand*yheight)
+            else:
+                ax.set_ylim(bottom=ylim[1]-maxexpand*yheight)
+
+        # Apply custom user formatting, if any
+        self.format_axis(keyj, ax, ax.xaxis)  # Remember, column j on x axis
+        self.format_axis(keyi, ax, ax.yaxis)
+
+    def plot_grid(self, names_to_display, **kwargs):
+        """
+        Parameters
+        ----------
+        names_to_display: list of strings
+            Variable names, corresponding to the keys of `self.params`. The
+            characters '$', '{' and '}' may be omitted, to make matching
+            TeX keys easier.
+        """
+        # def sanitize(s):
+        #     # Ignore certain character
+        #     return s.replace('{','').replace('}','').replace('$','')
+        # # Select the parameters to display
+        # if names_to_display is None:
+        #     names = [sanitize(s) for s in self.params]
+        # else:
+        #     # Check that names are valid
+        #     sanitized_params = {sanitize(s): s for s in self.params}
+        #     sanitized_display_params = [sanitize(s) for s in names_to_display]
+        #     unrecognized = [nm for nm in sanitized_display_params if nm not in sanitized_params]
+        #     if len(unrecognized) > 0:
+        #         raise ValueError("Variable names {} do not match any known dimensions. "
+        #                          "Recognized dimension names: {}"
+        #                          .format(unrecognized, list(self.params.keys())))
+
+        #     names = [sanitized_params[name] for name in sanitized_display_params]
+        # params = OrderedDict((name, self.params[name]) for name in names)
+
+        if names_to_display is None:
+            params = self.params
+        else:
+            params = self.params.newdict( (name, self.params[name])
+                                          for name in names_to_display )
+
+        self._plot_grid_layout(gridkeys=params,
+                               plot_diagonal=self.plot_marginal1D,
+                               plot_offdiagonal=self.plot_marginal2D,
+                               **kwargs)
+
+    #NOTE: Should be possible to split off the following function, if it can
+    #      be useful elsewhere.
+    def _plot_grid_layout(self, gridkeys, layout='upper right',
+                  colwidth=3, rowheight=None, figsize=None,
+                  xlabelpos=None, ylabelpos=None,
+                  plot_diagonal=None, plot_offdiagonal=None):
+        """
+        Parameters
+        ----------
+        gridkeys: OrderedDict
+            Currently of the form {key: ParamDim}.
+            List of objects which identify the position in the grid of plots.
+            These keys are iterated over and passed to `plot_diagonal()` and
+            `plot_offdiagonal()` to generate each plot.
+            #TODO: Allow to be any iterable of keys
+        colwidth: float
+            Width of colums, in inches. Ignored if `figsize` is given.
+        rowheight: float
+            Height of columns, in inches. If `None`, set to 2/3 of the value
+            of `colwidth`.
+        figsize: tuple of floats
+            Equivelant to pyplot's `figsize` argument: specify the size of the
+            full figure in inches. If given, overrides values of `colwidth`
+            and `rowheight`; these are calculated from `figsize` and the
+            numbers of columns and rows.
+        xlabelpos: float, tuple
+            Y position, in figure coordinates, of the xlabel. It will be
+            placed at (0.5, `xlabelpos`). Typically between 1.1 and 1.6.
+            If a tuple, xlabel is placed at `xlabelpos`.
+        ylabelpos: float, tuple
+            X position, in figure coordinates, of the ylabel. It will be
+            placed at (`ylabelpos`, 0.5). Typically between 1.1 and 1.6.
+            If a tuple, ylabel is placed at `ylabelpos`.
+        plot_diagonal: function (key) -> None
+            Function taking the key corresponding to a position along the
+            diagonal, and producing the desired plot in the current axis.
+        plot_offdiagonal: function (keyi, keyj) -> None
+            Function taking the keys corresponding to x,y position in the
+            plot grid (x: keyi, y: keyj), and producing the desired plot
+            in the current axis.
+        """
+        def minorticks_off(axis):
+            # ax.minorticks_off doesn't allow to specify the axis, and
+            # ax.tick_params(…) doesn't seem to work on pcolormesh
+            pass
+            axis.set_minor_locator(mpl.ticker.LinearLocator(0))
+                # LinearLocator(n) sets n-1 equally spaced minor ticks
+                # Weirdly 1 doesn't seem to work, but 0 does
+        if not isinstance(gridkeys, OrderedDict):
+            raise TypeError("'gridkeys' argument must be an OrderedDict.")
+
+        # Set the grid size
+        nrows = len(gridkeys)
+        ncols = nrows
+
+        # Set the figure size
+        if figsize is None:
+            if rowheight is None:
+                rowheight = 2/3 * colwidth
+        else:
+            if len(figsize) != 2:
+                raise ValueError("`figsize` must be a tuple of size 2.")
+            colwidth = figsize[0] / ncols
+            rowheight = figsize[1] / nrows
+
+        # Temporary hack
+        self.grid_layouts = {
+            'upper right': {'blank': lambda i,j: j < i},
+            'lower left':  {'blank': lambda i,j: j > i},
+            'lower right': {'blank': lambda i,j: i + j < nrows - 1}
+        }
+
+        # Start the plot
+        plt.figure(figsize=(ncols*colwidth, nrows*rowheight))
+
+        parami_lst = gridkeys.items()
+        if layout in ('upper right', 'lower left'):
+            paramj_lst = gridkeys.items()
+        elif layout in ('lower right'):
+            paramj_lst = [(key, self.params[key]) for key in list(gridkeys.keys())[::-1]]
+        else:
+            raise ValueError("Unrecognized grid layout '{}'.".format(layout))
+
+        # TODO: Remove need for parami; then gridkeys can be any iterable
+        for i, (keyi, parami) in enumerate(parami_lst):
+            for j, (keyj, paramj) in enumerate(paramj_lst):
+                if self.grid_layouts[layout]['blank'](i,j):
+                    continue
+
+                ax = plt.subplot(nrows, ncols, i*ncols + j + 1);
+
+                if keyi == keyj:
+                    plot_diagonal(keyi)
+                else:
+                    assert(not self.grid_layouts[layout]['blank'](i,j))
+                    plot_offdiagonal(keyi, keyj)
+
+                if 'right' in layout:
+                    ax.yaxis.tick_right()
+                    ax.yaxis.set_label_position('right')
+                    if j == ncols - 1:
+                        #ax.set_ylabel(parami.displayname, labelpad=15, rotation=0)
+                        ax.set_ylabel(parami.displayname)
+                        if ylabelpos is not None:
+                            if isinstance(ylabelpos, Iterable):
+                                if len(ylabelpos) == 1:
+                                    coords = (ylabelpos[0], 0.5)
+                                elif len(ylabelpos) == 2:
+                                    coords = tuple(ylabelpos)
+                                else:
+                                    raise ValueError("`ylabelpos` must be of length 2.")
+                            else:
+                                coors = (ylabelpos, 0.5)
+                            ax.yaxis.set_label_coords(ylabelpos, 0.5)
+                    else:
+                        ax.set_ylabel("")
+                        ax.set_yticks([])
+                        minorticks_off(ax.yaxis)
+
+                if 'upper' in layout:
+                    ax.tick_params(axis='x', top='on', bottom='off')
+                elif 'lower' in layout:
+                    ax.tick_params(axis='x', top='off', bottom='on')
+                if 'left' in layout:
+                    ax.tick_params(axis='y', left='on', right='off')
+                elif 'right' in layout:
+                    ax.tick_params(axis='y', left='off', right='on')
+                if layout == 'upper right':
+                    if i == 0:
+                        ax.set_title(paramj.desc)
+                    if i == j:
+                        ax.set_xlabel(parami.displayname)
+                        ax.yaxis.set_label_position('left')
+                    else:
+                        ax.set_xlabel("")
+                        ax.set_xticks([])
+                        minorticks_off(ax.xaxis)
+                elif layout == 'lower left':
+                    if i == j:
+                        ax.set_title(parami.desc)
+                    if j == 0:
+                        ax.set_ylabel(parami.displayname, rotation=0)
+                    else:
+                        ax.set_ylabel("")
+                        ax.set_yticks([])
+                        minorticks_off(ax.yaxis)
+                    if i == nrows - 1:
+                        ax.set_xlabel(paramj.displayname)
+                    else:
+                        ax.set_xlabel("")
+                        ax.set_xticks([])
+                        minorticks_off(ax.xaxis)
+                elif layout == 'lower right':
+                    if i + j == nrows - 1:
+                        ax.set_title(parami.desc)
+                    if i == nrows - 1:
+                        ax.set_xlabel(paramj.displayname)
+                    else:
+                        ax.set_xlabel("")
+                        ax.set_xticks([])
+                        minorticks_off(ax.xaxis)
+                else:
+                    raise ValueError("Unrecognized grid layout '{}'.".format(layout))
+
 
 sinn.common.register_datatype(HeatMap)

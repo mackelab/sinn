@@ -90,6 +90,7 @@ class Axis:
             transformed_label = ParameterLabel(transformed_label, label_idx)
 
         if isinstance(label, ParameterLabel):
+            # At this point string labels have be converted to ParameterLabel
             if (transform_fn is None) != (inverse_transform_fn is None):
                 raise ValueError("If a transform function is specified, its "
                                  "inverse must be as well.")
@@ -101,11 +102,11 @@ class Axis:
                 self.to = Transform(transform_fn)
                 self.back = Transform(inverse_transform_fn)
             if stops is None:
-                self.transformed_stops = transformed_stops
+                #self.transformed_stops = transformed_stops
                 self.stops = self.back(transformed_stops)
             else:
                 self.stops = stops
-                self.transformed_stops = self.to(stops)
+                #self.transformed_stops = self.to(stops)
 
         elif isinstance(label, ParameterSet):
             desc = label # More meaningful name
@@ -129,6 +130,21 @@ class Axis:
     def __str__(self):
         return self.name + ' ({:.3}:{:.3}:{.3})'.format(a.stops[0], a.stops[1],
                                                         (a.stops[-1]-a.stops[0])/len(self))
+
+
+    @property
+    def transformed(self):
+        """Return the transformed axis."""
+        return TransformedAxis(label  = self.transformed_label,
+                               untransformed_label = self.label,
+                               stops  = self.to(self.stops),
+                               format = self.format,
+                               invert_fn = self.back,
+                               revert_fn = self.to)
+
+    @property
+    def transformed_stops(self):
+        return self.to(self.stops)
 
     @property
     def name(self):
@@ -204,3 +220,38 @@ class Axis:
         else:
             raise RuntimeError("Unrecognized axis format '{}'."
                                .format(self._format_str))
+
+class TransformedAxis(Axis):
+
+    def __init__(self, label, untransformed_label, label_idx=None, *args,
+                 stops=None, untransformed_stops=None, format='centers',
+                 invert_fn=None, revert_fn=None):
+        super().__init__(label=label, transformed_label=untransformed_label,
+                         label_idx=label_idx, stops=stops, format=format,
+                         transform_fn=invert_fn,
+                         inverse_transform_fn=revert_fn)
+
+        # Internal functions (like edges(), centers) require `to` and `back` to be identities
+        self.invert = self.to   # transformed -> untransformed
+        self.revert = self.back # untransformed -> transformed
+        self.to = self.back = lambda x: x
+        # Change names of 'transformed' properties
+        self.untransformed_label = self.transformed_label
+        del self.transformed_label
+
+    # Deactivate methods that lost their meaning
+    transformed = None
+    transformed_stops = None
+
+    @property
+    def untransformed(self):
+        return Axis(label = self.untransformed_label,
+                    transformed_label = self.label,
+                    stops = self.back(self.stops),
+                    format = self.format,
+                    transform_fn = self.to,
+                    inverse_transform_fn = self.back)
+
+    @property
+    def untransformed_stops(self):
+        return self.back(self.stops)
