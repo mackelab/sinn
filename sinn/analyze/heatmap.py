@@ -20,9 +20,10 @@ except ImportError:
     pass
 
 import sinn
+from mackelab.stylelib import colorschemes
+
 from . import common as com
 from .axis import Axis
-from .stylelib import color_schemes
 
 __ALL__ = ['HeatMap']
 
@@ -694,7 +695,7 @@ class HeatMap:
         cb = plt.colorbar()
         cb.set_label(datahm.zlabel)
 
-        color_scheme = color_schemes.cmaps[datahm.cmap]
+        color_scheme = colorschemes.cmaps[datahm.cmap]
         ax.tick_params(axis='both', which='both', color=color_scheme.white,
                         top='on', right='on', bottom='on', left='on',
                         direction='in')

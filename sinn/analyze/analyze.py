@@ -26,11 +26,12 @@ except ImportError:
     logger.warning("Unable to import matplotlib. Plotting functions "
                    "will not work.")
 
+from mackelab.stylelib import colorschemes
 import theano_shim as shim
+
 import sinn.histories as histories
 from . import common as com
 from . import heatmap
-from .stylelib import color_schemes as color_schemes
 
 # ==================================
 # Data types
@@ -582,7 +583,7 @@ def plot(data, **kwargs):
         cb = plt.colorbar()
         cb.set_label(data.zlabel)
 
-        color_scheme = color_schemes.cmaps[data.cmap]
+        color_scheme = colorschemes.cmaps[data.cmap]
         ax.tick_params(axis='both', which='both', color=color_scheme.white,
                        top='on', right='on', bottom='on', left='on',
                        direction='in')
@@ -625,7 +626,7 @@ def plot_stddev_ellipse(data, width, **kwargs):
     h = width * np.sqrt(eigvals[1])
     color = kwargs.pop('color', None)
     if color is None:
-        color_scheme = color_schemes.cmaps[data.cmap]
+        color_scheme = colorschemes.cmaps[data.cmap]
         color = color_scheme.accents[1]  # Leave more salient accents[0] for user
     e = mpl.patches.Ellipse(xy=data.mean(), width=w, height=h,
                             angle=np.arctan2(eigvecs[0][1], eigvecs[0][0]),
