@@ -87,7 +87,7 @@ class Model(com.ParameterMixin):
         ----------
         params: self.Parameters instance
 
-        history: History instance
+        reference_history: History instance
             If provided, a reference is kept to this history: Model evaluation may require
             querying some of its attributes, such as time step (dt). These may not be
             constant in time.
@@ -102,15 +102,63 @@ class Model(com.ParameterMixin):
 
         if reference_history is not None:
             self._refhist = reference_history
-            self.add_history(reference_history)  # TODO: Useful ?
+            #self.add_history(reference_history)  # TODO: Possible to remove ?
+        else:
+            self._refhist = None
+
+    def set_reference_history(self, reference_history):
+        if self._refhist is None:
+            raise RuntimeError("Reference history for this model is already set.")
+        self._refhist = reference_history
+
+    # TODO: Put the `if self._refhist is not None:` bit in a function decorator
+    @property
+    def t0(self):
+        return self._refhist.t0
+
+    @property
+    def tn(self):
+        return self._refhist.tn
+
+    @property
+    def t0idx(self):
+        return self._refhist.t0idx
+
+    @property
+    def tnidx(self):
+        return self._refhist.tnidx
 
     @property
     def dt(self):
-        try:
+        if self._refhist is not None:
             return self._refhist.dt
-        except AttributeError:
-            raise AttributeError("The reference history for this model was not set, "
-                                 "or it doesn't define a 'dt' attribute.")
+        else:
+            raise AttributeError("The reference history for this model was not set.")
+
+    @property
+    def cur_tidx(self):
+        if self._refhist is not None:
+            return self._refhist._cur_tidx
+        else:
+            raise AttributeError("The reference history for this model was not set.")
+
+    def get_t_idx(self, t, allow_rounding=False):
+        """
+        Returns the time index corresponding to t, with 0 corresponding to t0.
+        """
+        if self._refhist is not None:
+            if shim.istype(t, 'int'):
+                return t
+            else:
+                return self._refhist.get_t_idx(t, allow_rounding) - self.A.t0idx
+        else:
+            raise AttributeError("The reference history for this model was not set.")
+
+    def index_interval(self, Δt, allow_rounding=False):
+        if self._refhist is not None:
+            return self._refhist.index_interval(Δt, allow_rounding)
+        else:
+            raise AttributeError("The reference history for this model was not set.")
 
     # Simple consistency check functions
     @staticmethod
