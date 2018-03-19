@@ -235,14 +235,18 @@ em
                 raise ValueError("The first parameter to the History initializer, "
                                  "if given, must be another history instance. "
                                  "All other parameters should use keywords.")
-            if time_array is sinn._NoValue:
+            if all(arg is sinn._NoValue for arg in (time_array, t0, tn, dt)):
+                # Only set the time_array to the reference history's if no time argument is passed
                 time_array = hist._tarr[hist.t0idx : hist.t0idx+len(hist)]
-            # if t0 is sinn._NoValue:
-            #     t0 = hist.t0
-            # if tn is sinn._NoValue:
-            #     tn = hist.tn
-            # if dt is sinn._NoValue:
-            #     dt = hist.dt
+            elif time_array is sinn._NoValue:
+                # `time_array` was not passed, so we fall back down to t0, tn and dt.
+                # Take the unspecified values from the reference history.
+                if t0 is sinn._NoValue:
+                    t0 = hist.t0
+                if tn is sinn._NoValue:
+                    tn = hist.tn
+                if dt is sinn._NoValue:
+                    dt = hist.dt
             if shape is sinn._NoValue:
                 shape = hist.shape
             #if f is sinn._NoValue:
