@@ -528,9 +528,12 @@ def Surrogate(model):
             # the content of ParameterMixin.__init__
             self.set_parameters(params)
             # Set the attributes required for the few provided methods
-            self.t0 = t0
+            self._t0 = t0
             self._dt = dt   # dt is a read-only property of Model: can't just set the value
 
+        @property
+        def t0(self):
+            return self._t0
         @property
         def dt(self):
             return self._dt
