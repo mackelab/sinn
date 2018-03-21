@@ -600,41 +600,6 @@ def plot(data, **kwargs):
         logger.warning("Plotting of {} data is not currently supported."
                        .format(type(data)))
 
-def plot_stddev_ellipse(data, width, **kwargs):
-    """
-    Add an ellipse to a plot denoting a heatmap's spread. This function
-    is called after plotting the data, and adds the
-    ellipse to the current axis.
-
-    Parameters
-    ----------
-    data:  heatmap_like
-        A data object which provides a .cov method
-    width: float
-        Amount of data to include in the ellipse, in units of standard
-        deviations. A width of 2 will draw the contour corresponding
-        to 2 standard deviations.
-    **kwargs:
-        Keyword arguments passed to maptplotlib.patches.Ellipse
-    """
-    # TODO: Deal with higher than 2D heatmaps
-    data = histories.DataView(data)
-
-    eigvals, eigvecs = np.linalg.eig(data.cov())
-    ax = plt.gca()
-    w = width * np.sqrt(eigvals[0])
-    h = width * np.sqrt(eigvals[1])
-    color = kwargs.pop('color', None)
-    if color is None:
-        color_scheme = colorschemes.cmaps[data.cmap]
-        color = color_scheme.accents[1]  # Leave more salient accents[0] for user
-    e = mpl.patches.Ellipse(xy=data.mean(), width=w, height=h,
-                            angle=np.arctan2(eigvecs[0][1], eigvecs[0][0]),
-                            fill=False, color=color)
-    ax.add_artist(e)
-    e.set_clip_box(ax.bbox)
-
-
 def get_axes(param_axes):
     assert(all(instance(p, ParameterAxis) for p in param_axes))
     return [p.stops for p in param_axes]

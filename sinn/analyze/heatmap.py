@@ -27,6 +27,7 @@ import mackelab.utils
 from mackelab.stylelib import colorschemes
 
 from . import common as com
+from . import analyze as anlz
 from .axis import Axis
 
 __ALL__ = ['HeatMap']
@@ -164,7 +165,7 @@ class HeatMap:
         This is defined as the center of the bin with the highest value.
         """
         index_tup = np.unravel_index(np.argmax(self.data), self.shape)
-        return tuple([ax.stops.centers[idx] for ax, idx in zip(self.axes, index_tup)])
+        return tuple([ax.centers.stops[idx] for ax, idx in zip(self.axes, index_tup)])
     def set_floor(self, floor):
         self._floor = floor
     def set_ceil(self, ceil):
@@ -738,23 +739,22 @@ class HeatMap:
         # TODO: Deal with higher than 2D heatmaps
         # FIXME: Only works with Probability (requires mean, cov)
 
-        anlz.plot_stddev_ellipse(self, width, **kwargs)
-        # eigvals, eigvecs = np.linalg.eig(self.cov())
-        # sort_idcs = np.argsort(abs(eigvals))[::-1]
-        # eigvals = eigvals[sort_idcs]
-        # eigvecs = eigvecs[:,sort_idcs]
-        # ax = plt.gca()
-        # w = width * np.sqrt(eigvals[0])
-        # h = width * np.sqrt(eigvals[1])
-        # color = kwargs.pop('color', None)
-        # if color is None:
-        #     color_scheme = colorschemes.cmaps[self.cmap]
-        #     color = color_scheme.accents[1]  # Leave more salient accents[0] for user
-        # e = mpl.patches.Ellipse(xy=self.mean(), width=w, height=h,
-        #                         angle=np.arctan2(eigvecs[1,0], eigvecs[0,0])*180/np.pi,
-        #                         fill=False, color=color, **kwargs)
-        # ax.add_artist(e)
-        # e.set_clip_box(ax.bbox)
+        eigvals, eigvecs = np.linalg.eig(self.cov())
+        sort_idcs = np.argsort(abs(eigvals))[::-1]
+        eigvals = eigvals[sort_idcs]
+        eigvecs = eigvecs[:,sort_idcs]
+        ax = plt.gca()
+        w = width * np.sqrt(eigvals[0])
+        h = width * np.sqrt(eigvals[1])
+        color = kwargs.pop('color', None)
+        if color is None:
+            color_scheme = colorschemes.cmaps[self.cmap]
+            color = color_scheme.accents[1]  # Leave more salient accents[0] for user
+        e = mpl.patches.Ellipse(xy=self.mean(), width=w, height=h,
+                                angle=np.arctan2(eigvecs[1,0], eigvecs[0,0])*180/np.pi,
+                                fill=False, color=color, **kwargs)
+        ax.add_artist(e)
+        e.set_clip_box(ax.bbox)
 
 # The following two methods are deprecated; use the properties instead
 def get_axes(param_axes):
@@ -950,6 +950,44 @@ class Probability(HeatMap):
                 estΣ[j,i] = estΣ[i,j]
         return estΣ
 
+    def plot_stddev_ellipse(self, width, **kwargs):
+        """
+        Add an ellipse to a plot denoting a heatmap's spread. This function
+        can be called after plotting the data, and adds the
+        ellipse to the current axis.
+
+        .. note:: This function assumes the probability to be a multivariate
+                  Gaussian.
+
+        Parameters
+        ----------
+        width: float
+            Amount of data to include in the ellipse, in units of standard
+            deviations. A width of 2 will draw the contour corresponding
+            to 2 standard deviations.
+        **kwargs:
+            Keyword arguments passed to maptplotlib.patches.Ellipse
+        """
+        # TODO: Deal with higher than 2D heatmaps
+        # FIXME: Only works with Probability (requires mean, cov)
+
+        eigvals, eigvecs = np.linalg.eig(self.cov())
+        sort_idcs = np.argsort(abs(eigvals))[::-1]
+        eigvals = eigvals[sort_idcs]
+        eigvecs = eigvecs[:,sort_idcs]
+        ax = plt.gca()
+        w = width * np.sqrt(eigvals[0])
+        h = width * np.sqrt(eigvals[1])
+        color = kwargs.pop('color', None)
+        if color is None:
+            color_scheme = colorschemes.cmaps[self.cmap]
+            color = color_scheme.accents[1]  # Leave more salient accents[0] for user
+        e = mpl.patches.Ellipse(xy=self.mean(), width=w, height=h,
+                                angle=np.arctan2(eigvecs[1,0], eigvecs[0,0])*180/np.pi,
+                                fill=False, color=color, **kwargs)
+        ax.add_artist(e)
+        e.set_clip_box(ax.bbox)
+
 
 class Likelihood(Probability):
     pass
@@ -981,9 +1019,12 @@ class MarginalCollection:
     # TODO: Remove flat_idx ?
 
     def __init__(self, data, params, maxexpand=3, markers=None,
-                 histogram_kwargs=None, colorscheme=None, **kwargs):
+                 histogram_kwargs=None, colorscheme=None,
+                 key_sanitizer=None, **kwargs):
         """
-        Construct a collection of GridData objects
+        Construct a collection of GridData objects. Internally maintains a dictionary
+        of the axes, so that specific axes can be formatted; this dictionary is an
+        instance of ml.utils.SanitizedOrderedDict, to allow "close-enough" indexing.
 
         Parameters
         ---------------
@@ -1006,6 +1047,9 @@ class MarginalCollection:
             Passed on to `set_colorscheme()`.
         histogram_kwargs: dictionary
             Dictionary of keyword arguments to pass to `numpy.histogramdd`.
+        key_sanitizer: function, or list of characters
+            This argument is passed to ml.utils.SanitizedOrderedDict, when creating the
+            internal axes dictionary.
         **kwargs:
             Additional keyword arguments are passed to the HeatMap constructor.
         """
@@ -1038,7 +1082,11 @@ class MarginalCollection:
             self.set_colorscheme(colorscheme)
         self.set_markers(markers)
         self.set_transformed(False)
-        self.axes_format = {}  # Dictionary of functions to apply to specific plot axes (aka spines)
+        # Set dictionary of functions to apply to specific plot axes (aka spines)
+        if key_sanitizer is None:
+            self._axes_format = ml.utils.SanitizedOrderedDict()
+        else:
+            self._axes_format = ml.utils.SanitizedOrderedDict(sanitize=key_sanitizer)
 
     @staticmethod
     def marginals_from_mcmc(traces, params, histogram_kwargs, threshold=1e-5, **kwargs):
@@ -1152,9 +1200,9 @@ class MarginalCollection:
                     assert(key not in marginals2D)
                     marginals2D[key] = (Probability('p', 'mass', freq, axes,
                                                     normalized=True, **kwargs))
-                    if np.isnan(marginals2D[key].data).any():
-                        import pdb; pdb.set_trace()
-                        pass
+                    if not np.isfinite(marginals2D[key].data).all():
+                        logger.warning("Non finite entries present in 2D marginal for {}."
+                                       .format(key))
 
         return marginals1D, marginals2D
 
@@ -1250,12 +1298,15 @@ class MarginalCollection:
         ...     axis.set_ticklabels(['A', 'B', 'C'])
         >>>> marginals.set_axis(apply = format_plot)
         """
-        self.axes_format[key] = self.AxisFormat(key, scale, visible, apply)
+        self._axes_format[key] = self.AxisFormat(key, scale, visible, apply)
 
-    def format_axis(self, key, axes, axis):
-        if key in self.axes_format:
+    def _format_axis(self, key, axes, axis):
+        """
+        Internal function that applies the parameters specified in `set_axis()`.
+        """
+        if key in self._axes_format:
             # Set which spines are visible
-            format = self.axes_format[key]
+            format = self._axes_format[key]
             if format.visible is not None:
                 for side, spine in axes.spines.items():
                     if (isinstance(axis, mpl.axis.XAxis)
@@ -1299,20 +1350,24 @@ class MarginalCollection:
         ax.set_yticks([])
 
         # Apply custom user formatting, if any
-        self.format_axis(key, ax, ax.xaxis)
+        self._format_axis(key, ax, ax.xaxis)
 
     def plot_marginal2D(self, keyi, keyj, stddevs=None, **kwargs):
         """
         Parameters
         ----------
         ...
-        stddevs: list of dictionaries
+        stddevs: list of dictionaries  |  list of floats | float
             Each dictionary is a set of keyword arguments to plot_stddev_ellipse().
             'width' is required; all other parameters are optional. Default values are:
               - alpha: 0.85
               - color: self.colorscheme.accents[0]
               - zorder: 1
               - linewidth: 1.5
+            For convenience, to use all the defaults, can specify a bare float instead
+            of a dictionary.
+            If there is only a single ellipse to draw, it does not need to be wrapped
+            in a list.
         **kwargs:
             Keyword arguments passed to `GridData.heatmap()`.
         """
@@ -1348,8 +1403,12 @@ class MarginalCollection:
         # Draw stddev ellipses
         if stddevs is None:
             stddevs = ()
+        elif not isinstance(stddevs, Iterable):
+            stddevs = (stddevs,)
         for stddev in stddevs:
             # Check that required parameters are there
+            if isinstance(stddev, (int, float)):
+                stddev = {'width': stddev}
             if 'width' not in stddev:
                 raise ValueError("You must specify at least a width for each stddev ellipse.")
             # Set defaults
@@ -1381,17 +1440,20 @@ class MarginalCollection:
                 ax.set_ylim(bottom=ylim[1]-maxexpand*yheight)
 
         # Apply custom user formatting, if any
-        self.format_axis(keyj, ax, ax.xaxis)  # Remember, column j on x axis
-        self.format_axis(keyi, ax, ax.yaxis)
+        self._format_axis(keyj, ax, ax.xaxis)  # Remember, column j on x axis
+        self._format_axis(keyi, ax, ax.yaxis)
 
-    def plot_grid(self, names_to_display, **kwargs):
+    def plot_grid(self, names_to_display, kwargs1D=None, kwargs2D=None, **kwargs):
         """
         Parameters
         ----------
         names_to_display: list of strings
-            Variable names, corresponding to the keys of `self.params`. The
-            characters '$', '{' and '}' may be omitted, to make matching
-            TeX keys easier.
+            Variable names, corresponding to the keys of `self.params`.
+        kwargs1D: dict
+            Keyword arguments to pass to self.plot_marginal1D
+        kwargs2D: dict
+            Keyword arguments to pass to self.plot_marginal2D
+        **kwargs: Keyword arguments passed on to self._plot_grid_layou
         """
         # def sanitize(s):
         #     # Ignore certain character
@@ -1418,9 +1480,20 @@ class MarginalCollection:
             params = self.params.newdict( (name, self.params[name])
                                           for name in names_to_display )
 
+        # Wrap the plotting functions with functions that feed them the proper
+        # keyword arguments
+        if kwargs1D is None:
+            kwargs1D = {}
+        if kwargs2D is None:
+            kwargs2D = {}
+        def plot_marginal1D(*args):
+            return self.plot_marginal1D(*args, **kwargs1D)
+        def plot_marginal2D(*args):
+            return self.plot_marginal2D(*args, **kwargs2D)
+
         self._plot_grid_layout(gridkeys=params,
-                               plot_diagonal=self.plot_marginal1D,
-                               plot_offdiagonal=self.plot_marginal2D,
+                               plot_diagonal=plot_marginal1D,
+                               plot_offdiagonal=plot_marginal2D,
                                **kwargs)
 
     #NOTE: Should be possible to split off the following function, if it can
@@ -1456,13 +1529,15 @@ class MarginalCollection:
             X position, in figure coordinates, of the ylabel. It will be
             placed at (`ylabelpos`, 0.5). Typically between 1.1 and 1.6.
             If a tuple, ylabel is placed at `ylabelpos`.
-        plot_diagonal: function (key) -> None
+        plot_diagonal: function  |  (function, {})
             Function taking the key corresponding to a position along the
             diagonal, and producing the desired plot in the current axis.
-        plot_offdiagonal: function (keyi, keyj) -> None
+            In the second form, a tuple with a function and keyword parameters.
+        plot_offdiagonal: function  |  (function, {})
             Function taking the keys corresponding to x,y position in the
             plot grid (x: keyi, y: keyj), and producing the desired plot
             in the current axis.
+            In the second form, a tuple with a function and keyword parameters.
         """
         def minorticks_off(axis):
             # ax.minorticks_off doesn't allow to specify the axis, and
@@ -1515,10 +1590,18 @@ class MarginalCollection:
                 ax = plt.subplot(nrows, ncols, i*ncols + j + 1);
 
                 if keyi == keyj:
-                    plot_diagonal(keyi)
+                    if isinstance(plot_diagonal, tuple):
+                        # `plot_diagnonal` is a tuple (function, {keywords})
+                        plot_diagonal[0](**plot_diagonal[1])
+                    else:
+                        plot_diagonal(keyi)
                 else:
                     assert(not self.grid_layouts[layout]['blank'](i,j))
-                    plot_offdiagonal(keyi, keyj)
+                    if isinstance(plot_offdiagonal, tuple):
+                        # `plot_diagnonal` is a tuple (function, {keywords})
+                        plot_offdiagonal[0](**plot_offdiagonal[1])
+                    else:
+                        plot_offdiagonal(keyi, keyj)
 
                 if 'right' in layout:
                     ax.yaxis.tick_right()
