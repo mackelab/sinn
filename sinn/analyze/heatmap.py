@@ -1194,7 +1194,7 @@ class MarginalCollection:
                     # Get histogram
                     histogram_kwargs['bins'] = [xedges, yedges]
                     freq, edges = np.histogramdd(data[:,(i,j)], **histogram_kwargs)
-                    assert((edges[0] == xedges).all(), (edges[1] == yedges).all())
+                    assert((edges[0] == xedges).all() and (edges[1] == yedges).all())
                     # Recover the axis
                     axes = [Axis(param.modelname, param.transformedname, param.idx,
                                  transformed_stops=edgelst, format='edges',
