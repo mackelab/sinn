@@ -29,6 +29,12 @@ import sinn.popterm as popterm
 ###   Types are registered at end of module
 ###############
 
+########################
+# Exceptions
+class LockedHistoryError(RuntimeError):
+    pass
+########################
+
 
 class History(HistoryBase):
     """
@@ -850,9 +856,10 @@ em
 
         if self.locked:
             if not shim.is_theano_object(end):
-                assert(self._original_tidx.get_value() >= end)
-                if not shim.is_theano_object(self._cur_tidx):
-                    assert(self._cur_tidx <= end)
+                if ( (self._original_tidx.get_value() < end)
+                     or (shim.is_theano_object(self._cur_tidx) and self._cur_tidx < end) ):
+                    raise LockedHistoryError("Cannot compute locked history {}."
+                                             .format(self.name))
             return
 
         #if shim.is_theano_object(tidx):
