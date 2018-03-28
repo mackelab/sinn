@@ -687,6 +687,12 @@ class HeatMap:
 
     def heatmap2d(self, axes=None, collapse_method=None, transformed=False, **kwargs):
         assert(len(axes) == 2)
+        # Use a default value of True for `rasterized`: vectorized heatmaps take up a lot
+        # more memory (which can prevent compilation by LaTeX) and don't usually look
+        # better than rasterized versions anyway.
+        if 'rasterized' not in kwargs:
+            kwargs['rasterized'] = True
+
         axes = self._get_axis_idcs(axes)  # Convert all 'axes' to a list of ints
         datahm = self.collapse(collapse_method, axes)
         data = np.moveaxis(datahm.data, axes, np.arange(len(axes)))
