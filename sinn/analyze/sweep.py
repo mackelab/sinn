@@ -10,6 +10,7 @@ from collections import namedtuple, OrderedDict, Iterable
 from copy import copy
 import numpy as np
 logger = logging.getLogger('sinn.sweep')
+from tqdm import tqdm
 
 import theano_shim as shim
 import sinn
@@ -238,7 +239,10 @@ class ParameterSweep:
             os.chdir(self.workdir)
 
             if not debug:
-                res_arr = np.fromiter(map(sweep_f, self.param_list()), sinn.config.floatX).reshape(self.shape)
+                param_list = tqdm(self.param_list(), total=np.prod(self.shape))
+                res_arr = np.fromiter(map(sweep_f, param_list),
+                                      dtype=sinn.config.floatX
+                                     ).reshape(self.shape)
             else:
                 # For a debug run, no point in repeating the computation for different parameters
                 res = sweep_f(next(self.param_list()))
