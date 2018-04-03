@@ -155,6 +155,28 @@ class Axis:
         return self.label.idx
 
     @property
+    def start(self):
+        """
+        Return the start of the axis. Can be used to set limits on a plot.
+        """
+        return self.edges.stops[0]
+
+    @property
+    def end(self):
+        """
+        Return the end of the axis. Can be used to set limits on a plot.
+        """
+        return self.edges.stops[-1]
+
+    @property
+    def limits(self):
+        """
+        Return a (start, end) giving the bounds of the axis. Can be used to "
+        "set limits on a plot.
+        """
+        return (self.start, self.end)
+
+    @property
     def widths(self):
         """
         Return an ndarray of same length as `centers` giving each bin's width.
