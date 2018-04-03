@@ -22,6 +22,7 @@ setup(
 
       install_requires=['numpy >= 1.13',
                         'scipy',
-                        'dill']
+                        'dill',
+                        'tqdm']
       # Add mackelab, theano as optional dependency
      )
