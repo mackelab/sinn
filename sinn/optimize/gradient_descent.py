@@ -10,6 +10,7 @@ logger = logging.getLogger('sinn.optimize.gradient_descent')
 import numpy as np
 import scipy as sp
 from parameters import ParameterSet
+from tqdm import tqdm
 
 import theano
 import theano.tensor as T
@@ -1125,7 +1126,7 @@ class SGD:
             return all( (meandiff(it, end=-i) * s < a).all()
                         for i in range(1, m+1) )
 
-    def step(self, conv_res, cost_calc='cum', **kwargs):
+    def step(self, conv_res, cost_calc='cum', mode='random', **kwargs):
         """
         Parameters
         ----------
@@ -1145,40 +1146,70 @@ class SGD:
                 going in the right direction.
                 *Additional keyword*
                   + 'cost_period': int. Compute the cost only after this many steps
-
+        mode: str
+            One of:
+            - 'random': standard SGD, where the starting point of each mini batch is chosen
+               randomly within the data. This is the default value.
+            - 'sequential': Mini-batches are taken sequentially, and loop back to the start
+               when we run out of data. This approach is may suffer from the fact that the
+               data windows on multiple loops are not independent but in fact perfectly aligned.
+               On the other hand, if the initial burnin is very long, this may provide
+               substantial speed improvements.
         """
         # Clear notebook of previous iteration's output
         clear_output(wait=True)
             #`wait` indicates to wait until something is printed, which avoids flicker
 
-        if self.curtidx > self.start_idx + self.data_idxlen - self.mbatch_size - self.burnin_idxlen:
-            # We've run through the dataset
-            # Reset time index to beginning
-            self.curtidx = copy.deepcopy(self.start_idx)
-                # Copy ensures updating curtidx doesn't also update start_idx
-            self.model.clear_unlocked_histories()
-            if cost_calc == 'cum':
-                self._cost_evol.append(np.array((self.step_i, self.cum_cost)))
-            #self.model.clear_unlocked_histories()
-            self.cum_cost = 0
-            self.circ_step_i = 0
+        mode_values = ['random', 'sequential']
 
-            # HACK Fill the data corresponding to the start time
-            #      (hack b/c ugly + repeated in iterate() + does not check indexing)
-            logger.info("Iteration {:>{}} – Moving current index forward to data start."
-                        .format(self.step_i, self.output_width))
-            self.model.advance(self.start_idx + self.burnin_idxlen)
-            #for i in range(0, self.burnin_idx, self.mbatch_size):
-            #    self._step(i)
-            logger.info("Done.")
+        # Check arguments
+        if mode not in mode_values:
+            raise ValueError("Unrecognized mode '{}'; it must be one of {}."
+                             .format(mode, ', '.join(["'{}'".format(mv) for mv in mode_values])))
+
+        # Set the current index
+        if mode == 'sequential':
+            if self.curtidx > self.start_idx + self.data_idxlen - self.mbatch_size - self.burnin_idxlen:
+                # We've run through the dataset
+                # Reset time index to beginning
+                self.curtidx = copy.deepcopy(self.start_idx)
+                    # Copy ensures updating curtidx doesn't also update start_idx
+                self.model.clear_unlocked_histories()
+                if cost_calc == 'cum':
+                    self._cost_evol.append(np.array((self.step_i, self.cum_cost)))
+                #self.model.clear_unlocked_histories()
+                self.cum_cost = 0
+                self.circ_step_i = 0
+
+                # HACK Fill the data corresponding to the start time
+                #      (hack b/c ugly + repeated in iterate() + does not check indexing)
+                logger.info("Iteration {:>{}} – Moving current index forward to data start."
+                            .format(self.step_i, self.output_width))
+                self.model.advance(self.start_idx + self.burnin_idxlen)
+                #for i in range(0, self.burnin_idx, self.mbatch_size):
+                #    self._step(i)
+                logger.info("Done.")
+
+            else:
+                # TODO: Check what it is that is cleared here, and why we need to do it
+                self.model.clear_other_histories()
+
+        elif mode == 'random':
+            self.curtidx = np.random.randint(self.start_idx,
+                                             self.start_idx + self.data_idxlen
+                                               - self.mbatch_size - self.burnin_idxlen)
+            self.model.clear_unlocked_histories()
+            #self.model.advance(self.start_idx + self.burnin_idxlen)
+            self.model.initialize(t=self.curtidx)
+                # TODO: Allow to pass keyword arguments to init_at()
+            #self.model.clear_other_histories()
 
         else:
-            # TODO: Check what it is that is cleared here, and why we need to do it
-            self.model.clear_other_histories()
+            assert(False) # Should never reach here
 
         t1 = time.perf_counter()
+        self.curtidx += self.burnin_idxlen
         self.model.advance(self.curtidx)
-            # FIXME?: Currently `advance` is needed because grad updates don't change the data
         self._step(self.curtidx, self.mbatch_size)
         self.cum_step_time += time.perf_counter() - t1
         for param in self.fitparams:
@@ -1203,7 +1234,7 @@ class SGD:
         # Increment step counter
         self.step_i += 1
         self.circ_step_i += 1
-        self.curtidx += self.mbatch_size + self.burnin_idxlen
+        self.curtidx += self.mbatch_size
 
         # TODO: Use a circular iterator for step_cost, so that a) we don't need circ_step_i
         #       and b) we can test over intervals that straddle a reset of curtidx
@@ -1247,7 +1278,7 @@ class SGD:
 
         t1 = time.perf_counter()
         try:
-            for i in range(Nmax):
+            for i in tqdm(range(Nmax)):
                 status = self.step(conv_res, **kwargs)
                 if status in [ConvergeStatus.CONVERGED, ConvergeStatus.ABORT]:
                     break
@@ -1679,11 +1710,48 @@ class FitCollection:
             traces = [ fit.data.trace[param.name]
                        for fit in self.fits ]
 
+        # True values to display if true_color is not None
+        truevals = np.array(self.reffit.data.trueparams[param])
+
         # Standardize the `idx` argument
         if idx is None:
             idx = (slice(None),)
         elif isinstance(idx, (int, slice)):
             idx = (idx,)
+
+        # Match the shape of the `idx` and the trace
+        traceshape = traces[0].shape
+        assert(trace.shape == traceshape for trace in traces)
+            # All traces should have the same shape
+        truevals = truevals.reshape(traceshape[1:])
+            # TODO: Would be nice if shape were more reliable and we didn't
+            #       need to do so many reshapes.
+        reftrace = traces[0]
+        Δdim = reftrace.ndim - len(idx)
+        if Δdim < 1:
+            raise ValueError("Index for variable '{}' has more components than "
+                             "the variable itself.".format(pname))
+        elif Δdim > 1:
+            # There are unaccounted for dimensions, possibly due to a reshape parameter
+            # If trace has size one dimensions, we can remove those
+            # We remove dimensions from left to right, until the shapes of the trace
+            # and the index match
+            # We don't just use a reshape(idx.shape) here to make sure we don't mix
+            # dimensions by accident.
+            i = 1
+            while i < traces[0].ndim:
+                if Δdim == 1:
+                    break
+                if traces[0].shape[i] == 1:
+                    # Remove a dimension
+                    newshape = traces[0].shape[:i] + traces[0].shape[i+1:]
+                    for j, trace in enumerate(traces):
+                        traces[j] = trace.reshape(newshape)
+                    truevals = truevals.reshape(newshape[1:])
+                else:
+                    i += 1
+        reftrace = traces[0]
+            # Reset reftrace so it has the right shape
 
         # Create iterable of traces for the right component
         plot_traces = (trace[(slice(None),) + idx] for trace in traces)
@@ -1700,8 +1768,8 @@ class FitCollection:
 
         # Draw the true value line
         if true_color is not None:
-            shape = param.get_value().shape
-            truevals = np.array(self.reffit.data.trueparams[param]).reshape(shape)
+            # shape = param.get_value().shape
+            # truevals = truevals.reshape(shape)
             for trueval in truevals[idx].flat:
                 plt.axhline(trueval, color=true_color, zorder=0)
 
