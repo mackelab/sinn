@@ -61,7 +61,10 @@ class HeatMap:
             param_axes = src.axes if param_axes is None else param_axes
             self.__init__(src.zlabel, ztype, data, param_axes, src.norm)
         else:
-            assert( all(arg is not None for arg in [ztype, data, param_axes]) )
+            if any(arg is None for arg in [ztype, data, param_axes]):
+                raise ValueError("Unless an ArrayData object is provided as first "
+                                 "argument, 'ztype', 'data' and 'param_axes' are "
+                                 "required arguments.")
             self.zlabel = zlabel
             self.ztype = ztype
             self.data = data
@@ -818,14 +821,18 @@ class LogLikelihood(HeatMap):
         # TODO: Ignore _floor and always use depth ?
         if self._floor is None:
             return self.ceil - self.depth
+        else:
+            return self._floor
     @property
     def ceil(self):
         if self._ceil is None:
             return self.data.max()
+        else:
+            return self._ceil
 
     def likelihood(self, depth=None, normalize=True):
         """
-        Return the a new heat map corresponding to the likelihood.
+        Return a new heat map corresponding to the likelihood.
         Parameters
         ----------
         depth: int
@@ -840,7 +847,7 @@ class LogLikelihood(HeatMap):
         if self.zlabel[:3].lower() == 'log':
             zlabel = self.zlabel[3:].strip()
         else:
-            zlabel = "exp(" + self.zlabel + ")"
+            zlabel = "exp " + self.zlabel
         Ldata = np.exp(self.data - self.data.max())
         L = Likelihood(zlabel, self.ztype, Ldata,
                        self.axes, norm='linear', normalized=normalize)
@@ -848,8 +855,15 @@ class LogLikelihood(HeatMap):
         L.set_floor(0)
         return L
 
+class LogProbability(LogLikelihood):
+    def probability(self, *args):
+        # TODO: Analog to `likelihood()`
+        raise NotImplementedError
+
 class Probability(HeatMap):
-    def __init__(self, zlabel, ztype=None, data=None, param_axes=None, 
+    # TODO: Make Probability subclass of Likelihood rather than other way around ?
+
+    def __init__(self, zlabel, ztype=None, data=None, param_axes=None,
                  norm='linear', normalized=True):
         """
         Parameters
@@ -877,6 +891,38 @@ class Probability(HeatMap):
                 self.normalized = True
             else:
                 self.normalized = False
+
+    def logprobability(self, depth=None):
+        """
+        Return a new heat map corresponding to the log probability.
+
+        Parameters
+        ----------
+        depth: float
+            (Optional) Number of (base e) orders magnitudes to consider,
+            i.e. sets the floor for what values are considered 'zero'.
+            Any value more than `depth` orders of magnitudes less than the
+            data's maximum is considered zero.
+            If unspecified, the floor is set to the data's smallest non-zero value."
+            Note: The log transformation requires a strictly positive floor.
+        """
+        # Ensure data is strictly positive by 'raising' zero elements to the floor
+        if depth is not None:
+            floor = self.max() * np.exp(-depth)
+        else:
+            floor = self.data[self.data.nonzero()].min()
+        raiseddata = np.where(self.data > 0, self.data, floor)
+
+        if self.zlabel[:3].lower() == 'exp':
+            zlabel = self.zlabel[3:].strip()
+        else:
+            zlabel = "log " + self.zlabel
+        logPdata = np.log(raiseddata)
+        logP = LogProbability(zlabel, self.ztype, logPdata,
+                              self.axes, norm='linear')
+        logP.set_ceil(logP.max())
+        logP.set_floor(logP.min())
+        return logP
 
     @property
     def mass(self):
@@ -996,7 +1042,13 @@ class Probability(HeatMap):
 
 
 class Likelihood(Probability):
-    pass
+    def logprobability(self, *args):
+        raise NotImplementedError("Log probability is undefined for likelihoods. "
+                                  "Use `loglikelihood()`.")
+    def loglikelihood(self, *args):
+        # TODO: Should basically call super().logprobability but return
+        #       a LogLikelihood rather than a LogProbability
+        raise NotImplementedError("Function planned for future implementation.")
 
 
 #################################
@@ -1026,7 +1078,8 @@ class MarginalCollection:
 
     def __init__(self, data, params, maxexpand=3, markers=None,
                  histogram_kwargs=None, colorscheme=None,
-                 key_sanitizer=None, **kwargs):
+                 #key_sanitizer=None,
+                 **kwargs):
         """
         Construct a collection of GridData objects. Internally maintains a dictionary
         of the axes, so that specific axes can be formatted; this dictionary is an
@@ -1036,6 +1089,9 @@ class MarginalCollection:
         ---------------
         data: sequence of GridData | PyMC3 MultiTrace
             The data for which we want to compute marginals.
+        params: dict
+            Dictionary of ParamDim elements for which we want the marginals.
+            Preferably a sanitized dictionary, to make accessing values easier.
         maxexpand: float
             If markers fall outside the boundary of the 2D histograms, these
             will be extended sufficiently to include the markers, up to a
@@ -1053,9 +1109,10 @@ class MarginalCollection:
             Passed on to `set_colorscheme()`.
         histogram_kwargs: dictionary
             Dictionary of keyword arguments to pass to `numpy.histogramdd`.
-        key_sanitizer: function, or list of characters
+        key_sanitizer: [REMOVED] function, or list of characters
             This argument is passed to ml.utils.SanitizedOrderedDict, when creating the
             internal axes dictionary.
+            Taken from `params`
         **kwargs:
             Additional keyword arguments are passed to the HeatMap constructor.
         """
@@ -1089,10 +1146,10 @@ class MarginalCollection:
         self.set_markers(markers)
         self.set_transformed(False)
         # Set dictionary of functions to apply to specific plot axes (aka spines)
-        if key_sanitizer is None:
-            self._axes_format = ml.utils.SanitizedOrderedDict()
+        if isinstance(params, ml.utils.SanitizedDict):
+            self._axes_format = ml.utils.SanitizedOrderedDict(sanitize=params.sanitize)
         else:
-            self._axes_format = ml.utils.SanitizedOrderedDict(sanitize=key_sanitizer)
+            self._axes_format = ml.utils.SanitizedOrderedDict()
 
     @staticmethod
     def marginals_from_mcmc(traces, params, histogram_kwargs, threshold=1e-5, **kwargs):
