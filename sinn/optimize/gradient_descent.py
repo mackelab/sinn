@@ -1608,7 +1608,26 @@ class FitCollection:
 
     @property
     def MLE_index(self):
-        return np.argmax([fit.data.cost_trace[-1].logL for fit in self.fits])
+        return np.nanargmax([fit.data.cost_trace[-1].logL for fit in self.fits])
+
+    @property
+    def nonfinite_fits(self):
+        """Return the fits with non-finite elements."""
+        nffits = []
+        for fit in self.fits:
+            if any( not np.all(np.isfinite(trace))
+                    for trace in fit.data.get_evol().values() ):
+                nffits.append(fit)
+        return nffits
+    @property
+    def finite_fits(self):
+        """Return the fits with non-finite elements."""
+        ffits = []
+        for fit in self.fits:
+            if all( np.all(np.isfinite(trace))
+                    for trace in fit.data.get_evol().values() ):
+                ffits.append(fit)
+        return ffits
 
     def plot_cost(self, **kwargs):
         """
@@ -1645,8 +1664,8 @@ class FitCollection:
                 with this locator.
         """
         #traces = fitcoll.fits[0].data.cost_trace.logL
-        traces = (fit.data.cost_trace.logL for fit in self.fits)
-        stops = (fit.data.cost_trace_stops for fit in self.fits)
+        traces = (fit.data.cost_trace.logL for fit in self.finite_fits)
+        stops = (fit.data.cost_trace_stops for fit in self.finite_fits)
         self._plot(stops, traces, **kwargs)
 
     def plot(self, param, idx=None, *args, true_color='#222222', **kwargs):
@@ -1705,10 +1724,10 @@ class FitCollection:
                 param,
                 self.reffit.data.substitutions[param][1])
             traces = [ inverse(fit.data.trace[transformed_param.name])
-                       for fit in self.fits ]
+                       for fit in self.finite_fits ]
         else:
             traces = [ fit.data.trace[param.name]
-                       for fit in self.fits ]
+                       for fit in self.finite_fits ]
 
         # True values to display if true_color is not None
         truevals = np.array(self.reffit.data.trueparams[param])
@@ -1763,7 +1782,7 @@ class FitCollection:
         kwargs['logscale'] = logscale
 
         # Plot
-        trace_stops = ( fit.data.trace_stops for fit in self.fits )
+        trace_stops = ( fit.data.trace_stops for fit in self.finite_fits )
         self._plot(trace_stops, plot_traces, **kwargs)
 
         # Draw the true value line
@@ -1817,7 +1836,7 @@ class FitCollection:
         """
 
         # Definitions
-        logLs = [fit.data.cost_trace[-1].logL for fit in self.fits]
+        logLs = [fit.data.cost_trace[-1].logL for fit in self.finite_fits]
         maxlogL = max(logLs)
 
         def get_color(logL):
