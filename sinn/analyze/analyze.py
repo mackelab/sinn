@@ -40,6 +40,13 @@ ParameterAxis = com.ParameterAxis
 # ==================================
 # Data manipulation
 
+# Implementation guidelines
+# -------------------------
+# - For operations using times, prefer [history].dt64 over [].dt, as this
+#   ensures you have a double precision time step (which is required if you
+#   intend to divide or multiply something with it).
+
+
 def mean(hist, pop_slices=None, time_array=None, **kwargs):
     """
     Compute the time-dependent mean, by applying `np.mean` to every time slice
@@ -121,7 +128,7 @@ def mean(hist, pop_slices=None, time_array=None, **kwargs):
     res = histories.Series(hist.hist, name = "<" + hist.name + ">",
                            shape = res_data.shape[1:],
                            iterative = False)
-    res.set( res_data )
+    res.set( shim.cast(res_data,res.dtype) )
     res.lock()
     return res
 
@@ -160,13 +167,13 @@ def diff(hist, mode='centered'):
             t0 = hist.t0
             startidx = hist.t0idx - 1
         else:
-            t0 = hist.t0 + hist.dt
+            t0 = hist.t0 + hist.dt64
             startidx = hist.t0idx
         if len(hist._tarr) > hist.t0idx + len(hist):
             tn = hist.tn
             endidx = hist.t0idx + len(hist) + 1
         else:
-            tn = hist.tn - hist.dt
+            tn = hist.tn - hist.dt64
             endidx = hist.t0idx + len(hist)
 
         # Possibly shorten the length of data, if series was not computed to end
@@ -175,7 +182,8 @@ def diff(hist, mode='centered'):
         res = Series(hist, name = "D " + hist.name,
                      t0 = t0, tn = tn,
                      iterative = False)
-        res.set( (hist[startidx+2:endidx] - hist[startidx:endidx-2]) / (2*hist.dt) )
+        res.set( shim.cast((hist[startidx+2:endidx] - hist[startidx:endidx-2]) / (2*hist.dt64),
+                           res.dtype) )
 
     if mode == 'forward':
         # Remove consumed bins, but only if there's no padding
@@ -186,7 +194,7 @@ def diff(hist, mode='centered'):
             tn = hist.tn
             endidx = hist.t0idx + len(hist) + 1
         else:
-            tn = hist.tn - hist.dt
+            tn = hist.tn - hist.dt64
             endidx = hist.t0idx + len(hist)
 
         # Possibly shorten the length of data, if series was not computed to end
@@ -195,7 +203,8 @@ def diff(hist, mode='centered'):
         res = Series(hist, name = "D " + hist.name,
                      t0 = t0, tn = tn,
                      iterative = False)
-        res.set( (hist[startidx+1:endidx] - hist[startidx:endidx-1]) / (hist.dt) )
+        res.set( shim.cast((hist[startidx+1:endidx] - hist[startidx:endidx-1]) / (hist.dt64),
+                           res.dtype) )
 
     if mode == 'backward':
         # Remove consumed bins, but only if there's no padding
@@ -203,7 +212,7 @@ def diff(hist, mode='centered'):
             t0 = hist.t0
             startidx = hist.t0idx - 1
         else:
-            hist.t0 + hist.dt
+            hist.t0 + hist.dt64
             startidx = hist.t0idx
 
         tn = hist.tn
@@ -215,7 +224,8 @@ def diff(hist, mode='centered'):
         res = histories.Series(hist, name = "D " + hist.name,
                                t0 = t0, tn = tn,
                                iterative = False)
-        res.set( (hist[startidx+1:endidx] - hist[startidx:endidx-1]) / (hist.dt) )
+        res.set( shim.cast((hist[startidx+1:endidx] - hist[startidx:endidx-1]) / (hist.dt64),
+                           res.dtype))
 
     res.lock()
     return res
@@ -282,9 +292,9 @@ def smooth(series, amount=None, method='mean', name = None, **kwargs):
                              "of data ({} bins vs {} bins)."
                              .format(amount, datalen))
         # Create the result (smoothed) series
-        t0 = series.t0 + (amount-1)*series.dt/2
+        t0 = series.t0 + (amount-1)*series.dt64/2
         res = histories.Series(name = name,
-                               time_array = np.arange(datalen-amount+1) * series.dt + t0,
+                               time_array = np.arange(datalen-amount+1) * series.dt64 + t0,
                                # t0 = series.t0 + (amount-1)*series.dt/2,
                                # #tn = series.tn - (amount-1)*series.dt/2,
                                # tn = series.t0 + (amount-1)*series.dt/2 + (datalen - amount)*series.dt,
@@ -295,7 +305,7 @@ def smooth(series, amount=None, method='mean', name = None, **kwargs):
         assert(len(res) == datalen - amount + 1)
         res.pad(series.t0idx, len(series._tarr) - len(series) - series.t0idx)
             # Add the same amount of padding as series
-        res.set(_running_mean(series[:series.t0idx+datalen], amount))
+        res.set(shim.cast(_running_mean(series[:series.t0idx+datalen], amount), res.dtype))
         res.lock()
 
         return res
@@ -328,7 +338,7 @@ def subsample(series, amount):
     #         series = series.compiled_history
     #     else:
     #         raise ValueError("Cannot subsample a Theano array.")
-    newdt = series.dt * amount
+    newdt = series.dt64 * amount
     nbins = int( (series.tn - series.t0) // newdt )
         # We might chop off a few bins, if the new dt is not commensurate with
         # the original number of bins.
@@ -343,7 +353,8 @@ def subsample(series, amount):
     data = series.get_trace()[:nbins*amount]
         # Slicing removes bins which are not commensurate with the subsampling factor
     t0idx = series.t0idx
-    res.set(np.sum(data[i : i+nbins*amount : amount] for i in range(amount))/amount)
+    res.set(shim.cast(np.sum(data[i : i+nbins*amount : amount] for i in range(amount))/amount,
+                      res.dtype))
         # Can't use np.mean on a generator
     res.lock()
     return res
@@ -554,7 +565,8 @@ def plot(data, **kwargs):
                                       s = markersize,
                                       linestyle = linestyle,
                                       label = baselabel + str(i),
-                                      alpha = alpha )  )
+                                      alpha = alpha,
+                                      **kwargs)  )
 
         # Set the axis limits to see the whole time range
         # (if the beginning or end is empty, it would otherwise be truncated)

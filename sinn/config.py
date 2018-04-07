@@ -46,7 +46,7 @@ def load_librairies(library_list):
             logger.error(str(e))
             library_set.remove('theano')
 
-    librairies.union(set(library_list))
+    librairies = librairies.union(set(library_list))
     set_floatX()
 
 def unload_librairies(library_list):
@@ -116,6 +116,7 @@ def get_rel_tolerance(var):
 
 # TODO: Rewrite these functions so they always check the value of floatX
 #       That way we can change the cast precision by just changing floatX
+#       (i.e. use @property.setter)
 # TODO: Move floatX to shim
 
 

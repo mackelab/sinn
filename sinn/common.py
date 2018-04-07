@@ -79,6 +79,9 @@ def clip_probabilities(prob_array,
                        min_prob = np.sqrt(config.abs_tolerance),
                        max_prob = 1-np.sqrt(config.abs_tolerance)):
     # For float64 variables, we should clip at least 1e-8 away from the bounds
+    dtype = getattr(prob_array, 'dtype', config.floatX)
+    min_prob = np.asarray(min_prob).astype(dtype)
+    max_prob = np.asarray(max_prob).astype(dtype)
     if not config.use_theano():
         if np.any(prob_array > 1) or np.any(prob_array < 1):
             log_queue(logger.warning, "Some probabilities were clipped.")
@@ -627,8 +630,10 @@ class ParameterMixin:
                 if isinstance(self.Parameter_info[key], tuple):
                     # TODO: Find a way to cast to dtype without making and then dereferencing an array
                     param_dict[key] = None
-                    temp_val = val.astype(self.Parameter_info[key][0],
-                                           copy=False)
+                    dtype = self.Parameter_info[key][0]
+                    if dtype == 'floatX':
+                        dtype = config.floatX
+                    temp_val = val.astype(dtype, copy=False)
                     # Check if we should ensure parameter is 2d.
                     try:
                         if self.Parameter_info[key][2]:
@@ -642,8 +647,11 @@ class ParameterMixin:
                         # `ensure_2d` is either False or unset
                         param_dict[key] = shim.shared(temp_val, name = key)
                 else:
+                    dtype = self.Parameter_info[key]
+                    if dtype == 'floatX':
+                        dtype = config.floatX
                     param_dict[key] = shim.shared(
-                        val.astype(self.Parameter_info[key], copy=False),
+                        val.astype(dtype, copy=False),
                         name=key)
         return self.Parameters(**param_dict)
 

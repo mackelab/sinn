@@ -194,6 +194,9 @@ em
             Optional. If passed, will used this history's parameters as defaults.
         time_array: ndarray (float)
             The array of times this history samples. If provided, `t0`, `tn` and `dt` are ignored.
+            Note that times should always be provided as 64 bit floats; the array is internally
+            convert to floatX, but a full precision version is also kept for some calculations such
+            as `index_interval()`.
         t0: float
             Time at which the history starts. /Deprecated: use `time_array`./
         tn: float
@@ -229,6 +232,13 @@ em
         # The first thing we do is increment the instance counter. This allows us to
         # ensure every class has a unique name.
         History.instance_counter += 1
+
+        # NOTE: We save both 'dt' and 'dt64' variables. 'dt' is of same type as floatX,
+        # while 'dt64' is always 64 bit. 'dt' is meant for single step calculations, such
+        # as appear in integrators. It should almost always suffice for external usage, and
+        # will prevent unwanted upconversions to float64.
+        # 'dt64' is meant for specific internal functions that span multiple steps and require
+        # the higher precision, such as determining the number of bins in an time interval.
 
         # if self not in sinn.inputs:
         #    sinn.inputs[self] = set()
@@ -270,18 +280,23 @@ em
         if time_array is not sinn._NoValue:
             t0 = time_array[0]
             tn = time_array[-1]
-            dt = time_array[1] - time_array[0]
-            assert( np.all(sinn.isclose(time_array[1:] - time_array[:-1], dt)) )
+            dt64 = np.float64(time_array[-1] - time_array[0]) / (len(time_array)-1)
+                 # If time_array is float32, this should be more precise than time_array[1] - time_array[0]
+            assert( np.all(sinn.isclose(time_array[1:] - time_array[:-1], dt64)) )
         else:
             # Ensure (tn-t0) is a round multiple of dt
-            tn = np.ceil( (tn - t0)/dt ) * dt + t0
+            dt64 = np.float64(dt)
+                # Normally dt should already be float64, but convert just in case
+            tn = np.ceil( (tn - t0)/dt64 ) * dt64 + t0
             time_array = np.arange(t0,
-                                   tn + dt - config.abs_tolerance,
-                                   dt)
+                                   tn + dt64 - config.abs_tolerance,
+                                   dt64,
+                                   dtype=config.floatX)
                 # 'self.tn+self.dt' ensures the upper bound is inclusive,
                 # -config.abs_tolerance avoids including an extra bin because of rounding errors
             tn = time_array[-1]   # Remove any risk of mismatch due to rounding
 
+        # Deprecated ?
         # Determine whether the series data will use Theano.
         # The default depends on whether Theano is loaded. If it is not loaded
         # and we try to use it for this history, an error is raised.
@@ -309,7 +324,8 @@ em
             # passed e.g. as an ndarray
         self.ndim = len(shape)
 
-        self.dt = np.array(dt, dtype=config.floatX)
+        self.dt = shim.cast(dt64, config.floatX)
+        self.dt64 = dt64
         #self._cur_tidx = -1
         if self.use_theano and not sinn.config.use_theano():
             raise ValueError("You are attempting to construct a series with Theano "
@@ -354,6 +370,10 @@ em
         else:
             raise TypeError("'Lesser than' comparison is not supported between objects of type History and {}."
                             .format(type(other)))
+
+    @property
+    def dtype(self):
+        return self._data.dtype
 
     @property
     def tnidx(self):
@@ -711,7 +731,11 @@ em
             `func(t)`
         """
         def f(t):
-            res = func(t)
+            res = shim.cast(func(t), config.floatX)
+            if res.dtype != self.dtype:
+                raise TypeError("Update function for history '{}' returned a "
+                                "value of dtype '{}', but history has dtype '{}'."
+                                .format(self.name, res.dtype, self.dtype))
             if shim.isscalar(res):
                 # update functions need to output an object with a shape
                 return shim.add_axes(res, 1)
@@ -772,20 +796,22 @@ em
             # to return True for both Python and NumPy ints – shim.istype does this
             before_idx_len = before
         else:
-            before_idx_len = int(np.ceil(before / self.dt))
+            before_idx_len = int(np.ceil(before / self.dt64))
         if shim.istype(after, 'int'):
             after_idx_len = after
         else:
-            after_idx_len = int(np.ceil(after / self.dt))
-        before = before_idx_len * self.dt
-        after = after_idx_len * self.dt
+            after_idx_len = int(np.ceil(after / self.dt64))
+        before = before_idx_len * self.dt64
+        after = after_idx_len * self.dt64
 
         before_array = np.arange(self.t0 - before,
                                  self._tarr[0] - config.abs_tolerance,
-                                 self.dt)
+                                 self.dt64,
+                                 dtype=self._tarr.dtype)
         after_array = np.arange(self._tarr[-1] + self.dt - config.abs_tolerance,
                                 self.tn + self.dt - config.abs_tolerance + after,
-                                self.dt)
+                                self.dt64,
+                                dtype=self._tarr.dtype)
             # Use of _tarr ensures we don't add more padding than necessary
 
         self._tarr = np.hstack((before_array,
@@ -803,6 +829,31 @@ em
             self._cur_tidx += len(before_array)
 
         return len(before_array), len(after_array)
+
+    def truncate_self(self, end):
+        # TODO: invalidate caches ?
+        # TODO: check lock
+        # TODO: Theano _data ? _cur_tidx ?
+        # TODO: Sparse _data (Spiketrain)
+        # TODO: Can't pad (resize) after truncate
+        logger.warning("Function `truncate_self()` is a work in progress.")
+        imax = self.get_t_idx(end)
+        if (isinstance(self._data, sp.sparse.spmatrix)
+            and not isinstance(self._data, sp.sparse.lil_matrix)):
+            self._data = self._data.tocsr()[:imax+1].tocoo()
+                # csc matrices can also be indexed by row, but there's no
+                # performance hit to converting to csr first.
+        else:
+            self._data = self._data[:imax+1]  # +1 because imax must be included
+        self._tarr = self._tarr[:imax+1]
+        if self.tnidx > imax:
+            self.tn = self._tarr[-1]
+            self._unpadded_length = len(self._tarr) - self.t0idx
+        if self._cur_tidx != self._original_tidx:
+            assert(False) # Building Theano graph
+        elif self._original_tidx > imax:
+            self._original_tidx.set_value(imax)
+            self._cur_tidx.set_value(imax)
 
     def compute_up_to(self, tidx, start='symbolic'):
         """Compute the history up to `tidx` inclusive.
@@ -1040,7 +1091,7 @@ em
         If Δt is an index (int), convert to time by multiplying by dt.
         """
         if shim.istype(Δt, 'int'):
-            return Δt*self.dt
+            return shim.cast(Δt*self.dt64, dtype=self._tarr.dtype)
         else:
             return Δt
 
@@ -1048,8 +1099,12 @@ em
         """
         If Δt is a time (float), convert to index interval by multiplying by dt.
         If Δt is an index (int), do nothing.
+        For very large Δt, this function returns an error because limits in numerical
+        precision prevent it from accurately calculating the index interval.
         OPTIMIZATION NOTE: This is a slower routine than its inverse `time_interval`.
         Avoid it in code that is called repeatedly, unless you know that Δt is an index.
+        It also always performs calculations with a double precision (64 bit) dt, even
+        when floatX is set to float32, because the higher precision is required.
 
         FIXME: Make this work with array arguments
 
@@ -1057,31 +1112,31 @@ em
         -------
         Integer (int16)
         """
-        if not shim.is_theano_object(Δt) and abs(Δt) < self.dt - config.abs_tolerance:
+        if not shim.is_theano_object(Δt) and abs(Δt) < self.dt64 - config.abs_tolerance:
             if Δt == 0:
                 return 0
             else:
                 raise ValueError("You've asked for the index interval corresponding to "
                                  "Δt = {}, which is smaller than this history's step size "
-                                 "({}).".format(Δt, self.dt))
+                                 "({}).".format(Δt, self.dt64))
         if shim.istype(Δt, 'int'):
             if not shim.istype(Δt, 'int16'):
                 Δt = shim.cast_int16( Δt )
             return Δt
         else:
             try:
-                shim.check( Δt * config.get_rel_tolerance(Δt) < self.dt )
+                shim.check( Δt * config.get_rel_tolerance(Δt) < self.dt64 )
             except AssertionError:
                 raise ValueError("You've tried to convert a time (float) into an index "
                                  "(int), but the value is too large to ensure the absence "
                                  "of numerical errors. Try using a higher precision type.")
-            quotient = Δt / self.dt
+            quotient = Δt / self.dt64
             rquotient = shim.round(quotient)
             if not allow_rounding:
                 try:
-                    shim.check( shim.abs(quotient - rquotient) < config.get_abs_tolerance(Δt) / self.dt )
+                    shim.check( shim.abs(quotient - rquotient) < config.get_abs_tolerance(Δt) / self.dt64 )
                 except AssertionError:
-                    logger.error("Δt: {}, dt: {}".format(Δt, self.dt) )
+                    logger.error("Δt: {}, dt: {}".format(Δt, self.dt64) )
                     raise ValueError("Tried to convert t=" + str(Δt) + " to an index interval "
                                      "but its not a multiple of dt.")
             return shim.cast_int16( rquotient )
@@ -1135,17 +1190,17 @@ em
                     # Enforce that times be multiples of dt
 
                     try:
-                        shim.check( (t * config.get_rel_tolerance(t) < self.dt).all() )
+                        shim.check( (t * config.get_rel_tolerance(t) < self.dt64).all() )
                     except AssertionError:
                         raise ValueError("You've tried to convert a time (float) into an index "
                                         "(int), but the value is too large to ensure the absence "
                                         "of numerical errors. Try using a higher precision type.")
-                    t_idx = (t - self._tarr[0]) / self.dt
+                    t_idx = (t - self._tarr[0]) / self.dt64
                     r_t_idx = shim.round(t_idx)
                     if (not shim.is_theano_object(r_t_idx) and not allow_rounding
-                          and (abs(t_idx - r_t_idx) > config.get_abs_tolerance(t) / self.dt).all() ):
+                          and (abs(t_idx - r_t_idx) > config.get_abs_tolerance(t) / self.dt64).all() ):
                         logger.error("t: {}, t0: {}, t-t0: {}, t_idx: {}, dt: {}"
-                                     .format(t, self._tarr[0], t - self._tarr[0], t_idx, self.dt) )
+                                     .format(t, self._tarr[0], t - self._tarr[0], t_idx, self.dt64) )
                         raise ValueError("Tried to obtain the time index of t=" +
                                         str(t) + ", but it does not seem to exist.")
                     return shim.cast(r_t_idx, dtype = self._cur_tidx.dtype)
@@ -1153,7 +1208,7 @@ em
                 else:
                     # Allow t to take any value, and round down to closest
                     # multiple of dt
-                    return shim.cast( (t - self._tarr[0]) // self.dt,
+                    return shim.cast( (t - self._tarr[0]) // self.dt64,
                                       dtype = self._cur_tidx.dtype )
 
         if isinstance(t, slice):
@@ -1222,11 +1277,12 @@ em
 
             # The kernel may start at a position other than zero, resulting in a shift
             # of the index corresponding to 't' in the convolution
-            idx_shift = int(round(kernel.t0 / self.dt))
+            idx_shift = int(round(kernel.t0 / self.dt64))
                 # We don't use shim.round because time indices must be Python numbers
-            t0 = idx_shift * self.dt  # Ensure the discretized kernel's t0 is a multiple of dt
+            t0 = shim.cast(idx_shift * self.dt64, config.floatX)
+                # Ensure the discretized kernel's t0 is a multiple of dt
 
-            memory_idx_len = int(kernel.memory_time // self.dt) - 1 - idx_shift
+            memory_idx_len = int(kernel.memory_time // self.dt64) - 1 - idx_shift
                 # It is essential here to use the same forumla as pad_time
                 # We substract one because one bin more or less makes no difference,
                 # and doing so ensures that padding with `memory_time` always
@@ -1243,8 +1299,8 @@ em
             #     use_theano=False
             use_theano=False
             dis_kernel = Series(t0=t0,
-                                tn=t0 + memory_idx_len*self.dt,
-                                dt=self.dt,
+                                tn=t0 + memory_idx_len*self.dt64,
+                                dt=self.dt64,
                                 shape=kernel.shape,
                                 f=kernel_func,
                                 name=dis_name,
@@ -1595,7 +1651,7 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
     _strict_index_rounding = False
 
     def __init__(self, hist=sinn._NoValue, name=None, *args, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
-                 pop_sizes=sinn._NoValue, **kwargs):
+                 pop_sizes=sinn._NoValue, dtype=sinn._NoValue, **kwargs):
         """
         All parameters except `hist` are keyword parameters
         `pop_sizes` is always required
@@ -1646,6 +1702,9 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
             i += pop_size
 
         super().__init__(hist, name, t0=t0, tn=tn, dt=dt, shape=shape, **kwargs)
+
+        if dtype is not None:
+            logger.warning("Spiketimes class does not support 'dtype'")
 
         self.initialize()
 
@@ -1887,14 +1946,14 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
             start = t - kernel.memory_time - kernel.t0
         else:
             if shim.istype(kernel_slice.stop, 'int'):
-                start = t - kernel_slice.stop*self.dt - kernel.t0
+                start = t - kernel_slice.stop*self.dt64 - kernel.t0
             else:
                 start = t - kernel_slice.stop
         if kernel_slice.start is None:
             stop = t - kernel.t0
         else:
             if shim.istype(kernel_slice.stop, 'int'):
-                stop = t - kernel_slice.start*self.dt - kernel.t0
+                stop = t - kernel_slice.start*self.dt64 - kernel.t0
             else:
                 stop = t - kernel_slice.start
 
@@ -1946,7 +2005,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
     _strict_index_rounding = True
 
     def __init__(self, hist=sinn._NoValue, name=None, *args, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
-                 pop_sizes=sinn._NoValue, **kwargs):
+                 pop_sizes=sinn._NoValue, dtype=sinn._NoValue, **kwargs):
         """
         All parameters except `hist` are keyword parameters
         `pop_sizes` is always required
@@ -2012,6 +2071,9 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         self.conn_mats = None
 
         super().__init__(hist, name, t0=t0, tn=tn, dt=dt, shape=shape, **kwargs)
+
+        if dtype is not None:
+            logger.warning("SpikeTrain class does not support 'dtype'")
 
         self.initialize()
 
@@ -2583,7 +2645,7 @@ class Series(ConvolveMixin, History):
 
     def __init__(self, hist=sinn._NoValue, name=None, *args,
                  t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
-                 shape=sinn._NoValue, **kwargs):
+                 shape=sinn._NoValue, dtype=sinn._NoValue, **kwargs):
         """
         Initialize a Series instance, derived from History.
 
@@ -2601,7 +2663,6 @@ class Series(ConvolveMixin, History):
         #     assert(kwargs['convolve_shape'] == shape)
         # else:
         #     kwargs['convolve_shape'] = shape*2
-
         super().__init__(hist, name, *args,
                          t0=t0, tn=tn, dt=dt,
                          shape=shape, **kwargs)
@@ -2617,7 +2678,12 @@ class Series(ConvolveMixin, History):
         #     self._data = self.DataType(self.name + ' data')
         #     #self.inf_bin = shim.lib.zeros(self.shape, dtype=config.floatX)
         # else:
-        self._data = shim.shared(np.zeros(self._tarr.shape + self.shape, dtype=config.floatX),
+        if dtype is sinn._NoValue:
+            if hist is not sinn._NoValue:
+                dtype = hist.dtype
+            else:
+                dtype = config.floatX
+        self._data = shim.shared(np.zeros(self._tarr.shape + self.shape, dtype=dtype),
                                  name = self.name + " data",
                                  borrow = True)
         self._original_data = self._data
@@ -3109,9 +3175,11 @@ class Series(ConvolveMixin, History):
                     "Floats are treated as times, while integers are treated as time indices. "
                     .format(tidx))
             dim_diff = discretized_kernel.ndim - self.ndim
-            return self.dt * shim.sum(discretized_kernel[kernel_slice][::-1]
-                                      * shim.add_axes(self[hist_slice], dim_diff, -self.ndim),
-                                      axis=0)
+            return shim.cast(self.dt64 * shim.sum(discretized_kernel[kernel_slice][::-1]
+                                                  * shim.add_axes(self[hist_slice], dim_diff,
+                                                                  -self.ndim),
+                                                  axis=0),
+                             dtype=self._data.dtype)
                 # history needs to be augmented by a dimension to match the kernel
                 # Since kernels are [to idx][from idx], the augmentation has to be on
                 # the second-last axis for broadcasting to be correct.
@@ -3147,7 +3215,9 @@ class Series(ConvolveMixin, History):
                     "a starting point preceding the history's padding. Is it "
                     "possible you specified time as an integer rather than scalar ?")
             dis_kernel_shape = (kernel_slice.stop - kernel_slice.start,) + discretized_kernel.shape
-            retval = self.dt * shim.conv1d(self[:], discretized_kernel[kernel_slice], len(self._tarr), dis_kernel_shape)[domain_slice]
+            retval = shim.cast(self.dt64 * shim.conv1d(self[:], discretized_kernel[kernel_slice],
+                                                       len(self._tarr), dis_kernel_shape)[domain_slice],
+                               dtype=self._data.dtype)
             shim.check(shim.eq(retval.shape[0], len(self)))
                 # Check that there is enough padding after tn
             return retval
