@@ -27,7 +27,6 @@ import mackelab.utils
 from mackelab.stylelib import colorschemes
 
 from . import common as com
-from . import analyze as anlz
 from .axis import Axis
 
 __ALL__ = ['HeatMap']
@@ -1459,7 +1458,7 @@ class MarginalCollection:
         if self.transformed[keyi] != self.transformed[keyj]:
             raise NotImplementedError("Only setting 'transformed' globally is currently supported.")
         hm.set_cmap(self.colorscheme.name)
-        ax, cb = hm.heatmap(transformed=self.transformed[keyi], **kwargs,);
+        ax, cb = hm.heatmap(transformed=self.transformed[keyi], **kwargs);
         ax.set_facecolor(self.colorscheme.min)
         cb.remove()
 
