@@ -1557,12 +1557,15 @@ class FitCollection:
             Keyword arguments are passed on to mackelab.iotools.load()
         """
 
+        # Invalidate internal caches
+        self._nffits = None
+        self._ffits = None
+
         # Load the fits
         try:
             logger.info("Loading {} fits...".format(len(fit_list)))
         except TypeError:
             pass # fit_list may be iterable without having a length
-
 
         # TODO: Remove when we don't need to read .sir files
         if 'input_format' in kwargs:
@@ -1613,21 +1616,23 @@ class FitCollection:
     @property
     def nonfinite_fits(self):
         """Return the fits with non-finite elements."""
-        nffits = []
-        for fit in self.fits:
-            if any( not np.all(np.isfinite(trace))
-                    for trace in fit.data.get_evol().values() ):
-                nffits.append(fit)
-        return nffits
+        if self._nffits is None:
+            self._nffits = []
+            for fit in self.fits:
+                if any( not np.all(np.isfinite(trace))
+                        for trace in fit.data.get_evol().values() ):
+                    self._nffits.append(fit)
+        return self._nffits
     @property
     def finite_fits(self):
         """Return the fits with non-finite elements."""
-        ffits = []
-        for fit in self.fits:
-            if all( np.all(np.isfinite(trace))
-                    for trace in fit.data.get_evol().values() ):
-                ffits.append(fit)
-        return ffits
+        if self._ffits is None:
+            self._ffits = []
+            for fit in self.fits:
+                if all( np.all(np.isfinite(trace))
+                        for trace in fit.data.get_evol().values() ):
+                    self._ffits.append(fit)
+        return self._ffits
 
     def plot_cost(self, **kwargs):
         """
