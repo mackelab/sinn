@@ -731,7 +731,7 @@ em
             `func(t)`
         """
         def f(t):
-            res = shim.cast(func(t), config.floatX)
+            res = func(t)
             if res.dtype != self.dtype:
                 raise TypeError("Update function for history '{}' returned a "
                                 "value of dtype '{}', but history has dtype '{}'."
