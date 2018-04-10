@@ -47,8 +47,7 @@ class History(HistoryBase):
 
     Derived classes can safely expect the following attributes to be defined:
         + name             : str. Unique identifying string
-        + shape            : int tuple. Shape at a single time point, or number of elements in the syst        # A depends on ρ, so its update function has to be set second
-em
+        + shape            : int tuple. Shape at a single time point, or number of elements in the system
         + t0               : float. Time at which history starts
         + tn               : float. Time at which history ends
         + dt               : float. Timestep size
@@ -391,6 +390,7 @@ em
         # The raw format is meant for data longevity, and so should
         # seldom, if ever, be changed
         """
+
         Parameters
         ----------
         **kwargs:
@@ -436,6 +436,7 @@ em
     @classmethod
     def from_raw(cls, raw, update_function=sinn._NoValue, use_theano=False, lock=True, **kwds):
         """
+
         Parameters
         ----------
         use_theano: bool
@@ -724,6 +725,7 @@ em
 
     def set_update_function(self, func):
         """
+
         Parameters
         ----------
         func: callable
@@ -745,6 +747,7 @@ em
 
     def set_range_update_function(self, func):
         """
+
         Parameters
         ----------
         func: callable
@@ -769,6 +772,7 @@ em
         ```
         history.pad_time(max(a,b))
         ```
+
         Parameters
         ----------
         before: float | int
@@ -1656,6 +1660,7 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
         All parameters except `hist` are keyword parameters
         `pop_sizes` is always required
         If `hist` is not specified, `t0`, `tn`, `dt` must all be specified.
+
         Parameters
         ----------
         hist: History instance
@@ -1800,7 +1805,9 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
 
     #was :  def update(self, t, pop_idx, spike_arr):
     def update(self, tidx, neuron_idcs):
-        '''Add to each neuron specified in `value` the spiketime `tidx`.
+        """
+        Add to each neuron specified in `value` the spiketime `tidx`.
+
         Parameters
         ----------
         tidx: int, float
@@ -1810,7 +1817,7 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
             Should not correspond to more than one bin ahead of _cur_tidx.
         neuron_idcs: iterable
             List of neuron indices that fired in this bin.
-        '''
+        """
         if self.locked:
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))
@@ -1837,10 +1844,11 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
             self._original_tidx = self._cur_tidx
 
     def pad(self, before, after=0):
-        '''Extend the time array before and after the history. If called
+        """
+        Extend the time array before and after the history. If called
         with one argument, array is only padded before. If necessary,
         padding amounts are reduced to make them exact multiples of dt.
-        """
+
         Parameters
         ----------
         before: float | int
@@ -1848,7 +1856,7 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
             to this data will be invalidated.
         after: float (default 0)
             Amount of time to add after tn.
-        '''
+        """
         self.pad_time(before, after)
         # Since data is stored as spike times, no need to update the data
 
@@ -1985,43 +1993,69 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
             raise NotImplementedError
 
 class Spiketrain(ConvolveMixin, PopulationHistory):
-    """A class to store spiketrains.
-    These are stored in a sparse array where spikes are indicated by 1s.
-    The `shape` parameter doesn't exactly correspond to a timeslice; instead
-    it is used to indicate the number of neurons in each population.
-    These populations are flattened, such that a timeslice is always 2D array;
-    if the `shape` is `(N1, N2, N3)`, than the actual shape of a timeslice will
-    be `(1 x N1+N2+N3)`.
+    """
+    A class to store spiketrains, grouped into populations.
 
-    Currently we are using a csr array, as Theano only supports csc and csr.
-    This means that adding spikes is a relatively costly operation. It also
-    means that putting the update function inside a scan (for example to generate
-    a whole trace) might lead to a really nasty Theano graph (or maybe not?
-    I haven't tried, but the Theano docs warn against this). So in short,
-    this implementation is still at the 'just get it working' stage, and may need
-    to be changed in the future.
+    These are stored in a sparse array where spikes are indicated by 1s.
+    Instead of the `shape` parameter, we use `pop_slices` to indicate the neurons
+    associated to each population, from which `shape` is automatically deduced.
+    Only 1d timeslices are currently supported (i.e. all populations are arranged
+    along one axis).
+
+    Internally spikes are stored in a coo array, for fast addition of new spikes.
+    It is cast to csr for slicing. See the `scipy.sparse` documentation for a
+    discussion of different sparse array types.
+
+    Convolutions are specially defined to be summed over populations, and thus
+    require the definition of the connectivity matrix. If convolutions are not
+    to be used, the connectivity matrix can be left undefined.
+
+    There are still a few unsolved challenges preventing using this class in a
+    Theano graph at the moment. Notably, Theano only supports csc and csr. Moreover,
+    Theano docs warn against using sparse arrays within `scan()`, as would almost
+    certainly be required.
+
+    NOTE: Although this class was designed to simulate and store spike trains,
+    since the data type and update functions are arbitrary, it can just as well
+    be used for any kind of sparse data. Depending on the needs of the application,
+    the convolution functions may need to be redefined.
     """
 
     _strict_index_rounding = True
 
-    def __init__(self, hist=sinn._NoValue, name=None, *args, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
-                 pop_sizes=sinn._NoValue, dtype=sinn._NoValue, **kwargs):
+    def __init__(self, hist=sinn._NoValue, name=None, *args, time_array=sinn._NoValue,
+                 pop_sizes=sinn._NoValue, dtype=sinn._NoValue,
+                 t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
+                 **kwargs):
         """
-        All parameters except `hist` are keyword parameters
-        `pop_sizes` is always required
-        If `hist` is not specified, `t0`, `tn`, `dt` must all be specified.
+        All parameters except `hist` are keyword parameters.
+        `pop_sizes` is always required.
+        If `hist` is not specified, `time_array` must be specified.
+
         Parameters
         ----------
         hist: History instance
             Optional. If passed, will used this history's parameters as defaults.
-        t0: float
-            Time at which the history starts
-        tn: float
-            Time at which the history ends
-        dt: float
-            Timestep
+        time_array: ndarray (float)
+            The array of times this history samples. If provided, `t0`, `tn` and `dt` are ignored.
+            Note that times should always be provided as 64 bit floats; the array is internally
+            convert to floatX, but a full precision version is also kept for some calculations such
+            as `index_interval()`.
         pop_sizes: integer tuple
             Number if neurons in each population
+        iterative: bool (default: True)
+            (Optional) If true, indicates that f must be computed iteratively. I.e. having
+            computed f(t) is required in order to compute f(t+1). When false,
+            when computed f for multiple times t, these will be passed as an array
+            to f, using only one function call. Default is to force iterative computation.
+        dtype: numpy dtype
+            Type to use for the internal sparse array.
+        t0: float
+            Time at which the history starts. /Deprecated: use `time_array`./
+        tn: float
+            Time at which the history ends. /Deprecated: use `time_array`./
+        dt: float
+            Timestep. /Deprecated: use `time_array`./
         **kwargs:
             Extra keyword arguments are passed on to History's initializer
         """
@@ -2072,10 +2106,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
 
         super().__init__(hist, name, t0=t0, tn=tn, dt=dt, shape=shape, **kwargs)
 
-        if dtype is not None:
-            logger.warning("SpikeTrain class does not support 'dtype'")
-
-        self.initialize()
+        self.initialize(dtype=dtype)
 
     def raw(self):
         return super().raw(_data = self._data,
@@ -2090,6 +2121,11 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         # This line recovers the original
         retval._data = retval._data.get_value()[()]
         return retval
+
+    @property
+    def npops(self):
+        """The number of populations."""
+        return len(self.pop_slices)
 
     def get_popterm(self, values):
         if isinstance(values, popterm.PopTerm):
@@ -2114,6 +2150,9 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
 
     def set_connectivity(self, w):
         """
+        Set the connectivity matrix from neurons to populations. This
+        is required for convolutions.
+
         Parameters
         ----------
         w: ndarray
@@ -2127,7 +2166,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             #nonzero returns a tuple (one element per dimension - here there is only one dimension)
             #so we need to index with [0] to have just the array of non-zero columns
 
-    def initialize(self, init_data=None):
+    def initialize(self, init_data=None, dtype=None):
         """
         This method is called without parameters at the end of the class
         instantiation, but can be called again to change the initialization
@@ -2141,17 +2180,24 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             If not specified, the data is initialized to zero.
             Note that the initialized data is set for the first n time indices,
             so if padding is present, those will be before t0. Consequently, the
-            typical use is to use n equal to the padding length (i.e. t0idx).
+            typical use is to use n equal to the padding length (i.e. self.t0idx).
+            If `init_data` does not provide a dtype, it must be given as second
+            argument.
+        dtype: numpy dtype
+            Type to use for storing the data. If both `init_data` and `dtype`
+            are provided, data will be cast to `dtype`. If neither is provided,
+            the 'int8' type is used, to be compatible with Theano bools.
         """
         # TODO: Allow either a nested or flattened list for init_data
 
         nneurons = np.sum(self.pop_sizes)
 
-
         if init_data is None:
+            if dtype is None or dtype is sinn._NoValue:
+                dtype = 'int8'
             self._data = shim.sparse.coo_matrix('spike train',
                                                 shape=(len(self._tarr), nneurons),
-                                                dtype='int8')
+                                                dtype=dtype)
             # We are just going to store 0s and 1s, so might as well use the smallest
             # available int in Theano
             # Tests have shown that coo_matrix is faster than lil_matrix for the use
@@ -2159,11 +2205,18 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
 
         else:
             shim.check(init_data.shape[1] == nneurons)
+            if dtype is None or dtype is sinn._NoValue:
+                try:
+                    dtype = init_data.dtype
+                except AttributeError:
+                    raise ValueError("The provided data of type {} does have a 'dtype' "
+                                     "attribute. In this case you must provide it to "
+                                     "Spiketrain.initialize().".format(type(init_data)))
             n = len(init_data)
             csc_data = shim.sparse.csc_matrix('spike train',
                                               shape=(len(self._tarr), nneurons),
-                                              dtype='int8')
-            csc_data[:n,:] = shim.sparse.csc_from_dense(init_data.astype('int8'))
+                                              dtype=dtype)
+            csc_data[:n,:] = shim.sparse.csc_from_dense(init_data.astype(dtype))
             # This may through an efficiency warning, but we can ignore it since
             # self._data is empty
             self._data = csc_data.tocoo()
@@ -2306,6 +2359,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
     #was :  def update(self, t, pop_idx, spike_arr):
     def update(self, tidx, neuron_idcs):
         '''Add to each neuron specified in `value` the spiketime `tidx`.
+
         Parameters
         ----------
         tidx: int, float or 1D array of int, float
@@ -2375,10 +2429,11 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             self._original_tidx = self._cur_tidx
 
     def pad(self, before, after=0):
-        '''Extend the time array before and after the history. If called
+        """
+        Extend the time array before and after the history. If called
         with one argument, array is only padded before. If necessary,
         padding amounts are reduced to make them exact multiples of dt.
-        """
+
         Parameters
         ----------
         before: float | int
@@ -2386,7 +2441,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             to this data will be invalidated.
         after: float | int (default 0)
             Amount of time to add after tn.
-        '''
+        """
         before_len, after_len = self.pad_time(before, after)
         newshape = (len(self._tarr) + before_len + after_len, sum(self.shape))
         self._data.row += before_len
@@ -2702,6 +2757,7 @@ class Series(ConvolveMixin, History):
 
     def update(self, tidx, value):
         '''Store a new time slice.
+
         Parameters
         ----------
         tidx: int or slice(int, int)
@@ -2819,11 +2875,12 @@ class Series(ConvolveMixin, History):
                 # – which is what we want
 
     def pad(self, before, after=0, **kwargs):
-        '''Extend the time array before and after the history. If called
+        """
+        Extend the time array before and after the history. If called
         with one argument, array is only padded before. If necessary,
         padding amounts are increased to make them exact multiples of dt.
         See `History.pad_time` for more details.
-        """
+
         Parameters
         ----------
         before: float | int
@@ -2835,7 +2892,7 @@ class Series(ConvolveMixin, History):
             Extra keyword arguments are forwarded to `numpy.pad`.
             They may be used to specify how to fill the added time slices.
             Default is to fill with zeros.
-        '''
+        """
 
         previous_tarr_shape = self._tarr.shape
         before_len, after_len = self.pad_time(before, after)
