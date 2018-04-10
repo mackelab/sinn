@@ -3101,7 +3101,7 @@ class Series(ConvolveMixin, History):
 
         if source is None:
             # Default is to use series' own compute functions
-            self.compute_up_to('all')
+            self.compute_up_to('end')
 
         elif isinstance(source, History):
             raise NotImplemented
