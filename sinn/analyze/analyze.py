@@ -13,7 +13,7 @@ __all__ = ['mean', 'diff', 'smooth', 'subsample',
 
 import logging
 import collections
-from collections import namedtuple
+from collections import namedtuple, Iterable
 import itertools
 import numpy as np
 import scipy as sp
@@ -442,6 +442,9 @@ def plot(data, **kwargs):
     A list of the return values of the plotting calls.
 
     """
+    # List of keywords that may be expanded to apply to separate plots
+    expandable_kwargs = ['alpha']
+
     if isinstance(data, histories.History):
         data = histories.DataView(data)
         start = kwargs.pop('start', data.t0idx)
@@ -451,9 +454,29 @@ def plot(data, **kwargs):
 
     # TODO: Collect repeated code
 
+    # No harm in trying to load keywords that aren't used in some plot formats
+    comp_list = kwargs.pop('component', None)
+    label = kwargs.pop('label', None)
+
+    # Expand keywords (i.e. a list of alphas => apply each alpha to a different plot)
+    plot_kwds = [{}]
+    for kwd in expandable_kwargs:
+        vals = kwargs.pop(kwd, None)
+        if vals is not None:
+            if isinstance(vals, Iterable):
+                vals = list(vals)  # In case `val` is a generator
+                if len(vals) > 1:
+                    if len(plot_kwds) == 1:
+                        plot_kwds = [plot_kwds[0].copy() for _ in range(len(vals))]
+                    elif len(plot_kwds) != len(vals):
+                        raise ValueError("Expanded plot keywords must all have the same length.")
+                for kwds, val in zip(plot_kwds, vals):
+                    kwds[kwd] = val
+            else:
+                for kwds in plot_kwds:
+                    kwds[kwd] = vals
+
     if isinstance(data, np.ndarray):
-        comp_list = kwargs.pop('component', None)
-        label = kwargs.pop('label', None)
 
         if comp_list is None:
             if len(data.shape) > 1:
@@ -487,10 +510,23 @@ def plot(data, **kwargs):
         # Plotting separately allows to assign a label to each
         lines = []
         if comp_list is None:
-            lines.append( plt.plot(np.arange(len(data)), data) )
+            if len(plot_kwds) > 1:
+                raise ValueError("No components: cannot use expandale keywords.")
+            kwargs.update(**plot_kwds[0])
+            lines.append( plt.plot(np.arange(len(data)), data, kwargs) )
 
         else:
-            for comp, label in zip(comp_list, labels):
+            if len(plot_kwds) == 1:
+                plot_kwds = [plot_kwds[0].copy() for _ in range(len(comp_list))]
+            elif len(plot_kwds) != len(comp_list):
+                raise ValueError("There must be as many expanded plot keywords as "
+                                "there are components."
+                                "No. of arguments: {}. No. of components: {}."
+                                .format(len(plot_kwds), len(comp_list)))
+            # Loop over the components, plotting each separately
+            # Plotting separately allows to assign a label to each
+            for comp, label, kwds in zip(comp_list, labels, plot_kwds):
+                kwargs.update(**kwds)
                 idx = (slice(None),) + comp
                 lines.append( plt.plot(np.arange(len(data)), data[idx], label=label, **kwargs) )
         return lines
@@ -507,14 +543,12 @@ def plot(data, **kwargs):
         #         raise ValueError("You need to compile a Theano history before plotting it.")
         #     data = data.compiled_history
 
-        comp_list = kwargs.pop('component', None)
         if comp_list is None:
             comp_list = list( itertools.product(*[range(s) for s in data.shape]) )
         else:
             if not isinstance(comp_list, collections.Iterable):
                 comp_list = [comp_list]
 
-        label = kwargs.pop('label', None)
         if label is None or isinstance(label, str):
             name = label if label is not None else data.name
             # Loop over the components
@@ -527,10 +561,18 @@ def plot(data, **kwargs):
             assert(isinstance(label, collections.Iterable))
             labels = label
 
+        if len(plot_kwds) == 1:
+            plot_kwds = [plot_kwds[0].copy() for _ in range(len(comp_list))]
+        elif len(plot_kwds) != len(comp_list):
+            raise ValueError("There must be as many expanded plot keywords as "
+                             "there are components."
+                             "No. of arguments: {}. No. of components: {}."
+                             .format(len(plot_kwds), len(comp_list)))
         # Loop over the components, plotting each separately
         # Plotting separately allows to assign a label to each
         lines = []
-        for comp, label in zip(comp_list, labels):
+        for comp, label, kwds in zip(comp_list, labels, plot_kwds):
+            kwargs.update(**kwds)
             lines.append( plt.plot(data.get_time_array(time_slice=tslice),
                                    data.get_trace(comp, time_slice=tslice),
                                    label=label, **kwargs) )
@@ -542,7 +584,6 @@ def plot(data, **kwargs):
 
         lineheight = kwargs.pop('lineheight', 1)
         markersize = kwargs.pop('markersize', 1)
-        alpha = kwargs.pop('alpha', 0.3)
         linestyle = kwargs.pop('linestyle', 'None')
         baselabel = kwargs.pop('label', 'Population')
         if baselabel[-1] != ' ':
@@ -555,10 +596,21 @@ def plot(data, **kwargs):
             # We do 'tarr[idx-1]' to avoid indexing beyond the end of _tarr
         tidcs = np.where(np.logical_and(tstart <= tarr, tarr <= tend))[0]
         lines = []
-        for i, popslice in enumerate(data.pop_slices):
+
+        if len(plot_kwds) == 1:
+            plot_kwds = [plot_kwds[0].copy() for _ in range(data.npops)]
+        elif len(plot_kwds) != data.npops:
+            raise ValueError("There must be as many expanded plot keywords as "
+                             "there are spike populations. "
+                             "No. of arguments: {}. No. of populations: {}."
+                             .format(len(plot_kwds), dat.npops))
+
+        for i, (popslice, kwds) in enumerate(zip(data.pop_slices, plot_kwds)):
             popidcs = np.where(np.logical_and(popslice.start <= data._data.col,
                                             data._data.col < popslice.stop))[0]
             idcs = np.intersect1d(tidcs, popidcs)
+
+            alpha = kwds.get('alpha', 0.3)
 
             lines.append( plt.scatter(data._tarr[data._data.row[idcs]],
                                       data._data.col[idcs]*lineheight,
@@ -577,6 +629,10 @@ def plot(data, **kwargs):
 
     elif isinstance(data, heatmap.HeatMap):
         # TODO: Override keyword arguments with **kwargs
+        if len(plot_kwds) > 1:
+            raise ValueError("Expanded keywords not implemented for heatmaps.")
+        kwargs.update(plot_kwds[0])
+
         ax1_grid, ax2_grid = np.meshgrid(_centers_to_edges(data.axes[0]), _centers_to_edges(data.axes[1]), indexing='ij')
         zmin = max(data.floor, data.min())
         zmax = min(data.ceil, data.max())
