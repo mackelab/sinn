@@ -2841,7 +2841,7 @@ class Series(ConvolveMixin, History):
 
         else:
             if shim.is_theano_object(value):
-                if not shim.is_computable([value]):
+                if not shim.graph.is_computable([value]):
                     raise ValueError("You are trying to update a pure numpy series ({}) "
                                      "with a Theano variable. You need to make the "
                                      "series a Theano variable as well."
