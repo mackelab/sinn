@@ -443,7 +443,7 @@ def plot(data, **kwargs):
 
     """
     # List of keywords that may be expanded to apply to separate plots
-    expandable_kwargs = ['alpha']
+    expandable_kwargs = ['alpha', 'color']
 
     if isinstance(data, histories.History):
         data = histories.DataView(data)
@@ -463,7 +463,7 @@ def plot(data, **kwargs):
     for kwd in expandable_kwargs:
         vals = kwargs.pop(kwd, None)
         if vals is not None:
-            if isinstance(vals, Iterable):
+            if isinstance(vals, Iterable) and not isinstance(vals, (str, bytes)):
                 vals = list(vals)  # In case `val` is a generator
                 if len(vals) > 1:
                     if len(plot_kwds) == 1:
@@ -511,7 +511,7 @@ def plot(data, **kwargs):
         lines = []
         if comp_list is None:
             if len(plot_kwds) > 1:
-                raise ValueError("No components: cannot use expandale keywords.")
+                raise ValueError("No components: cannot use expandable keywords.")
             kwargs.update(**plot_kwds[0])
             lines.append( plt.plot(np.arange(len(data)), data, kwargs) )
 
@@ -528,7 +528,7 @@ def plot(data, **kwargs):
             for comp, label, kwds in zip(comp_list, labels, plot_kwds):
                 kwargs.update(**kwds)
                 idx = (slice(None),) + comp
-                lines.append( plt.plot(np.arange(len(data)), data[idx], label=label, **kwargs) )
+                lines.extend( plt.plot(np.arange(len(data)), data[idx], label=label, **kwargs) )
         return lines
 
     elif ( isinstance(data, histories.Series)
@@ -573,7 +573,7 @@ def plot(data, **kwargs):
         lines = []
         for comp, label, kwds in zip(comp_list, labels, plot_kwds):
             kwargs.update(**kwds)
-            lines.append( plt.plot(data.get_time_array(time_slice=tslice),
+            lines.extend( plt.plot(data.get_time_array(time_slice=tslice),
                                    data.get_trace(comp, time_slice=tslice),
                                    label=label, **kwargs) )
         return lines
@@ -612,6 +612,8 @@ def plot(data, **kwargs):
 
             alpha = kwds.get('alpha', 0.3)
 
+            # scatter() returns a PathCollection, not a list of lines like plot(),
+            # so we use `append` instead of `extend`.
             lines.append( plt.scatter(data._tarr[data._data.row[idcs]],
                                       data._data.col[idcs]*lineheight,
                                       s = markersize,
