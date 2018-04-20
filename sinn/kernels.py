@@ -387,7 +387,7 @@ class ExpKernel(Kernel):
         if shim.isshared(self.params.t_offset):
             # If t_offset is a shared variable, grab its value.
             t_offset = self.params.t_offset.get_value()
-        elif shim.is_computable([self.params.t_offset]):
+        elif shim.graph.is_computable([self.params.t_offset]):
             # We can evaluate the parameter (it's likely a symbolic manipulation of a
             # shared variable). This takes a few seconds, but returns a pure Python value
             t_offset = self.params.t_offset.eval()
