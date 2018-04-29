@@ -18,6 +18,9 @@ debug_level = 2
 
 disk_cache_file = ""
 
+# TODO: floatX, load_librairies should be removed;
+#       shim already provides this
+
 # List of optional librairies we want to load.
 # Some code may e.g. choose to use theano objects if it is available
 # They may be added later with
@@ -119,7 +122,6 @@ def get_rel_tolerance(var):
 #       (i.e. use @property.setter)
 # TODO: Move floatX to shim
 
-
 def set_floatX(floatX_str = None):
     """
     Set the floatX attribute to be equal to theano.config.floatX
@@ -130,7 +132,7 @@ def set_floatX(floatX_str = None):
 
     if floatX_str is None:
         if 'theano' in librairies:
-            floatX = shim.gettheano().config.floatX
+            floatX = shim.config.floatX
             assert(floatX in ['float64', 'float32'])
             # if floatX == 'float32':
             #     cast_floatX = np.float32
@@ -158,6 +160,3 @@ def set_floatX(floatX_str = None):
     abs_tolerance = get_abs_tolerance(cast_floatX(1))
 
 set_floatX()
-
-
-
