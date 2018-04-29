@@ -33,6 +33,20 @@ except ImportError:
     logger.warning("Unable to import matplotlib. Plotting functions "
                    "will not work.")
 
+# Gradient descent involves some form of iteration, for which we typically
+# want to provide feedback. Often (e.g. in a Jupyter Notebook), we will
+# want to refresh the feedback output, to avoid drowning the interface in
+# status messages
+try:
+    __IPYTHON__
+except NameError:
+    # We are not within an IPython environment
+    def clear_output(wait=False):
+        return
+else:
+    # We are within an IPython environment – use its clear_output function
+    from IPython.display import clear_output
+
 #######################################
 #
 # Status constants
@@ -50,19 +64,47 @@ class ConvergeStatus(Enum):
 #
 ######################################
 
-# Gradient descent involves some form of iteration, for which we typically
-# want to provide feedback. Often (e.g. in a Jupyter Notebook), we will
-# want to refresh the feedback output, to avoid drowning the interface in
-# status messages
-try:
-    __IPYTHON__
-except NameError:
-    # We are not within an IPython environment
-    def clear_output(wait=False):
-        return
-else:
-    # We are within an IPython environment – use its clear_output function
-    from IPython.display import clear_output
+def standardize_lr(lr, params):
+    """
+    Return a dictionary of {param name: learning rate} pairs.
+    TODO: Move to mackelab.optimizers
+
+    Parameters
+    ----------
+    lr: float, dict
+        If float: same learning rate applied to each parameter.
+        If dict: keys correspond to parameter names.
+        Dictionary may also contain a 'default' entry; it's value is used
+        for any parameter whose name is not in the `lr` dictionary.
+    params: list of symbolic variables
+        Parameters which will be fit.
+    """
+    if shim.isscalar(lr):
+        lr = {p: lr for p in params}
+    elif isinstance(lr, dict):
+        new_lr = {}
+        default_lr = getattr(lr, 'default', None)
+        for p in params:
+            if p in lr:
+                assert(shim.isshared(p))
+                assert(p.name not in lr)
+                new_lr[p] = lr[p]
+            elif p.name in lr:
+                new_lr[p] = lr[p.name]
+            else:
+                if default_lr is not None:
+                    new_lr[p] = default_lr
+                else:
+                    raise KeyError("No learning rate for variable '{}', "
+                                    "and no default learning rate was given."
+                                    .format(p.name))
+        lr = new_lr
+
+    else:
+        raise ValueError("Learning rate must be specified either as a scalar, "
+                            "or as a dictionary with a key matching each parameter.")
+
+    return lr
 
 def maxdiff(it, n=10):
     """Return the maximum difference between the last element of it(terable)
@@ -211,8 +253,509 @@ class Cost:
 #
 ##########################################
 
+class SGDBase:
 
-class SGD:
+    def __init__(self, cost_format):
+        self.cost_format = cost_format
+
+    @property
+    def repr_np(self):
+        repr = {'version': 1,
+                'type'   : 'SGDBase'}
+
+        repr['cost_format'] = self.cost_format
+
+        return repr
+
+    @classmethod
+    def from_repr_np(cls, repr, _instance):
+        """
+        Parameters
+        ----------
+        repr: numpy.NpzFile
+            Value returned from `repr_np()`.
+        _instance: None | class instance
+            For internal use.
+            If not None, use this class instance instead of creating a new one.
+            Designed for calling `from_repr_np()` from descendent classes.
+        """
+        if _instance is not None:
+            assert(isinstance(_instance, cls))
+            o = _instance
+        else:
+            kwargs = {'cost_format': repr['cost_format']}
+            o = cls(**kwargs)
+
+        return o
+
+    def Cost(self, cost):
+        return Cost(cost, self.cost_format)
+
+class SeriesSGD(SGDBase):
+    # TODO: Spin out SGD class and inherit
+
+    def __init__(self, cost, cost_format, optimizer,
+                 optimize_vars, track_vars,
+                 start, datalen, burnin, batch_size, lr,
+                 advance, initialize=None, mode='random',
+                 cost_track_freq=100, var_track_freq=1):
+        """
+
+        Parameters
+        ----------
+        cost: function (tidx, batch_size) -> cost
+            Function taking two symbolic inputs (tidx and batch_size) and returning
+            a symbolic cost.
+        cost_format: str
+            Indicates how the cost function should be interpreted. This will affect e.g.
+            whether the algorithm attempts to minimize or maximize the value. One of:
+              + 'logL' : log-likelihood
+              + 'negLogL' or '-logL': negative log-likelihood
+              + 'L' : likelihood
+              + 'cost': An arbitrary cost to minimize. Conversion to other formats will
+                   not be possible.
+            May also be a subclass of `Cost`. (TODO)
+        optimizer: str | class/factory function
+            String specifying the optimizer to use. Possible values:
+              - 'adam'
+            If a class/factory function, should have the signature
+              `optimizer(cost, fitparams, **kwargs)`
+        optimize_vars: List of symbolic variables
+            Symbolic variable/graph for the cost function we want to optimize.
+            All variables should be inputs to the `cost` graph.
+            Shared variables are used as-is.
+            For non-shared variables, a shared variable is created. To determine the
+            value to which to set it, we first call `shim.get_test_value()`. If that
+            fails, an array of ones of proper shape and size is used.
+        track_vars: dict {'name': symbolic graph}
+            Dictionary indicating which variables to track. To track an optimization
+            variable, just provide it. To track a transformation of it, provide the
+            transformation as a symbolic graph for which the variable is an input.
+        start: int
+            Start of the data used in the fit.
+        datalen: int
+            Amount of data on which to evaluate the cost, in the model's time units.
+            Cost will be evaluated up to the time point 'start + datalen'.
+            burnin: float, int
+            Amount of data discarded at the beginning of every batch. In the model's time units (float)
+            or in number of bins (int).
+        batch_size: int
+        lr: float
+            Learning rate.
+            TODO: Learning rate which depends on the iteration index (or convergence status ?)
+        advance: function (tidx) -> update dictionary
+            Function returning a set of updates which advance the time series
+            with the current parameters.
+            The update dictionary is compiled into a function which takes as
+            single input the current time index.
+            If any of the `optimize_vars` are not shared variables, they are
+            substituted by the corresponding shared variable before compilation.
+        initialize: function  (time index) -> None
+            (Optional) Arbitrary function to run before computing the cost. This allows to set any state
+            variables required to compute the cost.
+            The function is executed either once for every batch ('random' mode) or once per pass
+            ('sequential' mode).
+        mode: str
+            Defines the way in which random samples are drawn from the data. Possible values are:
+            - 'random': standard SGD, where the starting point of each mini batch is chosen
+               randomly within the data. If a function is provided to `initialize`, it is run
+               before computing the gradient on every batch. This is the default value.
+            - 'sequential': Mini-batches are taken sequentially, and loop back to the start
+               when we run out of data. This approach is may suffer from the fact that the
+               data windows on multiple loops are not independent.
+               On the other hand, if the initial burnin is very long, this may provide
+               substantial speed improvements.
+               To mitigate the effect of correlation between windows, the burnin before each sample
+               is randomized by adding by adding a uniform random value between 0–10% of the burnin.
+               This prevents the windows on different sequential passes being perfectly aligned.
+               The start time of each pass is also randomized with a random value between 0-100% of
+               batch size. This ensures that the starting time of each pass is independent
+               NOTE: If a function is given to `initialize`, it is run at the beginning of each pass,
+               rather than for each batch.
+        cost_track_freq: int
+            Frequency at which to record cost, in optimizer steps. Cost is typically more
+            expensive to calculate (since it is not done on mini-batches), and usually not
+            needed for every iteration.
+            TODO: Allow schedule (e.g. higher frequency at beginning).
+        var_track_freq: int
+            Frequency at which to record tracked variables, in optimizer steps.
+        """
+        # Member variables defined in this function:
+        # self.optimize_vars
+        # self.track_vars
+        # self.tidx_var
+        # self.batch_var
+        # self.cost  (function)
+        # self._step  (function)
+        # self.advance  (function)
+        # self.initialize_model  (function)
+        # self.cost_format
+        # self.cost_track_freq
+        # self.var_track_freq
+        # self.start
+        # self.datalen
+        # self.burnin
+        # self.batch_size
+        # self.mode
+
+        super().__init__(cost_format)
+        self.cost_track_freq = cost_track_freq
+        self.var_track_freq = var_track_freq
+        self.optimizer = optimizer
+        self.start = start
+        self.datalen = datalen
+        self.burnin = burnin
+        self.batch_size = batch_size
+        self.mode = mode
+        if not isinstance(track_vars, OrderedDict):
+            self.track_vars = OrderedDict(track_vars)
+        else:
+            self.track_vars = track_vars
+        if initialize is None:
+            # Make a dummy function
+            self.initialize_model = lambda t: None
+        else:
+            self.initialize_model = initialize
+
+        # Make fit parameters array-like
+        start = np.asarray(start)
+        burnin = np.asarray(burnin)
+        datalen = np.asarray(datalen)
+        batch_size = np.asarray(batch_size)
+
+        # Get time index dtype
+        tidx_dtype = start.dtype
+
+        # Check fit parameters
+        def check_fit_arg(arg, name):
+            if not np.issubdtype(arg.dtype, int):
+                raise ValueError("'{}' argument refers to an index and therefore must be an integer"
+                                 .format(name))
+            if arg.dtype != tidx_dtype:
+                raise ValueError("All time indices should have the same type, but '{}' "
+                                 "and 'start' differ.".format(name))
+
+        check_fit_arg(start, 'start')
+        check_fit_arg(burnin, 'burnin')
+        check_fit_arg(datalen, 'datalen')
+        check_fit_arg(batch_size, 'batch_size')
+
+        # Get cost graph
+        self.tidx_var = shim.symbolic.scalar('tidx', dtype=tidx_dtype)
+        self.batch_var = shim.symbolic.scalar('batch_size', dtype=tidx_dtype)
+        self.tidx_var.tag.test_value = start  # PyMC3 requires every variable
+        self.batch_var.tag.test_value = batch_size  # to have a test value.
+        cost_graph = cost(self.tidx_var, self.batch_var)
+
+        # Get advance updates
+        advance_updates = advance(self.tidx_var)
+
+        # Optimization vars must be shared variables
+        self.optimize_vars = []
+        for var in optimize_vars:
+            if shim.isshared(var):
+                # This variable is already a shared variable; just use it
+                self.optimize_vars.append(var)
+            else:
+                # Create a shared variable to replace `var`
+                try:
+                    value = shim.get_test_value(var)
+                except AttributeError:
+                    # Create a default tensor of 1s
+                    # 1s are less likely to cause issues than 0s, e.g. with log()
+                    # TODO: How do we get shape ?
+                    raise NotImplementedError
+                shared_var = shim.shared(value, var.name + '_sgd')
+                self.optimize_vars.append(shared_var)
+
+        # Substitute the new shared variables in the computational graphs
+        shared_subs = {orig: new for orig, new in zip(optimize_vars, self.optimize_vars)}
+        cost_graph = shim.graph.clone(cost_graph, replace=shared_subs)
+        for var, upd in advance_updates.items():
+            advance_updates[var] = shim.graph.clone(upd, replace=shared_subs)
+        if isinstance(lr, dict):
+            # TODO: Move some of this to `standardize_lr()` ?
+            subbed_shared_names = {s.name: s for s in shared_subs}
+            for key, val in lr.items():
+                if key in subbed_shared_names:
+                    # 'key' is a name
+                    new_key = shared_subs[subbed_shared_names[key]].name
+                    assert(new_key not in lr)
+                    lr[new_key] = lr[key]
+                    del lr[key]
+                elif key in shared_subs:
+                    # 'key' is a shared_variable
+                    new_key = shared_subs[key]
+                    assert(new_key not in lr)
+                    lr[new_name] = lr[key]
+                    del lr[key]
+
+        # Compile cost function
+        # cost_graph_subs = shim.clone(cost_graph, {self.tidx_var: start,
+        #                                           self.batch_var: datalen})
+        logger.info("Compiling the cost function.")
+        self.cost = shim.graph.compile([], cost_graph,
+                                       givens=[(self.tidx_var, start), (self.batch_var, datalen)])
+        logger.info("Done compilation.")
+
+        # Compile the advance function
+        assert(self.tidx_var in shim.graph.symbolic_inputs(advance_updates.values()))
+            # theano.function raises a error if inputs are not used to compute outputs
+            # Since tidx_var appears in the graphs on the updates, we need to
+            # silence this error with `on_unused_input`. The assert above
+            # replaces the test.
+        self.advance = shim.graph.compile([self.tidx_var], [],
+                                          updates=advance_updates)
+                                          #on_unused_inputs='ignore')
+
+        # Compile optimizer updates
+        # FIXME: changed names in `optimize_vars`
+        lr = standardize_lr(lr, self.optimize_vars)
+        cost_to_min = self.Cost(cost_graph).cost
+            # Ensures we have a cost to minimize (and not, e.g., a likelihood)
+        ## Get optimizer updates
+        if isinstance(self.optimizer, str):
+            if self.optimizer == 'adam':
+                logger.info("Calculating Adam optimizer updates.")
+                optimizer_updates = Adam(cost_to_min, self.optimize_vars, lr=lr)
+            else:
+                raise ValueError("Unrecognized optimizer '{}'.".format(self.optimizer))
+
+        else:
+            # Treat optimizer as a factory class or function
+            try:
+                logger.info("Calculating custom optimizer updates.")
+                optimizer_updates = self.optimizer(cost_to_min, self.optimize_vars, lr=lr, **kwargs)
+            except TypeError as e:
+                if 'is not callable' not in str(e):
+                    # Some other TypeError was triggered; reraise
+                    raise
+                else:
+                    raise ValueError("'optimizer' parameter should be either a string or a "
+                                     "callable which returns an optimizer (such as a class "
+                                     "name or a factory function).\nThe original error was:\n"
+                                     + str(e))
+        ## Compile
+        logger.info("Compiling the optimization step function.")
+        self._step = shim.graph.compile([self.tidx_var, self.batch_var], [], updates=optimizer_updates)
+        logger.info("Done compilation.")
+
+        # Compile a function to extract tracking variables
+        logger.info("Compiling parameter tracking function.")
+        self._get_tracked = shim.graph.compile([], list(self.track_vars.values()),
+                                               on_unused_input = 'ignore',
+                                               givens = shared_subs.items())
+
+        # Initialize the fitting state variables
+        self.initialize_fit()
+
+    @property
+    def view(self):
+        return SeriesSGDView(self.cost_format, self.trace, self.trace_stops,
+                             self.cost_trace, self.cost_trace_stops)
+
+    @property
+    def repr_np(self):
+        logger.warning("'repr_np' is not yet implemented for SGD; returning "
+                       "representation for a view. This is sufficient for "
+                       "analyzing the fit, but not for continuing it.")
+        return self.view.repr_np
+
+    @classmethod
+    def from_repr_np(cls, repr, _instance):
+        raise NotImplementedError
+
+    @property
+    def trace_stops(self):
+        return self._tracked_iterations
+    @property
+    def cost_trace(self):
+        return np.fromiter((val for val in self._cost_trace),
+                           dtype=np.float32, count=len(trace))
+    @property
+    def cost_trace_stops(self):
+        return self._tracked_cost_iterations
+
+    @property
+    def MLE(self):
+        return {name: trace[-1] for name, trace in self.trace.items()}
+
+    def initialize_fit(self):
+
+        # Member variables defined in this function:
+        # self.step_i
+        # self.curtidx
+        # self._traces
+        # self._cost_trace
+        # self._tracked_iterations
+        # self._tracked_cost_iterations
+
+        self.step_i = 0
+        self.curtidx = 0
+
+        # We will do two things with these variables: 1) append to the end
+        # when fitting and 2) iterate from beginning to end when plotting.
+        # 'deque' is thus the natural storage container.
+        self._traces = OrderedDict( (varname, deque())
+                                    for varname in self.track_vars.keys() )
+        self._cost_trace = deque()
+        self._tracked_iterations = deque()
+        self._tracked_cost_iterations = deque()
+
+        # Initialize traces with current values
+        self.record()
+
+    def record(self, cost=True, params=True):
+        """
+        Record the current cost and parameter values.
+        Recording of either cost or parameters can be prevented by passing
+        `cost=False` or `params=False`.
+        """
+        if params:
+            if self.step_i % self.var_track_freq == 0:
+                state = self._get_tracked()
+                assert(len(self.track_vars) == len(state))
+                for name, value in zip(self.track_vars, state):
+                    self._traces[name].append(value)
+                    self._tracked_iterations.append(self.step_i)
+        if cost:
+            # Record the current cost
+            if self.step_i % self.cost_track_freq == 0:
+                self._cost_trace.append(self.cost())
+                self._tracked_cost_iterations.append(self.step_i)
+
+    def step(self):
+        if self.mode == 'sequential':
+            if (self.curtidx < self.start
+                or self.curtidx > self.start + self.datalen
+                                  - self.batch_size - 1.1*self.burnin):
+                # We either haven't started or run through the dataset
+                # Reset time index to beginning
+                self.curtidx = np.random.randint(self.start, self.start+self.batch_size)
+                self.initialize_model(self.curtidx)
+            else:
+                # This doesn't seem required anymore
+                # [model].clear_other_histories()
+                pass
+
+        elif self.mode == 'random':
+            self.curtidx = np.random.randint(self.start,
+                                             self.start + self.datalen
+                                               - self.batch_size - 1.1*self.burnin)
+            self.initialize_model(self.curtidx)
+
+        else:
+            raise ValueError("Unrecognized fit mode '{}'".format(self.mode))
+
+        burnin = np.random.randint(self.burnin, 1.1*self.burnin)
+        self.curtidx += burnin
+        self.advance(self.curtidx)
+        self._step(self.curtidx, self.batch_size)
+        self.record()
+
+        self.step_i += 1
+
+        # TODO: Check convergence
+
+        return ConvergeStatus.NOTCONVERGED
+
+    def fit(self, Nmax):
+        """
+        Parameters
+        ----------
+
+        **kwargs: Additional keyword arguments are passed to `step`.
+        """
+
+        Nmax = int(Nmax)
+        try:
+            for i in tqdm(range(Nmax)):
+                status = self.step()
+                if status in [ConvergeStatus.CONVERGED, ConvergeStatus.ABORT]:
+                    break
+        except KeyboardInterrupt:
+            print("Gradient descent was interrupted by external signal.")
+
+        if status != ConvergeStatus.CONVERGED:
+            print("Did not converge.")
+
+        # TODO: Print timing statistics ?
+        #       Like likelihood evaluation time vs total ?
+
+    @property
+    def trace(self):
+        # Convert deque to ndarray
+        res =  OrderedDict( ( (varname,
+                               np.fromiter(
+                                   chain.from_iterable(val.flat for val in trace),
+                                   dtype=np.float32,
+                                   count=len(trace)*np.prod(trace[0].shape)
+                                   ).reshape((len(trace),)+trace[0].shape)
+                              )
+                              for varname, trace in self._traces.items() ) )
+
+class SGDView(SGDBase):
+    """
+    Same interface as SGD, without the internal state allowing to preform
+    or continue a fit.
+    """
+
+    def __init__(self, cost_format,
+                 trace, trace_stops, cost_trace, cost_trace_stops):
+        super().__init__(cost_format)
+        self.trace = trace
+        self.trace_stops = trace_stops
+        self.cost_trace = cost_trace_stops
+        self.cost_trace_stops = cost_trace_stops
+
+    @property
+    def repr_np(self):
+        # TODO: Store enough state information (basically, the optimize vars
+        #       and transforms) to continue a fit that was saved ot file.
+        repr = super().repr_np
+        repr['version'] = 1
+        repr['type'] = 'SGDView'
+
+        repr['cost_format'] = self.cost_format
+        repr['trace'] = self.trace
+        repr['trace_stops'] = self.trace_stops
+        repr['cost_trace'] = self.cost_trace
+        repr['cost_trace_stops'] = self.cost_trace_stops
+
+        return repr
+
+    @classmethod
+    def from_repr_np(cls, repr, _instance=None):
+        init_args = ['cost_format', 'trace', 'trace_stops', 'cost_trace',
+                     'cost_trace_stops']
+        if _instance is not None:
+            assert(isinstance(_instance, cls))
+            o = _instance
+        else:
+            kwargs = {'cost_format': repr['cost_format'],
+                      'trace': repr['trace'][()],
+                      'trace_stops': repr['trace_stops'],
+                      'cost_trace': repr['cost_trace'],
+                      'cost_trace_stops': repr['cost_trace_stops']}
+                # Weird [()] indexing extracts element from 0-dim array
+            o = cls(**kwargs)
+
+        return o
+
+class SeriesSGDView(SGDView):
+    """
+    Same interface as SGD, without the internal state allowing to perform
+    or continue a fit.
+    """
+
+    @property
+    def repr_np(self):
+        repr = super().repr_np
+        repr['version'] = 1
+        repr['type'] = 'SeriesSGDView'
+        return repr
+
+class SGD_old:
 
     def __init__(self, cost=None, cost_format=None, model=None, optimizer=None,
                  start=None, datalen=None, burnin=None, mbatch_size=None,
@@ -406,9 +949,9 @@ class SGD:
     def raw(self, **kwargs):
         raw = {'version': 3}
 
-        def add_attr(attr, retrieve_fn=None):
-            # Doing it this way allows to use keywords to avoid errors triggered by getattr(attr)
-            if retrieve_fn is None:
+        def add_attr(attr, retrieve_fn=none):
+            # doing it this way allows to use keywords to avoid errors triggered by getattr(attr)
+            if retrieve_fn is none:
                 retrieve_fn = lambda attrname: getattr(self, attrname)
             raw[attr] = kwargs.pop(attr) if attr in kwargs else retrieve_fn(attr)
 
@@ -776,33 +1319,7 @@ class SGD:
     def standardize_lr(self, lr, params=None):
         if params is None:
             params = self.fitparams.keys()
-
-        if shim.isscalar(lr):
-            lr = {p: lr for p in params}
-        elif isinstance(lr, dict):
-            new_lr = {}
-            default_lr = getattr(lr, 'default', None)
-            for p in params:
-                if p in lr:
-                    assert(shim.isshared(p))
-                    assert(p.name not in lr)
-                    new_lr[p] = lr[p]
-                elif p.name in lr:
-                    new_lr[p] = lr[p.name]
-                else:
-                    if default_lr is not None:
-                        new_lr[p] = default_lr
-                    else:
-                        raise KeyError("No learning rate for variable '{}', "
-                                       "and no default learning rate was given."
-                                       .format(key.name))
-            lr = new_lr
-
-        else:
-            raise ValueError("Learning rate must be specified either as a scalar, "
-                             "or as a dictionary with a key matching each parameter.")
-
-        return lr
+        return standardize_lr
 
     def get_cost_graph(self, **kwargs):
         # Store the learning rate since it's also used in the convergence test
@@ -1934,4 +2451,6 @@ try:
 except ImportError:
     pass
 else:
-    mackelab.iotools.register_datatype(SGD)
+    mackelab.iotools.register_datatype(SeriesSGD)
+    mackelab.iotools.register_datatype(SGDBase)
+    mackelab.iotools.register_datatype(SGD_old, 'SGD')
