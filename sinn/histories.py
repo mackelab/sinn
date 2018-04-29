@@ -48,9 +48,12 @@ class History(HistoryBase):
     Derived classes can safely expect the following attributes to be defined:
         + name             : str. Unique identifying string
         + shape            : int tuple. Shape at a single time point, or number of elements in the system
-        + t0               : float. Time at which history starts
-        + tn               : float. Time at which history ends
-        + dt               : float. Timestep size
+        + t0               : floatX. Time at which history starts
+        + tn               : floatX. Time at which history ends
+        + dt               : floatX. Timestep size
+        + dt64             : float64. Timestep size; for some index calculations
+                             double precision is sometimes required.
+        + idx_dtype        : numpy integer dtype. Type to use for time indices.
         + locked           : bool. Whether modifications to history are allowed. Modify through method
         + _tarr            : float ndarray. Ordered array of all time bins
         + _cur_tidx        : int. Tracker for the latest time bin for which we know history.
@@ -227,6 +230,12 @@ class History(HistoryBase):
         Returns
         -------
         None
+
+        ..Note
+        The data type chosen for time indices depends on the length of the time array.
+        It is chosen such that it can contain values at least up to twice the length
+        of `time_array`; for normal usage this should be plenty, since requiring more
+        than this would mean that we have a history with more padding than actual time.
         """
         # The first thing we do is increment the instance counter. This allows us to
         # ensure every class has a unique name.
@@ -325,6 +334,10 @@ class History(HistoryBase):
 
         self.dt = shim.cast(dt64, config.floatX)
         self.dt64 = dt64
+        self.idx_dtype = np.result_type(-2*len(time_array))
+            # Leave enough space in time indices to double the time array
+            # Using a negative value forces the type to be 'int' and not 'uint',
+            # which we need to store -1
         #self._cur_tidx = -1
         if self.use_theano and not sinn.config.use_theano():
             raise ValueError("You are attempting to construct a series with Theano "
@@ -332,9 +345,9 @@ class History(HistoryBase):
                              "before constructing this history.")
         elif self.use_theano:
             self.compiled_history = None
-        self._cur_tidx = shim.shared(np.array(-1, dtype='int64'),
+        self._cur_tidx = shim.shared(np.array(-1, dtype=self.idx_dtype),
                                      name = 't idx (' + name + ')',
-                                     symbolic=self.use_theano)
+                                     symbolic = self.use_theano)
             # Tracker for the latest time bin for which we
             # know history.
         self._original_tidx = self._cur_tidx
@@ -372,6 +385,7 @@ class History(HistoryBase):
 
     @property
     def dtype(self):
+        """Data type of the data."""
         return self._data.dtype
 
     @property
@@ -832,6 +846,16 @@ class History(HistoryBase):
             self._original_tidx.set_value( self._original_tidx.get_value() + len(before_array) )
             self._cur_tidx += len(before_array)
 
+        # Check that the time index type can still store all time indices
+        if not np.can_cast(np.min_scalar_type(len(self._tarr)), self.idx_dtype):
+            raise ValueError("With padding, this history now has a length of "
+                             "{}, which is too large for the history's time "
+                             "index type ({}).\nTo avoid this error, make sure "
+                             "total padding does not exceed the length of the "
+                             "unpadded history (either by reducing padding, or "
+                             "initializing the history with a longer time array.)"
+                             .format(len(self._tarr), str(self.idx_type)))
+
         return len(before_array), len(after_array)
 
     def truncate_self(self, end):
@@ -1108,13 +1132,14 @@ class History(HistoryBase):
         OPTIMIZATION NOTE: This is a slower routine than its inverse `time_interval`.
         Avoid it in code that is called repeatedly, unless you know that Δt is an index.
         It also always performs calculations with a double precision (64 bit) dt, even
-        when floatX is set to float32, because the higher precision is required.
+        when floatX is set to float32, because the higher precision is required to compute
+        the correct number of time bins.
 
         FIXME: Make this work with array arguments
 
         Returns
         -------
-        Integer (int16)
+        Integer (of type self.idx_dtype)
         """
         if not shim.is_theano_object(Δt) and abs(Δt) < self.dt64 - config.abs_tolerance:
             if Δt == 0:
@@ -1124,8 +1149,8 @@ class History(HistoryBase):
                                  "Δt = {}, which is smaller than this history's step size "
                                  "({}).".format(Δt, self.dt64))
         if shim.istype(Δt, 'int'):
-            if not shim.istype(Δt, 'int16'):
-                Δt = shim.cast_int16( Δt )
+            if not shim.istype(Δt, self.idx_dtype):
+                Δt = shim.cast( Δt, self.idx_dtype )
             return Δt
         else:
             try:
@@ -1143,7 +1168,7 @@ class History(HistoryBase):
                     logger.error("Δt: {}, dt: {}".format(Δt, self.dt64) )
                     raise ValueError("Tried to convert t=" + str(Δt) + " to an index interval "
                                      "but its not a multiple of dt.")
-            return shim.cast_int16( rquotient )
+            return shim.cast( rquotient, self.idx_dtype )
 
     def get_time(self, t):
         """
@@ -1181,7 +1206,7 @@ class History(HistoryBase):
                 # Print a warning, just in case.
                 # print("Called get_t_idx on an integer ({}). Assuming this to be an INDEX".format(t)
                 #       + " (rather than a time) and returning unchanged.")
-                return shim.cast( t, dtype = self._cur_tidx.dtype )
+                return shim.cast( t, dtype = self.idx_dtype )
             else:
                 try:
                     shim.check((t >= self._tarr[0]).all())
@@ -1207,13 +1232,13 @@ class History(HistoryBase):
                                      .format(t, self._tarr[0], t - self._tarr[0], t_idx, self.dt64) )
                         raise ValueError("Tried to obtain the time index of t=" +
                                         str(t) + ", but it does not seem to exist.")
-                    return shim.cast(r_t_idx, dtype = self._cur_tidx.dtype)
+                    return shim.cast(r_t_idx, dtype = self.idx_dtype)
 
                 else:
                     # Allow t to take any value, and round down to closest
                     # multiple of dt
                     return shim.cast( (t - self._tarr[0]) // self.dt64,
-                                      dtype = self._cur_tidx.dtype )
+                                      dtype = self.idx_dtype )
 
         if isinstance(t, slice):
             start = self.t0idx if t.start is None else _get_tidx(t.start)
@@ -2801,7 +2826,6 @@ class Series(ConvolveMixin, History):
                 assert(tidx.start <= self._original_tidx.get_value() + 1)
                     # Ensure that we update at most one step in the future
 
-        end = end
         if self.use_theano:
             if not shim.is_theano_object(value):
                 logger.warning("Updating a Theano array ({}) with a Python value. "
@@ -2830,6 +2854,11 @@ class Series(ConvolveMixin, History):
 
             self._cur_tidx = shim.largest(self._cur_tidx, end)
 
+            # Should only have Theano updates with Theano original data
+            assert(shim.is_theano_object(self._original_data)
+                   == shim.is_theano_object(self._data))
+            assert(shim.is_theano_object(self._original_tidx)
+                   == shim.is_theano_object(self._cur_tidx))
             if shim.is_theano_object(self._original_data):
                 shim.add_update(self._original_data, self._data)
             else:
