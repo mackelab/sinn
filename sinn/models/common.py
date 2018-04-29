@@ -138,7 +138,7 @@ class Model(com.ParameterMixin):
     @property
     def cur_tidx(self):
         if self._refhist is not None:
-            return self._refhist._cur_tidx
+            return self._refhist._cur_tidx - self._refhist.t0idx + self.t0idx
         else:
             raise AttributeError("The reference history for this model was not set.")
 
@@ -150,13 +150,24 @@ class Model(com.ParameterMixin):
             if shim.istype(t, 'int'):
                 return t
             else:
-                return self._refhist.get_t_idx(t, allow_rounding) - self.A.t0idx
+                return self._refhist.get_t_idx(t, allow_rounding) - self._refhist.t0idx + self.t0idx
         else:
             raise AttributeError("The reference history for this model was not set.")
 
     def index_interval(self, Δt, allow_rounding=False):
         if self._refhist is not None:
             return self._refhist.index_interval(Δt, allow_rounding)
+        else:
+            raise AttributeError("The reference history for this model was not set.")
+
+    def get_time(self, t):
+        if self._refhist is not None:
+            if shim.istype(t, 'float'):
+                return t
+            else:
+                assert(shim.istype(t, 'int'))
+                tidx = t - self.t0idx + self._refhist.t0idx
+                return self._refhist.get_time(tidx)
         else:
             raise AttributeError("The reference history for this model was not set.")
 
