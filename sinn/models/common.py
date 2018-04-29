@@ -347,8 +347,10 @@ class Model(com.ParameterMixin):
     def apply_updates(self, update_dict):
         """
         Theano functions which produce updates (like scan) naturally will not
-        update the history data structures. This method applies those updates,
-        allowing histories to be used in subsequent calculations.
+        update the history data structures. This method applies those updates
+        by replacing the internal _data and _cur_tidx attributes of the history
+        with the symbolic expression of the updates, allowing histories to be
+        used in subsequent calculations.
         """
         # Update the history data
         for history in self.history_set:
@@ -357,7 +359,7 @@ class Model(com.ParameterMixin):
                     # If you are changing tidx, then surely you must change _data as well
                 history._cur_tidx = update_dict[history._original_tidx]
                 history._data = update_dict[history._original_data]
-            elif history._original_tidx in update_dict:
+            elif history._original_data in update_dict:
                 history._data = update_dict[history._original_data]
 
         # Update the shim update dictionary
