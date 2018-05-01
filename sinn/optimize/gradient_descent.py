@@ -1,5 +1,6 @@
 from enum import Enum
 from collections import OrderedDict, deque, namedtuple, Iterable
+from itertools import chain
 import os.path
 import time
 import logging
@@ -294,7 +295,7 @@ class SGDBase:
 class SeriesSGD(SGDBase):
     # TODO: Spin out SGD class and inherit
 
-    def __init__(self, cost, cost_format, optimizer,
+    def __init__(self, cost, start_var, batch_size_var, cost_format, optimizer,
                  optimize_vars, track_vars,
                  start, datalen, burnin, batch_size, lr,
                  advance, initialize=None, mode='random',
@@ -303,9 +304,10 @@ class SeriesSGD(SGDBase):
 
         Parameters
         ----------
-        cost: function (tidx, batch_size) -> cost
-            Function taking two symbolic inputs (tidx and batch_size) and returning
-            a symbolic cost.
+        cost: symbolic expression
+            Symbolic cost.
+        start_var, batch_size_var: symbolic variable
+            Variables appearing in the graph of the cost
         cost_format: str
             Indicates how the cost function should be interpreted. This will affect e.g.
             whether the algorithm attempts to minimize or maximize the value. One of:
@@ -384,7 +386,7 @@ class SeriesSGD(SGDBase):
         # self.optimize_vars
         # self.track_vars
         # self.tidx_var
-        # self.batch_var
+        # self.batch_size_var
         # self.cost  (function)
         # self._step  (function)
         # self.advance  (function)
@@ -441,11 +443,14 @@ class SeriesSGD(SGDBase):
         check_fit_arg(batch_size, 'batch_size')
 
         # Get cost graph
-        self.tidx_var = shim.symbolic.scalar('tidx', dtype=tidx_dtype)
-        self.batch_var = shim.symbolic.scalar('batch_size', dtype=tidx_dtype)
-        self.tidx_var.tag.test_value = start  # PyMC3 requires every variable
-        self.batch_var.tag.test_value = batch_size  # to have a test value.
-        cost_graph = cost(self.tidx_var, self.batch_var)
+        # self.tidx_var = shim.symbolic.scalar('tidx', dtype=tidx_dtype)
+        # self.batch_size_var = shim.symbolic.scalar('batch_size', dtype=tidx_dtype)
+        # self.tidx_var.tag.test_value = start  # PyMC3 requires every variable
+        # self.batch_size_var.tag.test_value = batch_size  # to have a test value.
+        # cost_graph = cost(self.tidx_var, self.batch_size_var)
+        self.tidx_var = start_var   # TODO: Necessary ?
+        self.batch_size_var = batch_size_var
+        cost_graph = cost  # TODO: Just use 'cost'
 
         # Get advance updates
         advance_updates = advance(self.tidx_var)
@@ -469,33 +474,33 @@ class SeriesSGD(SGDBase):
                 self.optimize_vars.append(shared_var)
 
         # Substitute the new shared variables in the computational graphs
-        shared_subs = {orig: new for orig, new in zip(optimize_vars, self.optimize_vars)}
-        cost_graph = shim.graph.clone(cost_graph, replace=shared_subs)
+        self.var_subs = {orig: new for orig, new in zip(optimize_vars, self.optimize_vars)}
+        cost_graph = shim.graph.clone(cost_graph, replace=self.var_subs)
         for var, upd in advance_updates.items():
-            advance_updates[var] = shim.graph.clone(upd, replace=shared_subs)
+            advance_updates[var] = shim.graph.clone(upd, replace=self.var_subs)
         if isinstance(lr, dict):
             # TODO: Move some of this to `standardize_lr()` ?
-            subbed_shared_names = {s.name: s for s in shared_subs}
+            subbed_shared_names = {s.name: s for s in self.var_subs}
             for key, val in lr.items():
                 if key in subbed_shared_names:
                     # 'key' is a name
-                    new_key = shared_subs[subbed_shared_names[key]].name
+                    new_key = self.var_subs[subbed_shared_names[key]].name
                     assert(new_key not in lr)
                     lr[new_key] = lr[key]
                     del lr[key]
-                elif key in shared_subs:
+                elif key in self.var_subs:
                     # 'key' is a shared_variable
-                    new_key = shared_subs[key]
+                    new_key = self.var_subs[key]
                     assert(new_key not in lr)
                     lr[new_name] = lr[key]
                     del lr[key]
 
         # Compile cost function
         # cost_graph_subs = shim.clone(cost_graph, {self.tidx_var: start,
-        #                                           self.batch_var: datalen})
+        #                                           self.batch_size_var: datalen})
         logger.info("Compiling the cost function.")
         self.cost = shim.graph.compile([], cost_graph,
-                                       givens=[(self.tidx_var, start), (self.batch_var, datalen)])
+                                       givens=[(self.tidx_var, start), (self.batch_size_var, datalen)])
         logger.info("Done compilation.")
 
         # Compile the advance function
@@ -537,17 +542,17 @@ class SeriesSGD(SGDBase):
                                      + str(e))
         ## Compile
         logger.info("Compiling the optimization step function.")
-        self._step = shim.graph.compile([self.tidx_var, self.batch_var], [], updates=optimizer_updates)
+        self._step = shim.graph.compile([self.tidx_var, self.batch_size_var], [], updates=optimizer_updates)
         logger.info("Done compilation.")
 
         # Compile a function to extract tracking variables
         logger.info("Compiling parameter tracking function.")
         self._get_tracked = shim.graph.compile([], list(self.track_vars.values()),
                                                on_unused_input = 'ignore',
-                                               givens = shared_subs.items())
+                                               givens = self.var_subs.items())
 
         # Initialize the fitting state variables
-        self.initialize_fit()
+        self.initialize_vars()
 
     @property
     def view(self):
@@ -571,7 +576,7 @@ class SeriesSGD(SGDBase):
     @property
     def cost_trace(self):
         return np.fromiter((val for val in self._cost_trace),
-                           dtype=np.float32, count=len(trace))
+                           dtype=np.float32, count=len(self._cost_trace))
     @property
     def cost_trace_stops(self):
         return self._tracked_cost_iterations
@@ -580,7 +585,16 @@ class SeriesSGD(SGDBase):
     def MLE(self):
         return {name: trace[-1] for name, trace in self.trace.items()}
 
-    def initialize_fit(self):
+    def initialize_vars(self, init_vals=None):
+        """
+        Parameters
+        ----------
+        init_vals: dict
+            Dictionary of 'variable: value' pairs. Key variables must be the
+            same as those that were passed as `optimize_vars` to `__init__()`.
+            Not all variables need to be initialized: those unspecified keep
+            their current value.
+        """
 
         # Member variables defined in this function:
         # self.step_i
@@ -590,17 +604,30 @@ class SeriesSGD(SGDBase):
         # self._tracked_iterations
         # self._tracked_cost_iterations
 
+        if init_vals is None:
+            init_vals = {}
+
         self.step_i = 0
         self.curtidx = 0
 
-        # We will do two things with these variables: 1) append to the end
-        # when fitting and 2) iterate from beginning to end when plotting.
-        # 'deque' is thus the natural storage container.
+        # Since we repeatedly append new values to the traces while fitting,
+        # we store them in a 'deque'.
         self._traces = OrderedDict( (varname, deque())
                                     for varname in self.track_vars.keys() )
         self._cost_trace = deque()
         self._tracked_iterations = deque()
         self._tracked_cost_iterations = deque()
+
+        # Set initial values
+        for var, value in init_vals.items():
+            if var in self.var_subs:
+                var = self.var_subs[var]
+            if not np.can_cast(value.dtype, var.dtype, 'same_kind'):
+                raise TypeError("Trying to initialize variable '{}' (type '{}') "
+                                " with value '{}' (type '{}')."
+                                .format(var.name, var.dtype, value, value.dtype))
+            value = np.asarray(value, dtype=var.dtype)
+            var.set_value(value)
 
         # Initialize traces with current values
         self.record()
@@ -856,9 +883,9 @@ class SGD_old:
             # For security reasons, users should visually check that transforms defined
             # with strings are not malicious. We save a flag for each transform, indicating
             # that it has been verified.
+        self.optimizer = None
 
         if _hollow_initialization:
-            self.optimizer = None
             self.fitparams = OrderedDict()   # dict of param:mask pairs
             self.param_evol = {}
 
