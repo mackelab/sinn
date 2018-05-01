@@ -72,6 +72,11 @@ class History(HistoryBase):
                              NOTE: The compilation mechanism is expected to change
                              in the future.
         + lock             : Set the locked status
+        + get_time_array   : Return time array.
+        + time             : (property) Unpadded time array. Calls
+                             self.get_time_array() with default arguments.
+        + trace            : (property) Unpadded data. Calls self.get_trace()
+                             with default arguments.
     A History may also define
         + _compute_range   : Function taking an array of consecutive times and returning
                              an array-like object of the history at those times.
@@ -140,6 +145,10 @@ class History(HistoryBase):
         '''
         self.pad_time(before, after)
         […]
+
+    def get_trace(self, **kwargs):
+        '''Return unpadded data.'''
+        All arguments must be optional.
 
     All methods which modify the history (update, set, clear, compute_up_to) must raise a RuntimeError if `lock` is True.
 
@@ -684,6 +693,14 @@ class History(HistoryBase):
             return result
         else:
             return result[key_filter]
+
+    @property
+    def time(self):
+        return self.get_time_array()
+
+    @property
+    def trace(self):
+        return self.get_trace()
 
     def clear(self):
         """
