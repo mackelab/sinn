@@ -299,7 +299,7 @@ class History(HistoryBase):
             time_array = np.arange(t0,
                                    tn + dt64 - config.abs_tolerance,
                                    dt64,
-                                   dtype=config.floatX)
+                                   dtype=shim.config.floatX)
                 # 'self.tn+self.dt' ensures the upper bound is inclusive,
                 # -config.abs_tolerance avoids including an extra bin because of rounding errors
             tn = time_array[-1]   # Remove any risk of mismatch due to rounding
@@ -332,7 +332,7 @@ class History(HistoryBase):
             # passed e.g. as an ndarray
         self.ndim = len(shape)
 
-        self.dt = shim.cast(dt64, config.floatX)
+        self.dt = shim.cast(dt64, shim.config.floatX)
         self.dt64 = dt64
         self.idx_dtype = np.result_type(-2*len(time_array))
             # Leave enough space in time indices to double the time array
@@ -499,7 +499,6 @@ class History(HistoryBase):
             rethist.unlock()
 
         return rethist
-
 
     def __getitem__(self, key):
         """
@@ -1178,7 +1177,7 @@ class History(HistoryBase):
         # TODO: Is it OK to enforce single precision ?
 
         if shim.istype(t, 'int'):
-            return config.cast_floatX(self._tarr[0] + t*self.dt)
+            return shim.cast_floatX(self._tarr[0] + t*self.dt)
         else:
             return t
 
@@ -1308,7 +1307,7 @@ class History(HistoryBase):
             # of the index corresponding to 't' in the convolution
             idx_shift = int(round(kernel.t0 / self.dt64))
                 # We don't use shim.round because time indices must be Python numbers
-            t0 = shim.cast(idx_shift * self.dt64, config.floatX)
+            t0 = shim.cast(idx_shift * self.dt64, shim.config.floatX)
                 # Ensure the discretized kernel's t0 is a multiple of dt
 
             memory_idx_len = int(kernel.memory_time // self.dt64) - 1 - idx_shift
@@ -1484,7 +1483,7 @@ class History(HistoryBase):
             # Clear the updates stored in shim.theano_updates
 
         # Now compile for floats
-        t_float = shim.getT().scalar('t', dtype=sinn.config.floatX)
+        t_float = shim.getT().scalar('t', dtype=shim.config.floatX)
         assert(len(shim.config.theano_updates) == 0)
         output_res_float = self._update_function(t_float)
             # This should populate shim.theano_updates if there are shared variable
@@ -2762,7 +2761,7 @@ class Series(ConvolveMixin, History):
             if hist is not sinn._NoValue:
                 dtype = hist.dtype
             else:
-                dtype = config.floatX
+                dtype = shim.config.floatX
         self._data = shim.shared(np.zeros(self._tarr.shape + self.shape, dtype=dtype),
                                  name = self.name + " data",
                                  borrow = True)
@@ -3157,7 +3156,7 @@ class Series(ConvolveMixin, History):
                     # TODO: Use integration
                     data = np.concatenate(
                                         [np.asarray(external_input(t),
-                                                    dtype=config.floatX)[np.newaxis,...] for t in tarr],
+                                                    dtype=shim.config.floatX)[np.newaxis,...] for t in tarr],
                                         axis=0)
 
                     # Check that the obtained shape for the input is correct

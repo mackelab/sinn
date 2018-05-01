@@ -29,8 +29,8 @@ disk_cache_file = ""
 
 librairies = set()
 
-floatX = 'float32'
-cast_floatX = float
+#floatX = 'float32'
+#cast_floatX = float
 rel_tolerance = 1e-5
 abs_tolerance = 1e-8
     # This just creates the floatX variables. They are actually initialized below.
@@ -38,7 +38,7 @@ abs_tolerance = 1e-8
 logging_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 def load_librairies(library_list):
-    global librairies, floatX, cast_floatX
+    global librairies#, floatX, cast_floatX
 
     library_set = set(library_list)
     if 'theano' in library_set.difference(librairies):
@@ -128,35 +128,36 @@ def set_floatX(floatX_str = None):
     If floatX_str is specified, then instead both the sinn and theano floatX
     are set to that value.
     """
-    global floatX, cast_floatX, rel_tolerance, abs_tolerance
+    # global floatX, cast_floatX
+    global rel_tolerance, abs_tolerance
 
-    if floatX_str is None:
-        if 'theano' in librairies:
-            floatX = shim.config.floatX
-            assert(floatX in ['float64', 'float32'])
-            # if floatX == 'float32':
-            #     cast_floatX = np.float32
-            # elif floatX == 'float64':
-            #     cast_floatX = np.float64
-            # else:
-            #     raise ValueError("The theano float type is set to '{}', which is unrecognized.".format(theano.config.floatX))
-        else:
-            if float(0.09) * 1e10 == 9e8:
-                # Evaluates to true on a 64-bit float, but not a 32-bit.
-                floatX = 'float64'
-            else:
-                floatX = 'float32'
-    else:
-        assert(floatX_str in ['float64', 'float32'])
-        if 'theano' in librairies:
-            shim.gettheano().config.floatX = floatX_str
-        floatX = floatX_str
-
-    cast_floatX = lambda x: shim.cast(x, floatX)
+    # if floatX_str is None:
+    #     if 'theano' in librairies:
+    #         floatX = shim.config.floatX
+    #         assert(floatX in ['float64', 'float32'])
+    #         # if floatX == 'float32':
+    #         #     cast_floatX = np.float32
+    #         # elif floatX == 'float64':
+    #         #     cast_floatX = np.float64
+    #         # else:
+    #         #     raise ValueError("The theano float type is set to '{}', which is unrecognized.".format(theano.config.floatX))
+    #     else:
+    #         if float(0.09) * 1e10 == 9e8:
+    #             # Evaluates to true on a 64-bit float, but not a 32-bit.
+    #             floatX = 'float64'
+    #         else:
+    #             floatX = 'float32'
+    # else:
+    #     assert(floatX_str in ['float64', 'float32'])
+    #     if 'theano' in librairies:
+    #         shim.gettheano().config.floatX = floatX_str
+    #     floatX = floatX_str
+    #
+    # cast_floatX = lambda x: shim.cast(x, floatX)
 
 
     # Direct access to the floatX tolerance:
-    rel_tolerance = get_rel_tolerance(cast_floatX(1))
-    abs_tolerance = get_abs_tolerance(cast_floatX(1))
+    rel_tolerance = get_rel_tolerance(shim.cast_floatX(1))
+    abs_tolerance = get_abs_tolerance(shim.cast_floatX(1))
 
 set_floatX()

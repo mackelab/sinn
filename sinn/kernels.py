@@ -343,9 +343,9 @@ class ExpKernel(Kernel):
           one should not try to use this in a routine seeking to optimize t_offset.
     """
 
-    Parameter_info = OrderedDict( ( ( 'height'     , (config.floatX, None, True) ),
-                                    ( 'decay_const', (config.floatX, None, True) ),
-                                    ( 't_offset'   , (config.floatX, None, True) ) ) )
+    Parameter_info = OrderedDict( ( ( 'height'     , (shim.config.floatX, None, True) ),
+                                    ( 'decay_const', (shim.config.floatX, None, True) ),
+                                    ( 't_offset'   , (shim.config.floatX, None, True) ) ) )
     Parameters = com.define_parameters(Parameter_info)
 
     @checkcache

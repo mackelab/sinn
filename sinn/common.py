@@ -79,7 +79,7 @@ def clip_probabilities(prob_array,
                        min_prob = np.sqrt(config.abs_tolerance),
                        max_prob = 1-np.sqrt(config.abs_tolerance)):
     # For float64 variables, we should clip at least 1e-8 away from the bounds
-    dtype = getattr(prob_array, 'dtype', config.floatX)
+    dtype = getattr(prob_array, 'dtype', shim.config.floatX)
     min_prob = np.asarray(min_prob).astype(dtype)
     max_prob = np.asarray(max_prob).astype(dtype)
     if not config.use_theano():
@@ -227,8 +227,8 @@ inputs = DependencyGraph('sinn.inputs')
 class HistoryBase:
 
     def __init__(self, t0, tn):
-        self.t0 = config.cast_floatX(t0)
-        self.tn = config.cast_floatX(tn)
+        self.t0 = shim.cast_floatX(t0)
+        self.tn = shim.cast_floatX(tn)
         self._tarr = None # Implement in child classes
 
     def get_time(self, t):
@@ -632,7 +632,7 @@ class ParameterMixin:
                     param_dict[key] = None
                     dtype = self.Parameter_info[key][0]
                     if dtype == 'floatX':
-                        dtype = config.floatX
+                        dtype = shim.config.floatX
                     temp_val = val.astype(dtype, copy=False)
                     # Check if we should ensure parameter is 2d.
                     try:
@@ -649,7 +649,7 @@ class ParameterMixin:
                 else:
                     dtype = self.Parameter_info[key]
                     if dtype == 'floatX':
-                        dtype = config.floatX
+                        dtype = shim.config.floatX
                     param_dict[key] = shim.shared(
                         val.astype(dtype, copy=False),
                         name=key)
@@ -671,4 +671,3 @@ class ParameterMixin:
         A Parameter namedtuple
         """
         return get_parameter_subset(self, params)
-
