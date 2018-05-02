@@ -582,6 +582,18 @@ class SeriesSGD(SGDBase):
         return self._tracked_cost_iterations
 
     @property
+    def trace(self):
+        # Convert deque to ndarray
+        return OrderedDict( ( (varname,
+                               np.fromiter(
+                                   chain.from_iterable(val.flat for val in trace),
+                                   dtype=np.float32,
+                                   count=len(trace)*np.prod(trace[0].shape)
+                                   ).reshape((len(trace),)+trace[0].shape)
+                              )
+                              for varname, trace in self._traces.items() ) )
+
+    @property
     def MLE(self):
         return {name: trace[-1] for name, trace in self.trace.items()}
 
@@ -708,18 +720,6 @@ class SeriesSGD(SGDBase):
 
         # TODO: Print timing statistics ?
         #       Like likelihood evaluation time vs total ?
-
-    @property
-    def trace(self):
-        # Convert deque to ndarray
-        res =  OrderedDict( ( (varname,
-                               np.fromiter(
-                                   chain.from_iterable(val.flat for val in trace),
-                                   dtype=np.float32,
-                                   count=len(trace)*np.prod(trace[0].shape)
-                                   ).reshape((len(trace),)+trace[0].shape)
-                              )
-                              for varname, trace in self._traces.items() ) )
 
 class SGDView(SGDBase):
     """
@@ -2137,7 +2137,7 @@ class FitCollection:
                                    **kwargs)
             if isinstance(data, np.lib.npyio.NpzFile):
                 #data = SGD.from_repr_np(data) # <<-- TODO: Use once we have name indexing
-                data = SGD.from_raw(data, self.model, trust_transforms=True)
+                data = SGDView.from_raw(data, self.model, trust_transforms=True)
             # TODO: Check if sgd is already loaded ?
             self.fits.append( FitCollection.Fit(fit.parameters, data) )
             #self.sgds[-1].verify_transforms(trust_automatically=True)
@@ -2478,6 +2478,8 @@ try:
 except ImportError:
     pass
 else:
-    mackelab.iotools.register_datatype(SeriesSGD)
     mackelab.iotools.register_datatype(SGDBase)
+    mackelab.iotools.register_datatype(SeriesSGD)
+    mackelab.iotools.register_datatype(SGDView)
+    mackelab.iotools.register_datatype(SeriesSGDView)
     mackelab.iotools.register_datatype(SGD_old, 'SGD')
