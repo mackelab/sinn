@@ -213,7 +213,10 @@ class Cost:
         if format not in self.conversions:
             raise ValueError("Unrecognized format '{}'. Possible values are {}."
                              .format(format, ', '.join(self.conversions.keys())))
-        self.value = value
+        if isinstance(value, Cost):
+            self.value = value.to(format)
+        else:
+            self.value = value
         self.format = format
 
     def to(self, format):
@@ -255,6 +258,8 @@ class Cost:
 ##########################################
 
 class SGDBase:
+    # TODO: Spin out GDBase class and inherit
+    # TODO: Make an ABC
 
     def __init__(self, cost_format):
         self.cost_format = cost_format
@@ -265,6 +270,8 @@ class SGDBase:
                 'type'   : 'SGDBase'}
 
         repr['cost_format'] = self.cost_format
+        repr['cost_trace'] = self.cost_trace.value
+        repr['cost_trace_stops'] = self.cost_trace_stops
 
         return repr
 
@@ -291,6 +298,16 @@ class SGDBase:
 
     def Cost(self, cost):
         return Cost(cost, self.cost_format)
+
+    @property
+    def cost_trace(self):
+        raise NotImplementedError
+    @property
+    def cost_trace_stops(self):
+        raise NotImplementedError
+    @property
+    def MLE(self):
+        return {name: trace[-1] for name, trace in self.trace.items()}
 
 class SeriesSGD(SGDBase):
     # TODO: Spin out SGD class and inherit
@@ -575,8 +592,8 @@ class SeriesSGD(SGDBase):
         return self._tracked_iterations
     @property
     def cost_trace(self):
-        return np.fromiter((val for val in self._cost_trace),
-                           dtype=np.float32, count=len(self._cost_trace))
+        return self.Cost(np.fromiter((val for val in self._cost_trace),
+                            dtype=np.float32, count=len(self._cost_trace)))
     @property
     def cost_trace_stops(self):
         return self._tracked_cost_iterations
@@ -592,10 +609,6 @@ class SeriesSGD(SGDBase):
                                    ).reshape((len(trace),)+trace[0].shape)
                               )
                               for varname, trace in self._traces.items() ) )
-
-    @property
-    def MLE(self):
-        return {name: trace[-1] for name, trace in self.trace.items()}
 
     def initialize_vars(self, init_vals=None):
         """
@@ -654,9 +667,9 @@ class SeriesSGD(SGDBase):
             if self.step_i % self.var_track_freq == 0:
                 state = self._get_tracked()
                 assert(len(self.track_vars) == len(state))
+                self._tracked_iterations.append(self.step_i)
                 for name, value in zip(self.track_vars, state):
                     self._traces[name].append(value)
-                    self._tracked_iterations.append(self.step_i)
         if cost:
             # Record the current cost
             if self.step_i % self.cost_track_freq == 0:
@@ -732,8 +745,8 @@ class SGDView(SGDBase):
         super().__init__(cost_format)
         self.trace = trace
         self.trace_stops = trace_stops
-        self.cost_trace = cost_trace
-        self.cost_trace_stops = cost_trace_stops
+        self._cost_trace = self.Cost(cost_trace)
+        self._cost_trace_stops = cost_trace_stops
 
     @property
     def repr_np(self):
@@ -743,11 +756,8 @@ class SGDView(SGDBase):
         repr['version'] = 1
         repr['type'] = 'SGDView'
 
-        repr['cost_format'] = self.cost_format
         repr['trace'] = self.trace
         repr['trace_stops'] = self.trace_stops
-        repr['cost_trace'] = self.cost_trace
-        repr['cost_trace_stops'] = self.cost_trace_stops
 
         return repr
 
@@ -768,6 +778,13 @@ class SGDView(SGDBase):
             o = cls(**kwargs)
 
         return o
+
+    @property
+    def cost_trace(self):
+        return self._cost_trace
+    @property
+    def cost_trace_stops(self):
+        return self._cost_trace_stops
 
 class SeriesSGDView(SGDView):
     """
@@ -2069,9 +2086,8 @@ class FitCollection:
     ParamID = namedtuple("ParamID", ['name', 'idx'])
     Fit = namedtuple("Fit", ['parameters', 'data'])
 
-    def __init__(self, model):
+    def __init__(self):
         #self.data_root = data_root
-        self.model = model
         self.fits = []
         self.reffit = None
             # Reference fit, used for obtaining fit parameters
@@ -2136,8 +2152,7 @@ class FitCollection:
             data = ml.iotools.load(fit.outputpath, input_format=input_format,
                                    **kwargs)
             if isinstance(data, np.lib.npyio.NpzFile):
-                #data = SGD.from_repr_np(data) # <<-- TODO: Use once we have name indexing
-                data = SGDView.from_raw(data, self.model, trust_transforms=True)
+                data = SGDView.from_repr_np(data)
             # TODO: Check if sgd is already loaded ?
             self.fits.append( FitCollection.Fit(fit.parameters, data) )
             #self.sgds[-1].verify_transforms(trust_automatically=True)
@@ -2164,7 +2179,7 @@ class FitCollection:
             self._nffits = []
             for fit in self.fits:
                 if any( not np.all(np.isfinite(trace))
-                        for trace in fit.data.get_evol().values() ):
+                        for trace in fit.data.trace.values() ):
                     self._nffits.append(fit)
         return self._nffits
     @property
@@ -2174,7 +2189,7 @@ class FitCollection:
             self._ffits = []
             for fit in self.fits:
                 if all( np.all(np.isfinite(trace))
-                        for trace in fit.data.get_evol().values() ):
+                        for trace in fit.data.trace.values() ):
                     self._ffits.append(fit)
         return self._ffits
 
@@ -2217,15 +2232,20 @@ class FitCollection:
         stops = (fit.data.cost_trace_stops for fit in self.finite_fits)
         self._plot(stops, traces, **kwargs)
 
-    def plot(self, param, idx=None, *args, true_color='#222222', **kwargs):
+    def plot(self, var, idx=None, *args,
+             targets=None, true_color='#222222', **kwargs):
         """
         Parameters
         ----------
-        param: str
-            Parameter to plot.
+        var: str
+            Tracked variable to plot.
         idx: int, tuple, slice or None
             For multi-valued parameters, the component(s) to plot.
             The default value of 'None' plots all of them.
+        targets: list
+            True value of the parameters. Should have a shape compatible with `idx`.
+            If provided, a horizontal line is drawn at this value. Color of the
+            line is determined by `true_color`.
         numpoints: int
             Number of points to plot. Defalut is 150.
         keep_range: float
@@ -2259,27 +2279,26 @@ class FitCollection:
             Locator instance: Will call ax.[xy]axis.set_major_locator()
                 with this locator.
         """
-        # Get parameter variable matching the parameter name
-        pname = param
-        param = self.reffit.data.get_param(param)
+        # # Get parameter variable matching the parameter name
+        # pname = param
+        # param = self.reffit.data.get_param(param)
+        #
+        # # Get the associated traces, inverting the transform if necessary
+        # #trace_stops = [ fit.data.trace_stops for fit in self.fits ]
+        # #trace_idcs = [ range(len(stops)) for stops in trace_stops ]
+        # # TODO: Use lambda to avoid evaluating inverse on non-plotted points
+        # if param in self.reffit.data.substitutions:
+        #     transformed_param = self.reffit.data.substitutions[param][0]
+        #     inverse = self.reffit.data._make_transform(
+        #         param,
+        #         self.reffit.data.substitutions[param][1])
+        #     traces = [ inverse(fit.data.trace[transformed_param.name])
+        #                for fit in self.finite_fits ]
+        # else:
+        #     traces = [ fit.data.trace[param.name]
+        #                for fit in self.finite_fits ]
 
-        # Get the associated traces, inverting the transform if necessary
-        #trace_stops = [ fit.data.trace_stops for fit in self.fits ]
-        #trace_idcs = [ range(len(stops)) for stops in trace_stops ]
-        # TODO: Use lambda to avoid evaluating inverse on non-plotted points
-        if param in self.reffit.data.substitutions:
-            transformed_param = self.reffit.data.substitutions[param][0]
-            inverse = self.reffit.data._make_transform(
-                param,
-                self.reffit.data.substitutions[param][1])
-            traces = [ inverse(fit.data.trace[transformed_param.name])
-                       for fit in self.finite_fits ]
-        else:
-            traces = [ fit.data.trace[param.name]
-                       for fit in self.finite_fits ]
-
-        # True values to display if true_color is not None
-        truevals = np.array(self.reffit.data.trueparams[param])
+        traces = [ fit.data.trace[var] for fit in self.finite_fits ]
 
         # Standardize the `idx` argument
         if idx is None:
@@ -2288,17 +2307,14 @@ class FitCollection:
             idx = (idx,)
 
         # Match the shape of the `idx` and the trace
-        traceshape = traces[0].shape
+        reftrace = traces[0]
+        traceshape = reftrace.shape
         assert(trace.shape == traceshape for trace in traces)
             # All traces should have the same shape
-        truevals = truevals.reshape(traceshape[1:])
-            # TODO: Would be nice if shape were more reliable and we didn't
-            #       need to do so many reshapes.
-        reftrace = traces[0]
         Δdim = reftrace.ndim - len(idx)
         if Δdim < 1:
             raise ValueError("Index for variable '{}' has more components than "
-                             "the variable itself.".format(pname))
+                             "the variable itself.".format(var))
         elif Δdim > 1:
             # There are unaccounted for dimensions, possibly due to a reshape parameter
             # If trace has size one dimensions, we can remove those
@@ -2327,7 +2343,8 @@ class FitCollection:
         # Set default value for log scale
         logscale = kwargs.get('logscale', None)
         if logscale is None:
-            logscale = (param in self.reffit.data.substitutions)
+            # Use log scale if we tracked a log cost
+            logscale = 'log' in self.reffit.data.cost_format
         kwargs['logscale'] = logscale
 
         # Plot
@@ -2335,11 +2352,14 @@ class FitCollection:
         self._plot(trace_stops, plot_traces, **kwargs)
 
         # Draw the true value line
-        if true_color is not None:
+        if true_color is not None and targets is not None:
+            targets = np.array(targets).reshape(traceshape[1:])
+            # TODO: Would be nice if shape were more reliable and we didn't
+            #       need to do so many reshapes.
             # shape = param.get_value().shape
             # truevals = truevals.reshape(shape)
-            for trueval in truevals[idx].flat:
-                plt.axhline(trueval, color=true_color, zorder=0)
+            for target in targets[idx].flat:
+                plt.axhline(target, color=true_color, zorder=0)
 
 
     def _plot(self, stops, traces, numpoints=150,
@@ -2399,9 +2419,12 @@ class FitCollection:
         # Get the stops (x axis), and figure out what stride we need to show the desired
         # no. of points
         trace_stops = list(stops)
+        # For each trace, create a range of all indices which we then prune
         trace_idcs = [ range(len(stops)) for stops in trace_stops ]
         tot_stops = max( len(idcs) for idcs in trace_idcs )
         stride = int( np.rint( tot_stops // numpoints ) )
+            # We prune by taking a value from trace only every 'stride' points
+            # We do this making sure to include the first and last points
         for i, idcs in enumerate(trace_idcs):
             trace_idcs[i] = list(idcs[::-stride][::-1])
                 # Stride backwards to keep last point
