@@ -732,7 +732,7 @@ class SGDView(SGDBase):
         super().__init__(cost_format)
         self.trace = trace
         self.trace_stops = trace_stops
-        self.cost_trace = cost_trace_stops
+        self.cost_trace = cost_trace
         self.cost_trace_stops = cost_trace_stops
 
     @property
