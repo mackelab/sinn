@@ -2422,7 +2422,7 @@ class FitCollection:
         # For each trace, create a range of all indices which we then prune
         trace_idcs = [ range(len(stops)) for stops in trace_stops ]
         tot_stops = max( len(idcs) for idcs in trace_idcs )
-        stride = int( np.rint( tot_stops // numpoints ) )
+        stride = max(int( np.rint( tot_stops // numpoints ) ), 1)
             # We prune by taking a value from trace only every 'stride' points
             # We do this making sure to include the first and last points
         for i, idcs in enumerate(trace_idcs):
