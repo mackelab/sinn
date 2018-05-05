@@ -77,6 +77,11 @@ class History(HistoryBase):
                              self.get_time_array() with default arguments.
         + trace            : (property) Unpadded data. Calls self.get_trace()
                              with default arguments.
+        + __getitem__      : Calls `self.retrieve()`
+        + __setitem__      : Calls `self.update()`, after converting times in a
+                             key to time indices, and `None` in a slice to the
+                             appropriate time index. Thus `update()` only needs
+                             to implement operations on integer time indices.
     A History may also define
         + _compute_range   : Function taking an array of consecutive times and returning
                              an array-like object of the history at those times.
@@ -118,7 +123,7 @@ class History(HistoryBase):
 
         Parameters
         ----------
-        tidx: int or 1D array
+        tidx: int | slice | 1D array
             The time index at which to store the value, or an array of such
             time indices. No index should not correspond to more than one
             bin ahead of _cur_tidx.
@@ -516,6 +521,7 @@ class History(HistoryBase):
 
         As a side-effect, adds this history to the list of inputs (it is presumed
         that since we indexing on it, it will appear in the computational graph.)
+        (This effect will be removed in the future.)
 
         NOTE: key will not be shifted to reflect history padding. So `key = 0`
         may well refer to a time *before* t0.
@@ -537,6 +543,37 @@ class History(HistoryBase):
         else:
             raise RuntimeError("Unrecognized key {} of type {}. (history: {})"
                                .format(key, type(key), self.name))
+
+    def __setitem__(self, key, value):
+        if isinstance(key, slice):
+            start = 0 if key.start is None else self.get_t_idx(key.start)
+            stop = len(self) if key.stop is None else self.get_t_idx(key.stop)
+            if start > stop:
+                raise NotImplementedError("Assigning to inverted slices not implemented."
+                                          "\nhistory: {}\nslice: {}"
+                                          .format(self.name, key))
+            if key.step is None:
+                step = None
+                valueshape = (stop-start,) + self.shape
+            else:
+                step = self.index_interval(key.step)
+                valueshape = ((stop-start)//step,) + self.shape
+            key = slice(start, stop, step)
+            if shim.isscalar(value) or value.shape != valueshape:
+                value = shim.broadcast_to(value, valueshape)
+        elif shim.isarray(key):
+            if not shim.istype(key.dtype, 'int'):
+                raise NotImplementedError("__setitem__() not yet implemented "
+                                          "for non-integer time arrays. "
+                                          "Time array dtype: {}".format(key.dtype))
+            valueshape = key.shape + self.shape
+            if shim.isscalar(value) or value.shape != valueshape:
+                value = shim.broadcast_to(value, valueshape)
+        elif shim.isscalar(key):
+            key = self.get_t_idx(key)
+        else:
+            raise ValueError("Unrecognized time key: '{}'".format(key))
+        self.update(key, value)
 
     def _parse_key(self, key):
         """
