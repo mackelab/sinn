@@ -1065,12 +1065,6 @@ class Likelihood(Probability):
 #################################
 #################################
 
-try:
-    import pymc3
-    pymc_MultiTrace = pymc3.backends.base.MultiTrace
-except ImportError:
-    pymc_MultiTrace = None
-
 class MarginalCollection:
     ParamDim = namedtuple('ParamDim', ['modelname', 'transformedname',
                                        'tracename', 'displayname',
@@ -1122,6 +1116,15 @@ class MarginalCollection:
         **kwargs:
             Additional keyword arguments are passed to the ScalarGridData constructor.
         """
+
+        # Try to import PyMC3 MultiTrace
+        # We do this here because it's a relatively heavy import which most
+        # of the time won't be used.
+        try:
+            import pymc3
+            pymc_MultiTrace = pymc3.backends.base.MultiTrace
+        except ImportError:
+            pymc_MultiTrace = None
 
         # Set internal variables
         if maxexpand < 1:
