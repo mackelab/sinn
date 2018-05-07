@@ -625,13 +625,25 @@ class SeriesSGD(SGDBase):
                               for varname, trace in self._traces.items() ) )
 
     def set_mode_params(self, mode_params):
+        # `defaults` is a dictionary of default values for each parameter
+        # `validate` is a dictionary with same keys as `defaults`, and for
+        #  each parameter provides a bool function returning False if the value
+        #  is invalid.
         if self.mode == 'random':
-            self.defaults = {'burnin_factor': 0.1}
+            defaults = {'burnin_factor': 0.1}
+            validate = {'burnin_factor': lambda x: x>=0}
         elif self.mode == 'sequential':
             defaults = {'burnin_factor': 0.1,
                         'start_factor':  1.0}
+            validate = {'burnin_factor': lambda x: x>=0,
+                        'start_factor': lambda x: x>=0}
         if mode_params is not None:
             defaults.update(mode_params)
+        # Check that mode_params are valid:
+        for key, value in defaults.items():
+            if not validate[key](value):
+                raise ValueError("Value of {} for mode parameter {} is invalid."
+                                 .format(value, key))
         self.mode_params = ParameterSet(defaults)
 
     def initialize_vars(self, init_vals=None):
@@ -708,8 +720,11 @@ class SeriesSGD(SGDBase):
                                   - (1+self.mode_params.burnin_factor)*self.burnin):
                 # We either haven't started or run through the dataset
                 # Reset time index to beginning
-                self.curtidx = np.random.randint(self.start,
-                                                 self.start + self.mode_params.start_factor*self.batch_size)
+                if self.mode_params.start_factor == 0:
+                    self.curtidx = self.start
+                else:
+                    self.curtidx = np.random.randint(self.start,
+                                                    self.start + self.mode_params.start_factor*self.batch_size)
                 self.initialize_model(self.curtidx)
             else:
                 # This doesn't seem required anymore
@@ -726,7 +741,10 @@ class SeriesSGD(SGDBase):
         else:
             raise ValueError("Unrecognized fit mode '{}'".format(self.mode))
 
-        burnin = np.random.randint(self.burnin, (1+self.mode_params.burnin_factor)*self.burnin)
+        if self.mode_params.burnin_factor == 0:
+            burnin = self.burnin
+        else:
+            burnin = np.random.randint(self.burnin, (1+self.mode_params.burnin_factor)*self.burnin)
         self.curtidx += burnin
         self.advance(self.curtidx)
         self._step(self.curtidx, self.batch_size)
