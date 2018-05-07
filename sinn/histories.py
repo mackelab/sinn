@@ -34,7 +34,10 @@ import sinn.popterm as popterm
 class LockedHistoryError(RuntimeError):
     pass
 ########################
-
+# TODO: Remove everything related to compilation – this is better done with Model
+#       A lot of compilation logic can be found by search 'self.symbolic', '_compiling'
+# FIXME: Currently `discretize_kernel()` CANNOT be used with Theano – it does
+#        not preserve the computational graph
 
 class History(HistoryBase):
     """
@@ -193,12 +196,11 @@ class History(HistoryBase):
     instance_counter = 0
 
     def __init__(self, hist=sinn._NoValue, name=None, *args, time_array=sinn._NoValue, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
-                 shape=sinn._NoValue, f=sinn._NoValue, iterative=sinn._NoValue, use_theano=False):
-        # TODO: Change `use_theano` to `pure_theano` or something
+                 shape=sinn._NoValue, f=sinn._NoValue, iterative=sinn._NoValue, symbolic=sinn._NoValue):
         """
         Initialize History object.
         Instead of passing the parameters, another History instance may be passed as
-        first argument. In this case, time_array, shape and `use_theano` are taken
+        first argument. In this case, time_array, shape and `symbolic` are taken
         from that instance. These can be overridden by passing also a corresponding keyword
         argument.
         Except for a possible history instance, all parameters should be passed as keywords.
@@ -290,8 +292,8 @@ class History(HistoryBase):
             #if f is sinn._NoValue:
             #    f = hist._update_function
             # 'hist' does not serve as a default value for 'iterative', since the new history will typically have a different function
-            if use_theano is sinn._NoValue:
-                use_theano = hist.use_theano
+            if symbolic is sinn._NoValue:
+                symbolic = hist.symbolic
         else:
             assert(time_array is not sinn._NoValue
                    or sinn._NoValue not in [t0, tn, dt])
@@ -322,10 +324,10 @@ class History(HistoryBase):
         # Determine whether the series data will use Theano.
         # The default depends on whether Theano is loaded. If it is not loaded
         # and we try to use it for this history, an error is raised.
-        if use_theano is sinn._NoValue:
-            self.use_theano = sinn.config.use_theano()
+        if symbolic is sinn._NoValue:
+            self.symbolic = shim.config.use_theano
         else:
-            self.use_theano = use_theano
+            self.symbolic = symbolic
 
         super().__init__(t0, tn)
             # Set t0 and tn
@@ -353,15 +355,15 @@ class History(HistoryBase):
             # Using a negative value forces the type to be 'int' and not 'uint',
             # which we need to store -1
         #self._cur_tidx = -1
-        if self.use_theano and not sinn.config.use_theano():
+        if self.symbolic and not shim.config.use_theano:
             raise ValueError("You are attempting to construct a series with Theano "
-                             "but it is not loaded. Run `sinn.config.load_theano()` "
+                             "but it is not loaded. Run `shim.config.load_theano()` "
                              "before constructing this history.")
-        elif self.use_theano:
+        elif self.symbolic:
             self.compiled_history = None
         self._cur_tidx = shim.shared(np.array(-1, dtype=self.idx_dtype),
                                      name = 't idx (' + name + ')',
-                                     symbolic = self.use_theano)
+                                     symbolic = self.symbolic)
             # Tracker for the latest time bin for which we
             # know history.
         self._original_tidx = self._cur_tidx
@@ -427,7 +429,7 @@ class History(HistoryBase):
             This argument exists to allow specialization in derived classes.
         """
 
-        if self.use_theano:
+        if self.symbolic:
             if self.compiled_history is not None:
                 raw = self.compiled_history.raw()
             else:
@@ -462,12 +464,12 @@ class History(HistoryBase):
         return raw
 
     @classmethod
-    def from_raw(cls, raw, update_function=sinn._NoValue, use_theano=False, lock=True, **kwds):
+    def from_raw(cls, raw, update_function=sinn._NoValue, symbolic=False, lock=True, **kwds):
         """
 
         Parameters
         ----------
-        use_theano: bool
+        symbolic: bool
             If True, a second Theano history will be constructed, and the loaded
             one attached as its `compiled_history` attribute.
             If unspecified, the behaviour is the same as for the History initializer.
@@ -482,7 +484,7 @@ class History(HistoryBase):
                     shape = tuple(raw['shape']),
                     f = update_function,
                     iterative = bool(raw['_iterative']),
-                    use_theano = False,
+                    symbolic = False,
                     **kwds)
         hist.t0idx = int(raw['t0idx'])
         hist._unpadded_length = int(raw['_unpadded_length'])
@@ -492,11 +494,11 @@ class History(HistoryBase):
 
         hist._tarr = raw['_tarr']
         # Decide whether to wrap the history in another Theano history
-        if use_theano is sinn._NoValue:
-            use_theano = sinn.config.use_theano()
-        if use_theano:
+        if symbolic is sinn._NoValue:
+            symbolic = shim.config.use_theano
+        if symbolic:
             hist.name = str(raw['name']) + " (compiled)"
-            theano_hist = cls(hist, name=str(raw['name']), use_theano=True)
+            theano_hist = cls(hist, name=str(raw['name']), symbolic=True)
             theano_hist.compiled_history = hist
             rethist = theano_hist
         else:
@@ -504,7 +506,7 @@ class History(HistoryBase):
             rethist = hist
         rethist._original_tidx = shim.shared( np.array(int(raw['_cur_tidx']), dtype='int64'),
                                               name = 't idx (' + rethist.name + ')' ,
-                                              symbolic=use_theano)
+                                              symbolic=symbolic)
         rethist._cur_tidx = rethist._original_tidx
         rethist._data = shim.shared(raw['_data'], name = rethist.name + " data")
         if lock:
@@ -531,12 +533,23 @@ class History(HistoryBase):
         key: int, float, slice or array
             If an array, it must be consecutive (this is not checked).
         """
+
+        neg_key_err = ("Negative keys are not supported because they are a "
+                       "frequent source of confusing bugs. Instead of `-5`, use "
+                       "`[history].tnidx - 5`.")
         if shim.isscalar(key):
+            if not shim.is_theano_object(key) and key < 0:
+                raise ValueError(neg_key_err)
             return self._getitem_internal(key)
         elif isinstance(key, slice):
+            for t in (key.start, key.stop):
+                if not shim.is_theano_object(t) and t < 0:
+                    raise ValueError(ne_key_err)
             return self._getitem_internal(key)
         elif shim.isarray(key):
             # FIXME Empty arrays still go through the 'then' branch somehow
+            if not shim.is_theano_object(key) and np.any(key < 0):
+                raise ValueError(ne_key_err)
             return shim.ifelse(shim.eq(key.shape[0], 0),
                                self._original_data[0:0], # Empty time slice
                                self._getitem_internal(key))
@@ -703,7 +716,7 @@ class History(HistoryBase):
             self.compute_up_to(latest)
         elif latest > self._cur_tidx:#.get_value():
             # No get_value() here because after updates, _cur_tidx is no longer a shared var
-            if (self.use_theano
+            if (self.symbolic
                 and self.compiled_history is not None
                 and self.compiled_history._cur_tidx >= latest):
                 # ***** RETURN FORK ******
@@ -719,9 +732,9 @@ class History(HistoryBase):
 
         # TODO: Remove. I don't know why we would need to add to inputs.
         # Add `self` to list of inputs
-        #if self.use_theano and self not in sinn.inputs:
-        if self not in sinn.inputs:
-            sinn.inputs[self] = set()
+        #if self.symbolic and self not in sinn.inputs:
+        # if self not in sinn.inputs:
+        #     sinn.inputs[self] = set()
 
         result = self.retrieve(key)
         if not symbolic_return and shim.is_theano_object(result):
@@ -753,7 +766,7 @@ class History(HistoryBase):
         self._original_tidx.set_value(self.t0idx - 1)
         self._cur_tidx = self._original_tidx
 
-        if self.use_theano and self.compiled_history is not None:
+        if self.symbolic and self.compiled_history is not None:
             self.compiled_history.clear()
 
         try:
@@ -773,7 +786,7 @@ class History(HistoryBase):
                                "in the midst of building a Theano graph. Reset "
                                "it first".format(self.name))
         if warn and (self._original_tidx.get_value() < self.t0idx + len(self) - 1
-                     and (not self.use_theano
+                     and (not self.symbolic
                           or self.compiled_history is None)):
             # Only trigger for Theano histories if their compiled histories are unset
             # (If they are set, they will do their own check)
@@ -781,13 +794,13 @@ class History(HistoryBase):
                            "evaluate it beyond {} will trigger an error."
                            .format(self.name, self._tarr[self._original_tidx.get_value()]))
         self.locked = True
-        if self.use_theano and self.compiled_history is not None:
+        if self.symbolic and self.compiled_history is not None:
             self.compiled_history.lock()
 
     def unlock(self):
         """Remove the history lock."""
         self.locked = False
-        if self.use_theano and self.compiled_history is not None:
+        if self.symbolic and self.compiled_history is not None:
             self.compiled_history.unlock()
 
     def set_update_function(self, func):
@@ -995,7 +1008,7 @@ class History(HistoryBase):
             return
 
         #if shim.is_theano_object(tidx):
-        if self.use_theano and (self._compiling
+        if self.symbolic and (self._compiling
                                 or any(hist._compiling for hist in sinn.inputs)):
             # Don't actually compute: just store the current_idx we would need
             # HACK The 'or' line prevents any chaining of Theano graphs
@@ -1034,7 +1047,7 @@ class History(HistoryBase):
             return
 
         if (not shim.is_theano_object(end)
-            and self.use_theano
+            and self.symbolic
             and self.compiled_history is not None
             and end <= self.compiled_history._cur_tidx):
             # A computed value already exists and has been computed to this point
@@ -1054,7 +1067,7 @@ class History(HistoryBase):
 
         if not self._iterative:
             batch_computable = True
-        #elif (self.use_theano and self._is_batch_computable()):
+        #elif (self.symbolic and self._is_batch_computable()):
         elif self._is_batch_computable(up_to=end):
             batch_computable = True
         else:
@@ -1078,7 +1091,7 @@ class History(HistoryBase):
             if replace:
                 self._data = self._update_function(tarr[::-1])[::-1]
                 if isinstance(self._data, np.ndarray):
-                    self._data = shim.shared(self._data, symbolic=self.use_theano)
+                    self._data = shim.shared(self._data, symbolic=self.symbolic)
                 self._cur_tidx = end
             else:
                 self.update(slice(start,stop),
@@ -1376,17 +1389,17 @@ class History(HistoryBase):
             #    # `memory_time` is the amount of time before t0
             dis_name = ("dis_" + kernel.name + " (" + self.name + ")")
             # if shim.is_theano_variable(kernel.eval(0)):
-            #     use_theano=True
+            #     symbolic=True
             # else:
-            #     use_theano=False
-            use_theano=False
+            #     symbolic=False
+            symbolic=False
             dis_kernel = Series(t0=t0,
                                 tn=t0 + memory_idx_len*self.dt64,
                                 dt=self.dt64,
                                 shape=kernel.shape,
                                 f=kernel_func,
                                 name=dis_name,
-                                use_theano=use_theano,
+                                symbolic=symbolic,
                                 iterative=False)
                 # Kernels are non-iterative by definition: they only depend on their parameters
             dis_kernel.idx_shift = idx_shift
@@ -1452,7 +1465,7 @@ class History(HistoryBase):
         for i, inp in enumerate(input_list):
             if isinstance(inp, History):
                 input_histories.append(inp)
-                if inp.use_theano:
+                if inp.symbolic:
                     if inp.compiled_history is None:
                         inp.compile(inputs.difference([inp]))
                     if inp._compiling:
@@ -1476,11 +1489,11 @@ class History(HistoryBase):
         assert(not self._compiling)
         self._compiling = True
 
-        if not self.use_theano:
+        if not self.symbolic:
             raise RuntimeError("You cannot compile a Series that does not use Theano.")
 
         # Create the new history which will contain the compiled update function
-        self.compiled_history = self.__class__(self, name=self.name + " (compiled)", use_theano=False)
+        self.compiled_history = self.__class__(self, name=self.name + " (compiled)", symbolic=False)
         # Compiled histories must have exactly the same indices, so we match the padding
         self.compiled_history.pad(self.t0idx, len(self._tarr) - len(self) - self.t0idx)
 
@@ -1671,7 +1684,7 @@ class History(HistoryBase):
         # Augment the list of inputs with their compiled forms, if they exist
         all_inputs = set(sinn.inputs.keys()).union(
             set([hist.compiled_history for hist in sinn.inputs
-                 if hist.use_theano and hist.compiled_history is not None]) )
+                 if hist.symbolic and hist.compiled_history is not None]) )
 
         # Get the list of inputs. A compiled history may not be in the input list,
         # so if `self` is not found, we try to find its parent
@@ -1680,7 +1693,7 @@ class History(HistoryBase):
             input_list = sinn.inputs[self]
         else:
             for hist in sinn.inputs:
-                if (hist.use_theano and hist.compiled_history is self):
+                if (hist.symbolic and hist.compiled_history is self):
                     input_list = sinn.inputs[hist]
                     break
         assert(input_list is not None)
@@ -2191,9 +2204,9 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
                            pop_sizes = self.pop_sizes)
 
     @classmethod
-    def from_raw(cls, raw, update_function=sinn._NoValue, use_theano=False, lock=True):
+    def from_raw(cls, raw, update_function=sinn._NoValue, symbolic=False, lock=True):
         """See History.from_raw"""
-        retval = super().from_raw(raw, update_function, use_theano, lock,
+        retval = super().from_raw(raw, update_function, symbolic, lock,
                                   pop_sizes=raw['pop_sizes'])
         # data was wrapped with a scalar array then further with shim.shared.
         # This line recovers the original
@@ -2800,12 +2813,12 @@ class Series(ConvolveMixin, History):
                          t0=t0, tn=tn, dt=dt,
                          shape=shape, **kwargs)
 
-        # if self.use_theano:
+        # if self.symbolic:
         #     # Make the dimensions where shape is 1 broadcastable
         #     # (as they would be with NumPy)
         #     data_tensor_broadcast = tuple(
         #         [False] + [True if d==1 else 0 for d in self.shape] )
-        #     self.DataType = shim.getT().TensorType(sinn.config.floatX,
+        #     self.DataType = shim.getT().TensorType(shim.config.floatX,
         #                                            data_tensor_broadcast)
         #     #self._data = shim.T.zeros(self._tarr.shape + self.shape, dtype=config.floatX)
         #     self._data = self.DataType(self.name + ' data')
@@ -2879,10 +2892,10 @@ class Series(ConvolveMixin, History):
                 assert(tidx.start <= self._original_tidx.get_value() + 1)
                     # Ensure that we update at most one step in the future
 
-        if self.use_theano:
-            if not shim.is_theano_object(value):
-                logger.warning("Updating a Theano array ({}) with a Python value. "
-                               "This is likely an error.".format(self.name))
+        if self.symbolic:
+            # if not shim.is_theano_object(value):
+            #     logger.warning("Updating a Theano array ({}) with a Python value. "
+            #                    "This is likely an error.".format(self.name))
             #if self._original_data is not None or shim.config.theano_updates != {}:
             # if ( self._original_data is not None
             #      and self._original_data in shim.config.theano_updates):
@@ -2892,35 +2905,48 @@ class Series(ConvolveMixin, History):
             #                        "update as a function, and call that "
             #                        "function repeatedly.")
             # assert(shim.is_theano_variable(self._data))
-            #     # This should be guaranteed by self.use_theano=True
-            tmpdata = self._data
+            #     # This should be guaranteed by self.symbolic=True
             #if self._original_data is None:
             #    self._original_data = self._data
                     # Persistently store the current _data, because that's the handle
                     # to the input that will be used when compiling the function
             # TODO: Decide whether this is the best way to avoid reupdating/recomputing past time points
-            self._data = shim.ifelse(self._cur_tidx < end,
-                                     shim.set_subtensor(tmpdata[tidx], value),
-                                     self._data)
-            if updates is not None:
-                shim.add_updates(updates)
+            # self._data = shim.ifelse(self._cur_tidx < end,
+            #                          shim.set_subtensor(tmpdata[tidx], value),
+            #                          self._data)
 
-            self._cur_tidx = shim.largest(self._cur_tidx, end)
+            # self._cur_tidx = shim.largest(self._cur_tidx, end)
+            if shim.is_theano_object(end):
+                assert(shim.is_theano_object(self._original_tidx))
+                self._cur_tidx = end
+                shim.add_update(self._original_tidx, self._cur_tidx)
+            else:
+                self._original_tidx.set_value(shim.cast(end, self.idx_dtype))
+                self._cur_tidx = self._original_tidx
+
+            if (not shim.is_theano_object(end, value)
+                and (end == tidx or not shim.is_theano_object(tidx.start))
+                and self._cur_tidx == self._original_tidx
+                and self._data == self._original_data):
+                # There are no symbolic dependencies – update data directly
+                tmpdata = self._original_data.get_value(borrow=True)
+                tmpdata[tidx] = value
+                self._original_data.set_value(tmpdata, borrow=True)
+            else:
+                tmpdata = self._data
+                self._data = shim.set_subtensor(tmpdata[tidx], value)
+                if updates is not None:
+                    shim.add_updates(updates)
+                if shim.is_theano_object(self._original_data):
+                    shim.add_update(self._original_data, self._data)
+                else:
+                    self._original_data = self._data
 
             # Should only have Theano updates with Theano original data
             assert(shim.is_theano_object(self._original_data)
-                   == shim.is_theano_object(self._data))
+                   and shim.is_theano_object(self._data))
             assert(shim.is_theano_object(self._original_tidx)
-                   == shim.is_theano_object(self._cur_tidx))
-            if shim.is_theano_object(self._original_data):
-                shim.add_update(self._original_data, self._data)
-            else:
-                self._original_data = self._data
-            if shim.is_theano_object(self._original_tidx):
-                shim.add_update(self._original_tidx, self._cur_tidx)
-            else:
-                self._original_tidx = self._cur_tidx
-
+                   and shim.is_theano_object(self._cur_tidx))
         else:
             if shim.is_theano_object(value):
                 if not shim.graph.is_computable([value]):
@@ -2987,7 +3013,7 @@ class Series(ConvolveMixin, History):
         pad_width = ( [(before_len, after_len)]
                       + [(0, 0) for i in range(len(self.shape))] )
 
-        #if self.use_theano:
+        #if self.symbolic:
             #if self._original_data is None:
             #    self._original_data = self._data
                     # Persistently store the current _data, because that's the handle
@@ -3051,7 +3077,7 @@ class Series(ConvolveMixin, History):
         else:
             mode_slice = slice(1, None)
 
-        if self.use_theano:
+        if self.symbolic:
             if mode == 'all':
                 self._data = shim.getT().zeros(self._data.shape)
             else:
@@ -3244,7 +3270,7 @@ class Series(ConvolveMixin, History):
             # almost certainly depends on _original_tidx, so it should not be
             # updated
             self._cur_tidx = shim.shared(len(tarr) - 1,
-                                         symbolic=self.use_theano)
+                                         symbolic=self.symbolic)
 
         return self
 
