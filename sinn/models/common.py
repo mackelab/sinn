@@ -62,14 +62,6 @@ class Model(com.ParameterMixin):
     - A class-level (outside any method) call
         `Parameters = com.define_parameters(Parameter_info)`
 
-    If an `eval` method also provided, the default initializer can also attach it to
-    a history object. It should have the signature
-    `def eval(self, t)`
-    where `t` is a time.
-
-    Models are typically initialized with a reference to a history object,
-    which is appropriate for storing the output of `eval`.
-
     Implementations may also provide class methods to aid inference:
     - likelihood: (params) -> float
     - likelihood_gradient: (params) -> vector
@@ -91,8 +83,6 @@ class Model(com.ParameterMixin):
             If provided, a reference is kept to this history: Model evaluation may require
             querying some of its attributes, such as time step (dt). These may not be
             constant in time.
-            If this model has an `eval` method, then that method is also
-            attached to `history` as its update function.
         """
         super().__init__(params=params)
         self.kernel_list = []
@@ -122,11 +112,12 @@ class Model(com.ParameterMixin):
 
     @property
     def t0idx(self):
-        return self._refhist.t0idx
+        return 0
+        #return self._refhist.t0idx
 
     @property
     def tnidx(self):
-        return self._refhist.tnidx
+        return self._refhist.tnidx - self._refhist.t0idx + self.t0idx
 
     @property
     def dt(self):
