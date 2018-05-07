@@ -638,7 +638,8 @@ class SeriesSGD(SGDBase):
             validate = {'burnin_factor': lambda x: x>=0,
                         'start_factor': lambda x: x>=0}
         if mode_params is not None:
-            defaults.update(mode_params)
+            defaults.update({key: value for key, value in mode_params.items()
+                             if key in defaults})
         # Check that mode_params are valid:
         for key, value in defaults.items():
             if not validate[key](value):
