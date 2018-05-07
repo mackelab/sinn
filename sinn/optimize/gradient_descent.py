@@ -382,8 +382,8 @@ class SeriesSGD(SGDBase):
                randomly within the data. If a function is provided to `initialize`, it is run
                before computing the gradient on every batch. This is the default value.
                Default parameters:
-                 + 'burnin_factor': 1.1  The burnin for each batch is randomly
-                        chosen between [batch_burnin, burnin_factor*batch_burnin]
+                 + 'burnin_factor': 0.1  The burnin for each batch is randomly
+                        chosen between [batch_burnin, batch_burnin + burnin_factor*batch_burnin]
             - 'sequential': Mini-batches are taken sequentially, and loop back to the start
                when we run out of data. This approach is may suffer from the fact that the
                data windows on multiple loops are not independent.
@@ -396,8 +396,8 @@ class SeriesSGD(SGDBase):
                batch size. This ensures that the starting time of each pass is independent
                NOTE: If a function is given to `initialize`, it is run at the beginning of each pass,
                rather than for each batch.
-                 + 'burnin_factor': 1.1  The burnin for each batch is randomly
-                        chosen between [batch_burnin, burnin_factor*batch_burnin]
+                 + 'burnin_factor': 0.1  The burnin for each batch is randomly
+                        chosen between [batch_burnin, batch_burnin + burnin_factor*batch_burnin]
                  + 'start_factor': 1.0  The start time for a run across data is randomly
                         chosen between [start, start+start_factor*batch_size]
         mode_params: dict
@@ -626,9 +626,9 @@ class SeriesSGD(SGDBase):
 
     def set_mode_params(self, mode_params):
         if self.mode == 'random':
-            self.defaults = {'burnin_factor': 1.1}
+            self.defaults = {'burnin_factor': 0.1}
         elif self.mode == 'sequential':
-            defaults = {'burnin_factor': 1.1,
+            defaults = {'burnin_factor': 0.1,
                         'start_factor':  1.0}
         if mode_params is not None:
             defaults.update(mode_params)
@@ -705,7 +705,7 @@ class SeriesSGD(SGDBase):
             if (self.curtidx < self.start
                 or self.curtidx > self.start + self.datalen
                                   - self.batch_size
-                                  - self.mode_params.burnin_factor*self.burnin):
+                                  - (1+self.mode_params.burnin_factor)*self.burnin):
                 # We either haven't started or run through the dataset
                 # Reset time index to beginning
                 self.curtidx = np.random.randint(self.start,
@@ -720,13 +720,13 @@ class SeriesSGD(SGDBase):
             self.curtidx = np.random.randint(self.start,
                                              self.start + self.datalen
                                              - self.batch_size
-                                             - self.mode_params.burnin_factor*self.burnin)
+                                             - (1+self.mode_params.burnin_factor)*self.burnin)
             self.initialize_model(self.curtidx)
 
         else:
             raise ValueError("Unrecognized fit mode '{}'".format(self.mode))
 
-        burnin = np.random.randint(self.burnin, self.mode_params.burnin_factor*self.burnin)
+        burnin = np.random.randint(self.burnin, (1+self.mode_params.burnin_factor)*self.burnin)
         self.curtidx += burnin
         self.advance(self.curtidx)
         self._step(self.curtidx, self.batch_size)
