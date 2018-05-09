@@ -71,8 +71,9 @@ class ConvolveMixin(CachedOperation):
         """
         Compute the convolution between `self` and `other`, where at least one of the two derives from History. The other is referred to as the "kernel" – it may derive from Kernel, but is not required to.
         `self` is preferentially treated as the history.
-        Compute the convolution with `kernel`, with `kernel` truncated to the bounds
-        defined by kernel_slice.
+        The 'kernel' is truncated to the bounds defined by kernel_slice.
+        If `t` is a time index, it refers to the time array of whichever
+        between `self` and `other` is considered the 'history'.
 
         If `t` is a scalar, the convolution at that time is computed.
         If `t` is a slice, the *entire* convolution, for all time lags, is computed,
@@ -123,8 +124,8 @@ class ConvolveMixin(CachedOperation):
         if not isinstance(kernel_slice[0], slice):
             raise ValueError("Kernel bounds must be specified as a slice.")
 
+        # Hack to get single length time arrays to still return array
         t_is_scalar = shim.isscalar(t)
-            # Hack to get single length time arrays to still return array
         if shim.isarray(t):
             # Convert time array to a scalar if possible, otherwise a slice
             assert(t.ndim == 1)
@@ -269,6 +270,4 @@ class ConvolveMixin(CachedOperation):
             kernel = self
 
         return shim.stack( [self._convolve_op_single_t(other, t, kernel_slice)
-                                for t in history._tarr[history.t0idx: history.t0idx + len(history)]] )
-
-
+                            for t in range(history.t0idx, history.tnidx+1)] )

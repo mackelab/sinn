@@ -79,7 +79,8 @@ class Kernel(ConvolveMixin, ParameterMixin, com.KernelBase):
     Refer to the `shape_output` method to see exactly how the output is reshaped.
     """
 
-    def __init__(self, name, params=None, shape=None, memory_time=None, t0=0, **kwargs):
+    def __init__(self, name, params=None, shape=None, memory_time=None, t0=0,
+                 dtype=None, **kwargs):
         """
         Parameters
         ----------
@@ -99,9 +100,10 @@ class Kernel(ConvolveMixin, ParameterMixin, com.KernelBase):
                              "parameter, make sure you use its `get_value() "
                              "method.".format(name))
         self.initialize(name, params=params, shape=shape,
-                        memory_time=memory_time, t0=t0, **kwargs)
+                        memory_time=memory_time, t0=t0, dtype=dtype, **kwargs)
 
-    def initialize(self, name, params=None, shape=None, f=None, memory_time=None, t0=0, **kwargs):
+    def initialize(self, name, params=None, shape=None, f=None,
+                   memory_time=None, t0=0, dtype=None, **kwargs):
         if params is None:
             # ParameterMixin requires 'params'
             params = com.define_parameters({})
@@ -114,14 +116,18 @@ class Kernel(ConvolveMixin, ParameterMixin, com.KernelBase):
             # It can be useful (e.g. in conditionals) to have a known type
         self.ndim = len(shape)
         self.t0 = t0
+        if dtype is None:
+            self.dtype = shim.config.floatX
+        else:
+            self.dtype = dtype
 
         if f is not None:
             self._eval_f = f
-            #try:
-            #    shim.check(f(0).ndim >= 2)
-            #except AssertionError:
-            #    raise ValueError("The result of kernel functions should be "
-            #                     "2-dimensional (1 or both of which may be flat.")
+            # try:
+            #     shim.check(f(0).ndim >= 2)
+            # except AssertionError:
+            #     raise ValueError("The result of kernel functions should be "
+            #                      "2-dimensional (1 or both of which may be flat.")
 
         assert(memory_time is not None)
         self.memory_time = memory_time
@@ -166,16 +172,16 @@ class Kernel(ConvolveMixin, ParameterMixin, com.KernelBase):
             final_shape, ndim = self.get_final_shape(tshape)
             res = self.shape_output(self._eval_f(t, from_idx), tshape)
             return shim.switch(shim.and_(shim.ge(t, self.t0), shim.lt(t, self.t0+self.memory_time)),
-                               res,
-                               shim.zeros_like(res))
+                               shim.cast(res, self.dtype),
+                               shim.zeros_like(res, dtype=self.dtype))
                                #shim.zeros(final_shape, ndim=ndim))
         else:
             tshape = ()
             final_shape, ndim = self.get_final_shape(tshape)
             res = self.shape_output(self._eval_f(t, from_idx), tshape)
             return shim.ifelse(shim.and_(shim.ge(t, self.t0), shim.lt(t, self.t0+self.memory_time)),
-                               res,
-                               shim.zeros_like(res))
+                               shim.cast(res, self.dtype),
+                               shim.zeros_like(res, dtype=self.dtype))
                                #shim.zeros(final_shape, ndim=ndim))
 
     def theano_reset(self):
@@ -406,10 +412,12 @@ class ExpKernel(Kernel):
 
     def _eval_f(self, t, from_idx=slice(None,None)):
         return shim.switch(shim.lt(t, self.params.t_offset[:,from_idx]),
-                           0,
+                           shim.cast(0, self.dtype),
                            self.params.height[:,from_idx]
-                             * shim.exp(-(t-self.params.t_offset[:,from_idx])
-                                       / self.params.decay_const[:,from_idx]) )
+                             * shim.cast(
+                                shim.exp(-(t-self.params.t_offset[:,from_idx])
+                                           / self.params.decay_const[:,from_idx]),
+                                self.dtype) )
             # We can use indexing because ParameterMixin ensures parameters are at least 2D
 
     def _convolve_op_single_t(self, hist, t, kernel_slice):

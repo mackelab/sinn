@@ -1077,6 +1077,7 @@ class History(HistoryBase):
 
         stop = end + 1    # exclusive upper bound
         # Construct a time array that will work even for Theano tidx
+        # TODO: Remove tarr
         if shim.is_theano_object(start) or shim.is_theano_object(end):
             tarr = shim.gettheano().shared(self._tarr, borrow=True)
             printlogs = False
@@ -1099,7 +1100,8 @@ class History(HistoryBase):
                 logger.monitor("Computing {} up to {}. Using custom batch operation."
                             .format(self.name, tarr[end]))
             self.update(slice(start, stop),
-                        self._compute_range(tarr[slice(start, stop)]))
+                        # self._compute_range(tarr[slice(start, stop)]))
+                        self._compute_range(np.arange(start, stop)))
 
         elif batch_computable:
             # Computation doesn't depend on history – just compute the whole thing in
@@ -1108,13 +1110,15 @@ class History(HistoryBase):
                 logger.monitor("Computing {} from {} to {}. Computing all times simultaneously."
                                .format(self.name, tarr[start], tarr[end]))
             if replace:
-                self._data = self._update_function(tarr[::-1])[::-1]
+                # self._data = self._update_function(tarr[::-1])[::-1]
+                self._data = self._update_function(np.arange(len(self))[::-1])[::-1]
                 if isinstance(self._data, np.ndarray):
                     self._data = shim.shared(self._data, symbolic=self.symbolic)
                 self._cur_tidx = end
             else:
                 self.update(slice(start,stop),
-                            self._update_function(tarr[slice(start,stop)][::-1])[::-1])
+                            # self._update_function(tarr[slice(start,stop)][::-1])[::-1])
+                            self._update_function(shim.arange(start,stop)[::-1])[::-1])
                     # The order in which _update_function is called is flipped, putting
                     # later times first. This ensures that if dependent computations
                     # are triggered, they will also batch update.
@@ -1127,7 +1131,8 @@ class History(HistoryBase):
 
             self._computing = True
                 # Temporary flag to prevent infinite recursions
-            self.update(end, self._update_function(tarr[end]))
+            # self.update(end, self._update_function(tarr[end]))
+            self.update(end, self._update_function(end))
             del self._computing
 
         else:
@@ -1140,7 +1145,8 @@ class History(HistoryBase):
                 if percent > old_percent:
                     logger.monitor("{}%".format(percent))
                     old_percent = percent
-                self.update(i, self._update_function(tarr[i]))
+                # self.update(i, self._update_function(tarr[i]))
+                self.update(i, self._update_function(i))
 
         logger.monitor("Done computing {}.".format(self.name))
 
@@ -1267,7 +1273,7 @@ class History(HistoryBase):
         else:
             return t
 
-    def get_t_idx(self, t, allow_rounding=False):
+    def get_tidx(self, t, allow_rounding=False):
         """Return the idx corresponding to time t. Fails if no such index exists.
         It is ok for the t to correspond to a time "in the future",
         and for the data array not yet to contain a point at that time.
@@ -1276,7 +1282,7 @@ class History(HistoryBase):
 
         Parameters
         ----------
-        t: int, float, slice
+        t: int, float, slice, array
             The time we want to convert to an index. Integers are considered
             indices and returned unchanged.
 
@@ -1306,9 +1312,10 @@ class History(HistoryBase):
                     try:
                         shim.check( (t * config.get_rel_tolerance(t) < self.dt64).all() )
                     except AssertionError:
-                        raise ValueError("You've tried to convert a time (float) into an index "
-                                        "(int), but the value is too large to ensure the absence "
-                                        "of numerical errors. Try using a higher precision type.")
+                        raise ValueError("You've tried to convert a time (float) "
+                                         "for history into an index "
+                                         "(int), but the value is too large to ensure the absence "
+                                         "of numerical errors. Try using a higher precision type.")
                     t_idx = (t - self._tarr[0]) / self.dt64
                     r_t_idx = shim.round(t_idx)
                     if (not shim.is_theano_object(r_t_idx) and not allow_rounding
@@ -1331,6 +1338,44 @@ class History(HistoryBase):
             return slice(start, stop, t.step)
         else:
             return _get_tidx(t)
+    get_t_idx = get_tidx
+        # For compability with older code
+
+    def get_tidx_for(self, t, target_hist):
+        """
+        Convert a time or time index into a time index for another history.
+        """
+        tidx = self.get_tidx(t)
+        if self.dt == target_hist.dt:
+            if self.t0idx == target_hist.t0idx:
+                # Don't add cruft to the computational graph
+                return tidx
+            else:
+                return tidx - self.t0idx + target_hist.t0idx
+        else:
+            raise NotImplementedError("`get_tidx_for()` is currently only "
+                                      "implemented for histories with same "
+                                      "timestep 'dt'.")
+
+    def get_t_for(self, t, target_hist):
+        """
+        Convert a time or time index for indexing into another history.
+        The type is preserved, so that if `t` is a time, a time (float) is
+        returned, and if `t` is a time index, an time index is returned.
+        (In fact, if `t` is a time, it is simply returned as is.)
+        """
+        if isinstance(t, slice):
+            start = None if t.start is None else self.get_t_for(t.start)
+            stop = None if t.stop is None else self.get_t_for(t.stop)
+            if self.dt != target_hist.dt:
+                raise NotImplementedError(
+                    "Cannot convert time for history {} to {} because they "
+                    "have diffrent steps"
+                    .format(self.name, target_hist.name))
+        if shim.istype(t, 'float'):
+            return t
+        else:
+            return self.get_tidx_for(t, target_hist)
 
     def make_positive_slice(self, slc):
         def flip(idx):
@@ -1631,38 +1676,40 @@ class History(HistoryBase):
     # Utility functions
     ################################
 
-    def time_array_to_slice(self, time_array):
+    def array_to_slice(self, array):
         """
-        Assumes the time_array is monotonous and evenly spaced.
+        Assumes the array is monotonous and evenly spaced. This is checked, but
+        only if `array` is not symbolic.
         """
-        # We need to be careful here, because time_array could be empty, and then
-        # indexing it with time_array[0] or time_array[-1] would trigger an error
-        empty_array = shim.eq( shim.min(time_array.shape), 0 )
-        # An array of size 1 would still fail on time_array[1]
-        singleton_array = shim.le( shim.min(time_array.shape), 1 )
+        # We need to be careful here, because array could be empty, and then
+        # indexing it with array[0] or array[-1] would trigger an error
+        empty_array = shim.eq( shim.min(array.shape), 0 )
+        # An array of size 1 would still fail on array[1]
+        singleton_array = shim.le( shim.min(array.shape), 1 )
 
-        if ( not shim.is_theano_object(time_array)
+        if ( not shim.is_theano_object(array) and shim.istype(array, 'float')
              and not singleton_array ):
-            assert(abs(time_array[1] - time_array[0]) >= self.dt - sinn.config.abs_tolerance)
+            assert(abs(array[1] - array[0]) >= self.dt - sinn.config.abs_tolerance)
 
+        singleton_dt = self.dt if shim.istype(array, 'float') else 1
         step = shim.ifelse(singleton_array,
-                           self.dt,
-                           shim.LazyEval(lambda: time_array[1] - time_array[0]))
-                           #shim.largest(time_array[1] - time_array[0], self.dt))
+                           singleton_dt,
+                           shim.LazyEval(lambda: array[1] - array[0]))
+                           #shim.largest(array[1] - array[0], self.dt))
 
         idxstart = shim.ifelse(empty_array,
                                shim.cast(0, dtype=self._cur_tidx.dtype),
-                               self.get_t_idx(time_array[0]))
-        if not shim.is_theano_object(time_array) and not singleton_array:
-            # Check that time_array is evenly spaced
-            assert(np.all(sinn.ismultiple(time_array[1:] - time_array[:-1], step)))
+                               self.get_t_idx(array[0]))
+        if not shim.is_theano_object(array) and not singleton_array:
+            # Check that array is evenly spaced
+            assert(np.all(sinn.ismultiple(array[1:] - array[:-1], step)))
 
         idxstep = self.index_interval(step)
 
         idxstop = shim.ifelse(empty_array,
                               shim.cast(0, dtype=self._cur_tidx.dtype),
-                              self.get_t_idx(time_array[-1]) + idxstep)
-            # We add/subtract dt because the time_array upper bound is inclusive
+                              self.get_t_idx(array[-1]) + idxstep)
+            # We add/subtract dt because the array upper bound is inclusive
 
         # Ensure that idxstop is not negative. This would require replacing it by
         # None, and doing that in a Theano graph, if possible at all, is clumsy.
@@ -1672,6 +1719,9 @@ class History(HistoryBase):
             assert(idxstop >= 0)
 
         return slice(idxstart, idxstop, idxstep)
+    time_array_to_slice = array_to_slice
+        # For compatiblity with older functions
+        # TODO: Deprecate and remove time_array_to_slice
 
 
     def _is_batch_computable(self, up_to='end'):
@@ -2065,6 +2115,7 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
         #    f = kernel
         # else:
         f = kernel.eval
+        t = self.get_time(t)
 
         if kernel_slice.stop is None:
             start = t - kernel.memory_time - kernel.t0
@@ -3360,6 +3411,7 @@ class Series(ConvolveMixin, History):
             # Algorithm assumes an increasing kernel_slice
             shim.check(kernel_slice.stop > kernel_slice.start)
 
+            tidx = self.get_tidx(tidx)
             hist_start_idx = tidx - kernel_slice.stop - discretized_kernel.idx_shift
             hist_slice = slice(hist_start_idx, hist_start_idx + kernel_slice.stop - kernel_slice.start)
             try:
