@@ -28,34 +28,38 @@ from sinn.histories import Series
 
 __all__ = ['Sin', 'GaussianWhiteNoise', 'Constant', 'Step']
 
+
 class SeriesFunction(Series):
     """
     Base class for series functions. Not useful on its own.
     """
     requires_rng = False
 
-    def __init__(self, ref_hist=sinn._NoValue, name=None, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
+    def __init__(self, ref_hist=sinn._NoValue, name=None, t0=sinn._NoValue,
+                 tn=sinn._NoValue, dt=sinn._NoValue, dtype=sinn._NoValue,
                  **kwargs):
 
         shape = self.init_params(**kwargs)
         if shape is None:
             raise ValueError("A history function's `init_params` method must return shape.")
-        super().__init__(hist=ref_hist, name=name, t0=t0, tn=tn, dt=dt, shape=shape, iterative=False)
+        super().__init__(hist=ref_hist, name=name, t0=t0, tn=tn, dt=dt, shape=shape, iterative=False, dtype=dtype)
         self.set_update_function(self.update_function)
+
 
 class Constant(SeriesFunction):
 
     def init_params(self, value):
         logger.warning("The 'Constant' series function has not been tested in production.")
-        self.value = value
+        self.value = shim.cast(value, dtype=self.dtype)
         return value.shape
 
     def update_function(self, t):
         if shim.isscalar(t):
-            return self.value
+            return shim.cast(self.value, dtype=self.dtype)
         else:
             assert(t.ndim == 1)
-            return shim.tile(self.value, t.shape[0] + (1,)*self.ndim)
+            return shim.cast(shim.tile(self.value, t.shape[0] + (1,)*self.ndim),
+                             dtype=self.dtype)
 
 
 class Step(SeriesFunction):
@@ -113,8 +117,9 @@ class Step(SeriesFunction):
             if ndim == 0:
                 ndim = 1
             t = shim.add_axes(t, ndim, 'after')
-        return shim.switch( shim.and_(self.left_cmp(t), self.right_cmp(t)),
-                            self.baseline_plus_height, self.baseline )
+        return shim.cast( shim.switch( shim.and_(self.left_cmp(t), self.right_cmp(t)),
+                                       self.baseline_plus_height, self.baseline ),
+                          dtype=self.dtype )
 
 class Sin(SeriesFunction):
     # TODO: Allow Theano parameters
@@ -165,7 +170,10 @@ class Sin(SeriesFunction):
             if ndim == 0:
                 ndim = 1
             t = shim.add_axes(t, ndim, 'after')
-        return self.baseline + self.amplitude * shim.sin(self.frequency*t + self.phase)
+        return shim.cast(self.baseline
+                         + self.amplitude
+                           * shim.sin(self.frequency*t + self.phase),
+                         dtype = self.dtype)
 
 
 class GaussianWhiteNoise(SeriesFunction):
@@ -197,10 +205,13 @@ class GaussianWhiteNoise(SeriesFunction):
         else:
             assert(t.ndim==1)
             outshape = t.shape + self.shape
+        if sinn.config.compat_version < '0.1.dev1':
+            std = self.std/np.sqrt(self.dt)  # Bug with which some simulations were done
+        else:
+            std = self.std*np.sqrt(self.dt)
         return shim.clip(self.rndstream.normal(avg  = 0,
-                                               std  = self.std/np.sqrt(self.dt),
+                                               std  = std,
                                                size = np.int32(outshape)),
-                                                      # Theano expects array
+                                                   # Theano expects array
                          -self.clip_limit,
-                         self.clip_limit)
-
+                         self.clip_limit).astype(self.dtype)
