@@ -105,7 +105,7 @@ class CompatVersion:
 # This determines how close two numbers have to be to be consider equal
 
 precision_dict = {
-    '32': {'abs': 1e-4,
+    '32': {'abs': 2e-5,
            'rel': 1e-4},
     '64': {'abs': 1e-10,
            'rel': 1e-8}}
