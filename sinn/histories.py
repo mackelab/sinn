@@ -56,7 +56,8 @@ class History(HistoryBase):
         + dt               : floatX. Timestep size
         + dt64             : float64. Timestep size; for some index calculations
                              double precision is sometimes required.
-        + idx_dtype        : numpy integer dtype. Type to use for time indices.
+        + idx_dtype        : numpy integer dtype. Type to use for time slice indices.
+        + tidx_dtype        : numpy integer dtype. Type to use for time indices.
         + locked           : bool. Whether modifications to history are allowed. Modify through method
         + _tarr            : float ndarray. Ordered array of all time bins
         + _cur_tidx        : int. Tracker for the latest time bin for which we know history.
@@ -350,7 +351,8 @@ class History(HistoryBase):
 
         self.dt = shim.cast(dt64, shim.config.floatX)
         self.dt64 = dt64
-        self.idx_dtype = np.result_type(-2*len(time_array))
+        self.idx_dtype = np.result_type(max(self.shape))
+        self.tidx_dtype = np.result_type(-2*len(time_array))
             # Leave enough space in time indices to double the time array
             # Using a negative value forces the type to be 'int' and not 'uint',
             # which we need to store -1
@@ -361,7 +363,7 @@ class History(HistoryBase):
                              "before constructing this history.")
         elif self.symbolic:
             self.compiled_history = None
-        self._cur_tidx = shim.shared(np.array(-1, dtype=self.idx_dtype),
+        self._cur_tidx = shim.shared(np.array(-1, dtype=self.tidx_dtype),
                                      name = 't idx (' + name + ')',
                                      symbolic = self.symbolic)
             # Tracker for the latest time bin for which we
@@ -803,7 +805,7 @@ class History(HistoryBase):
         if self.symbolic and self.compiled_history is not None:
             self.compiled_history.unlock()
 
-    def set_update_function(self, func):
+    def set_update_function(self, func, _return_dtype=None):
         """
 
         Parameters
@@ -811,13 +813,30 @@ class History(HistoryBase):
         func: callable
             The update function. Its signature should be
             `func(t)`
+        _return_dtype: numpy dtype or str equivalent
+            The type the function should return. Designed to allow classes to
+            override the default type check, which is to check the return
+            value against `self.dtype`. E.g. Spiketrain does this because it
+            expects indices in its update function.
+            In normal usage this should never be set by a user.
         """
         def f(t):
+            # TODO: If setting update function in __init__ is deprecated,
+            # we can move the assignment to _return_dtype outside of f().
+            # NOTE: Don't reassign to _return_dtype: it would put it local
+            # scope, and then be undefined when f(t) is called.
+            if _return_dtype is None:
+                return_dtype = self.dtype
+            else:
+                return_dtype = _return_dtype
+            logger.debug("Compute " + self.name)
             res = func(t)
-            if res.dtype != self.dtype:
+            logger.debug("Done computing " + self.name)
+            if res.dtype != return_dtype:
                 raise TypeError("Update function for history '{}' returned a "
-                                "value of dtype '{}', but history has dtype '{}'."
-                                .format(self.name, res.dtype, self.dtype))
+                                "value of dtype '{}', but history update "
+                                " expects dtype '{}'."
+                                .format(self.name, res.dtype, return_dtype))
             if shim.isscalar(res):
                 # update functions need to output an object with a shape
                 return shim.add_axes(res, 1)
@@ -913,14 +932,14 @@ class History(HistoryBase):
             self._cur_tidx += len(before_array)
 
         # Check that the time index type can still store all time indices
-        if not np.can_cast(np.min_scalar_type(len(self._tarr)), self.idx_dtype):
+        if not np.can_cast(np.min_scalar_type(len(self._tarr)), self.tidx_dtype):
             raise ValueError("With padding, this history now has a length of "
                              "{}, which is too large for the history's time "
                              "index type ({}).\nTo avoid this error, make sure "
                              "total padding does not exceed the length of the "
                              "unpadded history (either by reducing padding, or "
                              "initializing the history with a longer time array.)"
-                             .format(len(self._tarr), str(self.idx_type)))
+                             .format(len(self._tarr), str(self.tidx_dtype)))
 
         return len(before_array), len(after_array)
 
@@ -1205,7 +1224,7 @@ class History(HistoryBase):
 
         Returns
         -------
-        Integer (of type self.idx_dtype)
+        Integer (of type self.tidx_dtype)
         """
         if not shim.is_theano_object(Δt) and abs(Δt) < self.dt64 - config.abs_tolerance:
             if Δt == 0:
@@ -1215,8 +1234,8 @@ class History(HistoryBase):
                                  "Δt = {}, which is smaller than this history's step size "
                                  "({}).".format(Δt, self.dt64))
         if shim.istype(Δt, 'int'):
-            if not shim.istype(Δt, self.idx_dtype):
-                Δt = shim.cast( Δt, self.idx_dtype )
+            if not shim.istype(Δt, self.tidx_dtype):
+                Δt = shim.cast( Δt, self.tidx_dtype )
             return Δt
         else:
             try:
@@ -1234,7 +1253,7 @@ class History(HistoryBase):
                     logger.error("Δt: {}, dt: {}".format(Δt, self.dt64) )
                     raise ValueError("Tried to convert t=" + str(Δt) + " to an index interval "
                                      "but its not a multiple of dt.")
-            return shim.cast( rquotient, self.idx_dtype )
+            return shim.cast( rquotient, self.tidx_dtype )
 
     def get_time(self, t):
         """
@@ -1272,7 +1291,7 @@ class History(HistoryBase):
                 # Print a warning, just in case.
                 # print("Called get_t_idx on an integer ({}). Assuming this to be an INDEX".format(t)
                 #       + " (rather than a time) and returning unchanged.")
-                return shim.cast( t, dtype = self.idx_dtype )
+                return shim.cast( t, dtype = self.tidx_dtype )
             else:
                 try:
                     shim.check((t >= self._tarr[0]).all())
@@ -1298,13 +1317,13 @@ class History(HistoryBase):
                                      .format(t, self._tarr[0], t - self._tarr[0], t_idx, self.dt64) )
                         raise ValueError("Tried to obtain the time index of t=" +
                                         str(t) + ", but it does not seem to exist.")
-                    return shim.cast(r_t_idx, dtype = self.idx_dtype)
+                    return shim.cast(r_t_idx, dtype = self.tidx_dtype)
 
                 else:
                     # Allow t to take any value, and round down to closest
                     # multiple of dt
                     return shim.cast( (t - self._tarr[0]) // self.dt64,
-                                      dtype = self.idx_dtype )
+                                      dtype = self.tidx_dtype )
 
         if isinstance(t, slice):
             start = self.t0idx if t.start is None else _get_tidx(t.start)
@@ -1850,6 +1869,12 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
         self.initialize(init_data)
         super().clear()
 
+    def set_update_function(self, func, _return_dtype=None):
+        if _return_dtype is None:
+            super().set_update_functin(func, self.idx_dtype)
+        else:
+            super().set_update_function(func, _return_dtype)
+
     def retrieve(self, key):
         '''A function taking either an index or a splice and returning respectively
         the time point or an interval from the precalculated history.
@@ -2322,6 +2347,13 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
                                .format(self.name))
         self.initialize(None)
         super().clear()
+
+    def set_update_function(self, func, _return_dtype=None):
+        if _return_dtype is None:
+            super().set_update_function(func, self.idx_dtype)
+        else:
+            super().set_update_function(func, _return_dtype)
+
 
     def get_trace(self, pop=None, neuron=None, include_padding='none', time_slice=None):
         """
@@ -2921,7 +2953,7 @@ class Series(ConvolveMixin, History):
                 self._cur_tidx = end
                 shim.add_update(self._original_tidx, self._cur_tidx)
             else:
-                self._original_tidx.set_value(shim.cast(end, self.idx_dtype))
+                self._original_tidx.set_value(shim.cast(end, self.tidx_dtype))
                 self._cur_tidx = self._original_tidx
 
             if (not shim.is_theano_object(end, value)
