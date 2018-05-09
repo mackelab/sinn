@@ -1,5 +1,6 @@
 import logging
 import numpy as np
+import packaging
 
 import theano_shim as shim
 
@@ -75,6 +76,29 @@ def use_theano():
     """Flag method: returns True if Theano is used."""
     return shim.config.use_theano
 
+# Compatibility version
+class CompatVersion:
+    def __init__(self, version_str):
+        self._compat_version = self.parse(version_str)
+    def set(self, version_str):
+        self._compat_version = self.parse(version_str)
+    def parse(other):
+        if isnstance(other, str):
+            return packaging.version.parse(other)
+        else:
+            return other
+    def __lt__(self, other):
+        return self._compat_version < self.parse(other)
+    def __le__(self, other):
+        return self._compat_version <= self.parse(other)
+    def __eq__(self, other):
+        return self._compat_version == self.parse(other)
+    def __ne__(self, other):
+        return self._compat_version != self.parse(other)
+    def __gt__(self, other):
+        return self._compat_version > self.parse(other)
+    def __ge__(self, other):
+        return self._compat_version >= self.parse(other)
 
 ######################
 # Set numerical tolerance
