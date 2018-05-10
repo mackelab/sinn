@@ -197,9 +197,6 @@ class GaussianWhiteNoise(SeriesFunction):
         return shape
 
     def update_function(self, t):
-        # 'shape' and 'clip_limit' are not parameters we want to treat
-        # with Theano, and since all parameters are shared, we use
-        # `get_value()` to get a pure NumPy value.
         if shim.isscalar(t):
             outshape = self.shape
         else:

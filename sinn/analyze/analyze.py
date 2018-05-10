@@ -16,7 +16,8 @@ import collections
 from collections import namedtuple, Iterable
 import itertools
 import numpy as np
-import scipy as sp
+from scipy import sparse  # TODO: Replace with shim.sparse
+
 logger = logging.getLogger('sinn.analyze')
 
 try:
@@ -91,11 +92,25 @@ def mean(hist, pop_slices=None, time_array=None, **kwargs):
             raise ValueError("Histories of type '{}' don't provide a `get_trace` method. "
                              "You can try passing a raw NumPy array, or better yet, defining "
                              "`get_trace` for this history type.".type(hist.hist))
+        if data_arr.shape[0] != len(hist):
+            # data_arr may be sparse, in which case len(data_arr) is ambiguous)
+            logger.warning("History was not fully computed; padding data with 0s.")
+            delta = len(hist) - data_arr.shape[0]; assert(delta > 0)
+            # TODO: Use shim.sparse
+            if isinstance(data_arr, sparse.spmatrix):
+                # Sparse matrix does not define `pad`
+                pad = sparse.coo_matrix((delta,) + data_arr.shape[1:])
+                data_arr = sparse.vstack((data_arr, pad))
+            else:
+                data_arr = data_arr.pad([(0, delta)] + [(0,0)] * (data_arr.ndim-1))
     else:
         raise ValueError("Unrecognized History type '{}'.".format(type(hist.hist)))
 
-    if len(data_arr.shape) < 2:
+    if data_arr.ndim < 2:
         raise ValueError("Data must be at least 2 dimensional: time + data axes.")
+
+    if isinstance(data_arr, sparse.coo_matrix):
+        data_arr = data_arr.tocsr()   # coo matrix is not subscriptable
 
     # If 'axis' is specified as a keyword, it relates to a time slice, so we add the time axis
     if 'axis' in kwargs:
@@ -448,8 +463,8 @@ def plot(data, **kwargs):
     if isinstance(data, histories.History):
         data = histories.DataView(data)
         start = kwargs.pop('start', data.t0idx)
-        stop = kwargs.pop('stop', data.tnidx+1)
-        stop = min(stop, data.tnidx+1)
+        stop = kwargs.pop('stop', data._cur_tidx+1)
+        stop = min(stop, data._cur_tidx+1)
         tslice = slice(start, stop)
 
     # TODO: Collect repeated code
