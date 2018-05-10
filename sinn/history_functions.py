@@ -49,8 +49,7 @@ class SeriesFunction(Series):
 class Constant(SeriesFunction):
 
     def init_params(self, value):
-        logger.warning("The 'Constant' series function has not been tested in production.")
-        self.value = shim.cast(value, dtype=self.dtype)
+        self.value = value  # Can't cast here – self.dtype isn't set yet
         return value.shape
 
     def update_function(self, t):
@@ -58,7 +57,7 @@ class Constant(SeriesFunction):
             return shim.cast(self.value, dtype=self.dtype)
         else:
             assert(t.ndim == 1)
-            return shim.cast(shim.tile(self.value, t.shape[0] + (1,)*self.ndim),
+            return shim.cast(shim.tile(self.value, (t.shape[0],) + (1,)*self.ndim),
                              dtype=self.dtype)
 
 
