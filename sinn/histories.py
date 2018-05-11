@@ -414,6 +414,11 @@ class History(HistoryBase):
     def repr_np(self):
         return self.raw()
 
+    @property
+    def padding(self):
+        """Returns a tuple with the left and right padding."""
+        return (self.t0idx, len(self._tarr) - self.tnidx - 1)
+
     @classmethod
     def from_repr_np(cls, repr_np):
         return cls.from_raw(repr_np)
@@ -551,7 +556,7 @@ class History(HistoryBase):
         elif shim.isarray(key):
             # FIXME Empty arrays still go through the 'then' branch somehow
             if not shim.is_theano_object(key) and np.any(key < 0):
-                raise ValueError(ne_key_err)
+                raise ValueError(neg_key_err)
             return shim.ifelse(shim.eq(key.shape[0], 0),
                                self._original_data[0:0], # Empty time slice
                                self._getitem_internal(key))
@@ -679,7 +684,7 @@ class History(HistoryBase):
             latest = shim.smallest(len(self._tarr) - 1, shim.largest(start, end))
             step = shim.ifelse(shim.eq(key.shape[0], 1),
                                # It's a 1 element array – just set step to 1 and don't worry
-                               np.int16(1),  # int16 is the return type of index_interval
+                               shim.cast(1, self.tidx_dtype),
                                # Set the step as the difference of the first two elements
                                shim.LazyEval(lambda key: self.index_interval(key[1] - key[0]), (key,) ))
 	                           # `LazyEval` prevents Python from greedily executing key[1]
@@ -904,18 +909,26 @@ class History(HistoryBase):
             after_idx_len = after
         else:
             after_idx_len = int(np.ceil(after / self.dt64))
-        before = before_idx_len * self.dt64
-        after = after_idx_len * self.dt64
-
-        before_array = np.arange(self.t0 - before,
-                                 self._tarr[0] - config.abs_tolerance,
-                                 self.dt64,
-                                 dtype=self._tarr.dtype)
-        after_array = np.arange(self._tarr[-1] + self.dt - config.abs_tolerance,
-                                self.tn + self.dt - config.abs_tolerance + after,
-                                self.dt64,
-                                dtype=self._tarr.dtype)
+        # before = before_idx_len * self.dt64
+        # after = after_idx_len * self.dt64
+        #
+        # before_array = np.arange(self.t0 - before,
+        #                          self._tarr[0] - config.abs_tolerance,
+        #                          self.dt64,
+        #                          dtype=self._tarr.dtype)
+        # after_array = np.arange(self._tarr[-1] + self.dt - config.abs_tolerance,
+        #                         self.tn + self.dt - config.abs_tolerance + after,
+        #                         self.dt64,
+        #                         dtype=self._tarr.dtype)
             # Use of _tarr ensures we don't add more padding than necessary
+
+        Δbefore_idx = max(before_idx_len - self.padding[0], 0)
+        Δafter_idx = max(after_idx_len - self.padding[1], 0)
+            # Take max because requested padding may be less than what we have
+        before_array = (np.arange(-Δbefore_idx, 0) * self.dt64
+                        + self._tarr[0]).astype(self.tidx_dtype)
+        after_array = (np.arange(1, Δafter_idx+1) * self.dt64
+                       + self._tarr[-1]).astype(self.tidx_dtype)
 
         self._tarr = np.hstack((before_array,
                                 self._tarr,#[self.t0idx:self.t0idx+len(self)],
@@ -923,13 +936,14 @@ class History(HistoryBase):
         self.t0idx += len(before_array)
 
         # Update the current time index
-        if self._cur_tidx == self._original_tidx:
-            self._original_tidx.set_value( self._original_tidx.get_value() + len(before_array) )
-            self._cur_tidx = self._original_tidx
-        else:
-            # _cur_tidx is already a transformed variable, so don't link it to _original_tidx
-            self._original_tidx.set_value( self._original_tidx.get_value() + len(before_array) )
-            self._cur_tidx += len(before_array)
+        if Δbefore_idx > 0:
+            if self._cur_tidx == self._original_tidx:
+                self._original_tidx.set_value( self._original_tidx.get_value() + Δbefore_idx )
+                self._cur_tidx = self._original_tidx
+            else:
+                # _cur_tidx is already a transformed variable, so don't link it to _original_tidx
+                self._original_tidx.set_value( self._original_tidx.get_value() + Δbefore_idx )
+                self._cur_tidx += Δbefore_idx
 
         # Check that the time index type can still store all time indices
         if not np.can_cast(np.min_scalar_type(len(self._tarr)), self.tidx_dtype):
@@ -941,7 +955,7 @@ class History(HistoryBase):
                              "initializing the history with a longer time array.)"
                              .format(len(self._tarr), str(self.tidx_dtype)))
 
-        return len(before_array), len(after_array)
+        return Δbefore_idx, Δafter_idx
 
     def truncate_self(self, end):
         # TODO: invalidate caches ?
@@ -1111,7 +1125,7 @@ class History(HistoryBase):
                                .format(self.name, tarr[start], tarr[end]))
             if replace:
                 # self._data = self._update_function(tarr[::-1])[::-1]
-                self._data = self._update_function(np.arange(len(self))[::-1])[::-1]
+                self._data = self._update_function(np.arange(self.t0idx, self.tnidx+1)[::-1])[::-1]
                 if isinstance(self._data, np.ndarray):
                     self._data = shim.shared(self._data, symbolic=self.symbolic)
                 self._cur_tidx = end
