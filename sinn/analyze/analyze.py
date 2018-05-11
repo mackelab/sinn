@@ -142,7 +142,7 @@ def mean(hist, pop_slices=None, time_array=None, **kwargs):
 
     res = histories.Series(hist.hist, name = "<" + hist.name + ">",
                            shape = res_data.shape[1:],
-                           iterative = False)
+                           iterative = False, dtype=shim.config.floatX)
     res.set( shim.cast(res_data,res.dtype) )
     res.lock()
     return res
@@ -196,7 +196,7 @@ def diff(hist, mode='centered'):
 
         res = Series(hist, name = "D " + hist.name,
                      t0 = t0, tn = tn,
-                     iterative = False)
+                     iterative = False, dtype=shim.config.floatX)
         res.set( shim.cast((hist[startidx+2:endidx] - hist[startidx:endidx-2]) / (2*hist.dt64),
                            res.dtype) )
 
@@ -316,7 +316,7 @@ def smooth(series, amount=None, method='mean', name = None, **kwargs):
                                #     # Calculating tn this way avoids rounding errors that add an extra bin
                                # dt = series.dt,
                                shape = series.shape,
-                               iterative = False)
+                               iterative = False, dtype=shim.config.floatX)
         assert(len(res) == datalen - amount + 1)
         res.pad(series.t0idx, len(series._tarr) - len(series) - series.t0idx)
             # Add the same amount of padding as series
@@ -364,7 +364,7 @@ def subsample(series, amount):
                            #    # nbins-1 because tn is inclusive
                            #dt   = newdt,
                            shape = series.shape,
-                           iterative = False)
+                           iterative = False, dtype = shim.config.floatX)
     data = series.get_trace()[:nbins*amount]
         # Slicing removes bins which are not commensurate with the subsampling factor
     t0idx = series.t0idx
