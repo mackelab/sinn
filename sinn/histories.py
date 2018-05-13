@@ -1448,18 +1448,9 @@ class History(HistoryBase):
             #shim.check(kernel.shape == self.shape*2)
             #    # Ensure the kernel is square and of the right shape for this history
 
-            if config.integration_precision == 1:
-                kernel_func = kernel.eval
-            elif config.integration_precision == 2:
-                # TODO: Avoid recalculating eval at the same places by writing
-                #       a compute_up_to function and passing that to the series
-                kernel_func = lambda t: (kernel.eval(t) + kernel.eval(t+self.dt)) / 2
-            else:
-                # TODO: higher order integration with trapeze or simpson's rule
-                raise NotImplementedError
-
             # The kernel may start at a position other than zero, resulting in a shift
             # of the index corresponding to 't' in the convolution
+            # TODO: if kernel.t0 is not divisible by dt, do an appropriate average
             idx_shift = int(round(kernel.t0 / self.dt64))
                 # We don't use shim.round because time indices must be Python numbers
             t0 = shim.cast(idx_shift * self.dt64, shim.config.floatX)
@@ -1485,13 +1476,33 @@ class History(HistoryBase):
                                 tn=t0 + memory_idx_len*self.dt64,
                                 dt=self.dt64,
                                 shape=kernel.shape,
-                                f=kernel_func,
+                                # f=kernel_func,
                                 name=dis_name,
                                 symbolic=symbolic,
                                 iterative=False)
                 # Kernels are non-iterative by definition: they only depend on their parameters
             dis_kernel.idx_shift = idx_shift
 
+            # Set the update function for the discretized kernel
+            if config.integration_precision == 1:
+                _kernel_func = kernel.eval
+            elif config.integration_precision == 2:
+                # TODO: Avoid recalculating eval at the same places by writing
+                #       a compute_up_to function and passing that to the series
+                _kernel_func = lambda t: (kernel.eval(t) + kernel.eval(t+self.dt)) / 2
+            else:
+                # TODO: higher order integration with trapeze or simpson's rule
+                raise NotImplementedError
+
+            ## Kernel functions can only be defined to take times, so we wrap
+            ## the function
+            def kernel_func(t):
+                t = dis_kernel.get_time(t)
+                return _kernel_func(t)
+
+            dis_kernel.set_update_function(kernel_func)
+
+            # Attach the discretization to the kernel instance
             setattr(kernel, dis_attr_name, dis_kernel)
 
             return dis_kernel
