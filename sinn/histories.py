@@ -196,8 +196,11 @@ class History(HistoryBase):
         # Derived classes should define this as a class attribute
     instance_counter = 0
 
-    def __init__(self, hist=sinn._NoValue, name=None, *args, time_array=sinn._NoValue, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
-                 shape=sinn._NoValue, f=sinn._NoValue, iterative=sinn._NoValue, symbolic=sinn._NoValue):
+    def __init__(self, hist=sinn._NoValue, name=None, *args,
+                 time_array=sinn._NoValue,  shape=sinn._NoValue,
+                 iterative=sinn._NoValue, symbolic=sinn._NoValue,
+                 t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
+                 f=sinn._NoValue):
         """
         Initialize History object.
         Instead of passing the parameters, another History instance may be passed as
@@ -928,9 +931,9 @@ class History(HistoryBase):
         Δafter_idx = max(after_idx_len - self.padding[1], 0)
             # Take max because requested padding may be less than what we have
         before_array = (np.arange(-Δbefore_idx, 0) * self.dt64
-                        + self._tarr[0]).astype(self.tidx_dtype)
+                        + self._tarr[0]).astype(self._tarr.dtype)
         after_array = (np.arange(1, Δafter_idx+1) * self.dt64
-                       + self._tarr[-1]).astype(self.tidx_dtype)
+                       + self._tarr[-1]).astype(self._tarr.dtype)
 
         self._tarr = np.hstack((before_array,
                                 self._tarr,#[self.t0idx:self.t0idx+len(self)],
@@ -1269,9 +1272,10 @@ class History(HistoryBase):
             quotient = Δt / self.dt64
             rquotient = shim.round(quotient)
             if not allow_rounding:
-                try:
-                    shim.check( shim.abs(quotient - rquotient) < config.get_abs_tolerance(Δt) / self.dt64 )
-                except AssertionError:
+                # try:
+                #     shim.check( shim.abs(quotient - rquotient) < config.get_abs_tolerance(Δt) / self.dt64 )
+                # except AssertionError:
+                if not sinn.isclose(quotient, rquotient):
                     logger.error("Δt: {}, dt: {}".format(Δt, self.dt64) )
                     raise ValueError("Tried to convert t=" + str(Δt) + " to an index interval "
                                      "but its not a multiple of dt.")
@@ -1292,7 +1296,8 @@ class History(HistoryBase):
     def get_tidx(self, t, allow_rounding=False):
         """Return the idx corresponding to time t. Fails if no such index exists.
         It is ok for the t to correspond to a time "in the future",
-        and for the data array not yet to contain a point at that time.
+        and for the data array not yet to contain a point at that time; doing
+        so triggers the computation of the history up to `t`.
         `t` may also be specified as a slice, in which case a slice of time
         indices is returned.
 
@@ -1334,8 +1339,11 @@ class History(HistoryBase):
                                          "of numerical errors. Try using a higher precision type.")
                     t_idx = (t - self._tarr[0]) / self.dt64
                     r_t_idx = shim.round(t_idx)
-                    if (not shim.is_theano_object(r_t_idx) and not allow_rounding
-                          and (abs(t_idx - r_t_idx) > config.get_abs_tolerance(t) / self.dt64).all() ):
+                    if (not shim.is_theano_object(r_t_idx)
+                        and not allow_rounding
+                        and (abs(t_idx - r_t_idx) >
+                             config.get_abs_tolerance(t_idx, self._tarr[0])/self.dt64
+                             ).all() ):
                         logger.error("t: {}, t0: {}, t-t0: {}, t_idx: {}, dt: {}"
                                      .format(t, self._tarr[0], t - self._tarr[0], t_idx, self.dt64) )
                         raise ValueError("Tried to obtain the time index of t=" +
@@ -1725,7 +1733,7 @@ class History(HistoryBase):
         idxstop = shim.ifelse(empty_array,
                               shim.cast(0, dtype=self._cur_tidx.dtype),
                               self.get_t_idx(array[-1]) + idxstep)
-            # We add/subtract dt because the array upper bound is inclusive
+            # We add/subtract idxstep because the array upper bound is inclusive
 
         # Ensure that idxstop is not negative. This would require replacing it by
         # None, and doing that in a Theano graph, if possible at all, is clumsy.
@@ -1826,6 +1834,11 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
     These are stored as times associated to each spike, so there is
     no well-defined 'shape' of a timeslice. Instead, the `shape` parameter
     is used to indicate the number of neurons in each population.
+
+    NOTE: This development of this class has been put on hold as the Spiketrain
+    is better suited to its original use case. I think it's a useful concept and
+    want to see it developed further; it's just not a current priority.
+    Thus expect to need to bring it up to date before using it.
     """
 
     _strict_index_rounding = False
@@ -2287,7 +2300,8 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         # It's too easy otherwise to think that this has been correctly set automatically
         self.conn_mats = None
 
-        super().__init__(hist, name, t0=t0, tn=tn, dt=dt, shape=shape, **kwargs)
+        super().__init__(hist, name, t0=t0, tn=tn, dt=dt, time_array=time_array,
+                         shape=shape, **kwargs)
 
         self.initialize(dtype=dtype)
 
