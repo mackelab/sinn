@@ -75,11 +75,35 @@ except ImportError:
 ###########################
 # Utility functions
 
-def clip_probabilities(prob_array,
-                       min_prob = np.sqrt(config.abs_tolerance),
-                       max_prob = 1-np.sqrt(config.abs_tolerance)):
+def clip_probabilities(prob_array, min_prob = None, max_prob = None):
     # For float64 variables, we should clip at least 1e-8 away from the bounds
+    # For float32 this seems to work as well
+    # Float16 can't resolve anything lower than 6e-8, but I've never
+    # run code with single precision floats, so a higher value
+    # may be needed
+
+    # Set default clipping bounds
     dtype = getattr(prob_array, 'dtype', shim.config.floatX)
+    precision = (16 if '16' in str(dtype)
+                 else 32 if '32' in str(dtype)
+                 else 64 if '64' in str(dtype)
+                 else None)
+    if precision is None:
+        raise TypeError("Probabilities to clip must be of float type, but "
+                        "they are {}.".format(dtype))
+    if precision == 16:
+        logger.warning("Half-precision is insufficient for most probability "
+                       "application: it only holds ~3 significant digits.")
+    if min_prob is None:
+        min_prob = (1e-7 if precision == 16
+                    else 1e-8 if precision in (32, 64)
+                    else None)
+    if max_prob is None:
+        max_prob = (1.-1e-3 if precision == 16
+                    else 1.-1e-7 if precision == 32
+                    else 1.-1e-8 if precision == 64
+                    else None)
+    assert(None not in (min_prob, max_prob))
     min_prob = np.asarray(min_prob).astype(dtype)
     max_prob = np.asarray(max_prob).astype(dtype)
     if not config.use_theano():
