@@ -114,7 +114,7 @@ def get_tolerance(var, tol_type):
     """
     Parameters
     ----------
-    var: variable
+    var: variable | dtype | dtype string
         Variable for which we want to know the numerical tolerance.
     tol_type:
         Tolerance type. One of 'abs' or 'rel'.
@@ -123,18 +123,31 @@ def get_tolerance(var, tol_type):
     -------
     float
     """
-    var_type = shim.asarray(var).dtype
-    if var_type in [np.float32, 'float32']:
-        return precision_dict['32'][tol_type]
-    elif var_type in [np.float64, 'float64']:
-        return precision_dict['64'][tol_type]
+    if isinstance(var, tuple):
+        return max(get_tolerance(v, tol_type) for v in var)
     else:
-        raise ValueError("Unknown dtype '{}'.".format(var_type))
+        if (isinstance(var, np.dtype)
+            or (isinstance(var, type) and issubclass(var, np.generic))
+            or isinstance(var, str)):
+            var_type = var
+        # elif issubclass(var, np.generic):
+        #     var_type = np.dtype(var)
+        # elif isisntance(var, string):
+        #     # TODO: Can we remove the 'asarray' call and convert string directly ?
+        #     var_type = np.result_type(np.asarray(1, dtype=var))
+        else:
+            var_type = shim.asarray(var).dtype
+        if var_type in [np.float32, 'float32']:
+            return precision_dict['32'][tol_type]
+        elif var_type in [np.float64, 'float64']:
+            return precision_dict['64'][tol_type]
+        else:
+            raise ValueError("Numerical tolerance is undefined for dtype '{}'.".format(var_type))
 
-def get_abs_tolerance(var):
+def get_abs_tolerance(*var):
     return get_tolerance(var, 'abs')
 
-def get_rel_tolerance(var):
+def get_rel_tolerance(*var):
     return get_tolerance(var, 'rel')
 
 
