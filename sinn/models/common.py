@@ -346,6 +346,18 @@ class Model(com.ParameterMixin):
                                      "op {}. This may indicate a memory leak."
                                      .format(history.name, str(op)))
 
+    def remove_other_histories(self):
+        """HACK: Remove histories from sinn.inputs that are not in this model.
+        Can remove this once we store dependencies in histories rather than in
+        sinn.inputs."""
+        histnames = [h.name for h in self.history_set]
+        dellist = []
+        for h in sinn.inputs:
+            if h.name not in histnames:
+                dellist.append(h)
+        for h in dellist:
+            del sinn.inputs[h]
+
     def apply_updates(self, update_dict):
         """
         Theano functions which produce updates (like scan) naturally will not
@@ -494,6 +506,165 @@ class Model(com.ParameterMixin):
             return l
 
         return loglikelihood
+
+    # ==============================================
+    # Model advancing code
+    #
+    # This code isn't 100% generic yet;
+    # look for TODO tags for model-specific hacks
+    #
+    # Function overview:
+    # - advance(self, stop): User-facing function
+    # - _advance(self): Returns a function; use as `self._advance(stop)`:
+    #   `self._advance` is a property which memoizes the compiled function.
+    # - compile_advance_function(self): Function called by `_advance` the first
+    #   time to do the compilation. Could conceivably also be used by a user.
+    #   Returns a compiled function.
+    # - advance_updates(self, stopidx): Function used by
+    #   `compile_advance_function` to retrieve the set of symbolic updates.
+    # ==============================================
+    def advance(self, stop):
+        """
+        Allows advancing (or progagating forward, or integrating) a symbolic
+        model.
+        For a non-symbolic model the usual recursion is used – it's the
+        same as calling `hist[stop]` on each history in the model.
+        For a symbolic model, the function constructs the symbolic update
+        function, compiles it, and than evaluates it with `stop` as argument.
+        The update function is compiled only once, so subsequent calls to
+        `advance` are much faster and benefit from the acceleration of running
+        on compiled code.
+        """
+
+        if stop == 'end':
+            stopidx = self.tnidx
+        else:
+            stopidx = self.get_t_idx(stop)
+
+        # Make sure we don't go beyond given data
+        for h in self.history_set:
+            if h.locked:
+                tnidx = h._original_tidx.get_value()
+                if tnidx < stopidx - self.t0idx + hist.t0idx:
+                    logger.warning("Locked history '{}' is only provided "
+                                   "up to t={}. Output will be truncated."
+                                   .format(h.name, h.get_time(tnidx)))
+                    stopidx = tnidx - hist.t0idx + self.t0idx
+
+        if not shim.config.use_theano:
+            self._refhist[stopidx - self.t0idx + self._refhist.t0idx]
+            # We want to compute the whole model up to stopidx, not just what is required for refhist
+            for hist in self.statehists:
+                hist[stopidx - self.t0idx + hist.t0idx]
+
+        else:
+            curtidx = min( hist._original_tidx.get_value() - hist.t0idx + self.t0idx
+                           for hist in self.statehists )
+            assert(curtidx >= -1)
+
+            if curtidx+1 < stopidx:
+                self._advance(stopidx)
+                for hist in self.statehists:
+                    hist.theano_reset()
+
+    @property
+    def _advance(self):
+        """
+        Attribute which caches the compilation of the advance function.
+        """
+        if not hasattr(self, '_advance_fn'):
+            self._advance_fn = self.compile_advance_function()
+        return self._advance_fn
+
+    def compile_advance_function(self):
+        stopidx_var = shim.getT().lscalar()
+        stopidx_var.tag.test_value = 2
+            # Allow model to work with compute_test_value != 'ignore'
+        logger.info("Compiling advance function.")
+        updates = self.advance_updates(stopidx_var)
+        fn = shim.graph.compile([stopidx_var], [], updates = updates)
+        logger.info("Done.")
+        self.theano_reset()
+        return fn
+
+    def advance_updates(self, stopidx):
+        """
+
+        Parameters
+        ----------
+        stopidx: symbolic (int)
+            We want to compute the model up to this point.
+
+        Returns
+        -------
+        Update dictionary:
+            Compiling a function and providing this dictionary as 'updates' will return a function
+            which fills in the histories up to `stopidx`.
+        """
+        self.remove_other_histories()  # HACK
+        self.clear_unlocked_histories()
+        self.theano_reset()
+
+        if len(self.statehists) == 0:
+            raise NotImplementedError
+        elif len(self.statehists) == 1:
+            hist = self.statehists[0]
+            startidx = hist._original_tidx - hist.t0idx + self.t0idx
+        else:
+            startidx = shim.smallest( *( hist._original_tidx - hist.t0idx + self.t0idx
+                                        for hist in self.statehists ) )
+        try:
+            assert( shim.get_test_value(startidx) >= -1 )
+                # Iteration starts at startidx + 1, and will break for indices < 0
+        except AttributeError:
+            # Unable to find test value; just skip check
+            pass
+
+        # TODO: Make `symbolic_update` a generic function that constructs
+        # symbolic updates from the history update functions
+        def onestep(tidx, *args):
+            state_outputs, updates = self.symbolic_update(tidx, *args)
+            return state_outputs, updates
+            #return list(state_outputs.values()), updates
+
+        outputs_info = []
+        for hist in self.statehists:
+            # TODO: Generalize
+            maxlag = hist.t0idx
+            # maxlag = hist.index_interval(self.params.Δ.get_value())
+            # HACK/FIXME: We should query history for its lags
+            if maxlag > 1:
+                lags = [-maxlag, -1]
+            else:
+                lags = [-1]
+            tidx = startidx - self.t0idx + hist.t0idx
+            assert(maxlag <= hist.t0idx)
+                # FIXME Maybe not necessary if built into lag history
+            if len(lags) == 1:
+                assert(maxlag == 1)
+                outputs_info.append( hist._data[tidx])
+            else:
+                outputs_info.append({'initial': hist._data[tidx+1-maxlag:tidx+1],
+                                     'taps': lags})
+
+
+        outputs, upds = shim.gettheano().scan(onestep,
+                                              sequences = shim.arange(startidx+1, stopidx),
+                                              outputs_info = outputs_info)
+        self.apply_updates(upds)
+            # Applying updates ensures we remove the iteration variable
+            # scan introduces from the shim updates dictionary
+
+        # Update the state variables
+        if not isinstance(outputs, list):
+            # Scan does not wrap `outputs` in a list if it is a single variable
+            outputs = [outputs]
+        for hist, output in zip(self.statehists, outputs):
+            valslice = slice(startidx - self.t0idx + hist.t0idx + 1,
+                             stopidx  - self.t0idx + hist.t0idx)
+            hist.update(valslice, output)
+
+        return shim.get_updates()
 
 
 def Surrogate(model):
