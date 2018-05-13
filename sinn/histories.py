@@ -1711,10 +1711,23 @@ class History(HistoryBase):
     # Utility functions
     ################################
 
-    def array_to_slice(self, array):
+    def array_to_slice(self, array, lag=None):
         """
         Assumes the array is monotonous and evenly spaced. This is checked, but
         only if `array` is not symbolic.
+
+        Parameters
+        ----------
+        array: nparray of floats or ints
+            int: time indices
+            floats: times
+        lag: float or int
+            The output slice will be shifted by this amount. If float,
+            interpreted as time and first converted to index interval.
+
+        Returns
+        -------
+        slice of time indexes (integers)
         """
         # We need to be careful here, because array could be empty, and then
         # indexing it with array[0] or array[-1] would trigger an error
@@ -1752,6 +1765,14 @@ class History(HistoryBase):
         # it than add cruft to the Theano graph.
         if not shim.is_theano_object(idxstop):
             assert(idxstop >= 0)
+
+        if lag is not None:
+            if shim.istype(lag, 'float'):
+                lag = self.index_interval(lag)
+            else:
+                assert(shim.istype(lag, 'int'))
+            idxstart += lag
+            idxstop += lag
 
         return slice(idxstart, idxstop, idxstep)
     time_array_to_slice = array_to_slice
