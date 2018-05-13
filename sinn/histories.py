@@ -545,13 +545,15 @@ class History(HistoryBase):
                        "frequent source of confusing bugs. Instead of `-5`, use "
                        "`[history].tnidx - 5`.")
         if shim.isscalar(key):
-            if not shim.is_theano_object(key) and key < 0:
+            if (not shim.is_theano_object(key) and shim.istype(key, 'int')
+                and key < 0):
                 raise ValueError(neg_key_err)
             return self._getitem_internal(key)
         elif isinstance(key, slice):
             for t in (key.start, key.stop):
-                if not shim.is_theano_object(t) and t < 0:
-                    raise ValueError(ne_key_err)
+                if (t is not None and not shim.is_theano_object(t)
+                    and shim.istype(t, 'int') and t < 0):
+                    raise ValueError(neg_key_err)
             return self._getitem_internal(key)
         elif shim.isarray(key):
             # FIXME Empty arrays still go through the 'then' branch somehow
