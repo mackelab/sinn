@@ -542,13 +542,13 @@ class Model(com.ParameterMixin):
             stopidx = self.get_t_idx(stop)
 
         # Make sure we don't go beyond given data
-        for h in self.history_set:
-            if h.locked:
-                tnidx = h._original_tidx.get_value()
+        for hist in self.history_set:
+            if hist.locked:
+                tnidx = hist._original_tidx.get_value()
                 if tnidx < stopidx - self.t0idx + hist.t0idx:
                     logger.warning("Locked history '{}' is only provided "
                                    "up to t={}. Output will be truncated."
-                                   .format(h.name, h.get_time(tnidx)))
+                                   .format(hist.name, hist.get_time(tnidx)))
                     stopidx = tnidx - hist.t0idx + self.t0idx
 
         if not shim.config.use_theano:

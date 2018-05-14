@@ -157,7 +157,9 @@ class History(HistoryBase):
 
     def get_trace(self, **kwargs):
         '''Return unpadded data.'''
-        All arguments must be optional.
+        All arguments must be optional. This function is meant for data
+        analysis and plotting, so the return value must not be symbolic.
+        Typically this means that `get_value()` should be called on `_data`.
 
     All methods which modify the history (update, set, clear, compute_up_to) must raise a RuntimeError if `lock` is True.
 
@@ -204,7 +206,7 @@ class History(HistoryBase):
         """
         Initialize History object.
         Instead of passing the parameters, another History instance may be passed as
-        first argument. In this case, time_array, shape and `symbolic` are taken
+        first argument. In this case, time_array and shape are taken
         from that instance. These can be overridden by passing also a corresponding keyword
         argument.
         Except for a possible history instance, all parameters should be passed as keywords.
@@ -246,6 +248,13 @@ class History(HistoryBase):
             computed f(t) is required in order to compute f(t+1). When false,
             when computed f for multiple times t, these will be passed as an array
             to f, using only one function call. Default is to force iterative computation.
+        symbolic: bool
+            A value of `False` indicates that even if a symbolic library is
+            loaded, values in this history are treated as data. Only updates
+            which do not have any symbolic inputs are permitted, and they are
+            immediately calculated using `shim.graph.eval()`.
+            IMPORTANT NOTE: This means that any symbolic dependency (e.g. on
+            shared parameters) is lost.
 
         Returns
         -------
@@ -295,9 +304,10 @@ class History(HistoryBase):
                 shape = hist.shape
             #if f is sinn._NoValue:
             #    f = hist._update_function
+            # if symbolic is sinn._NoValue:
+            #     symbolic = hist.symbolic
             # 'hist' does not serve as a default value for 'iterative', since the new history will typically have a different function
-            if symbolic is sinn._NoValue:
-                symbolic = hist.symbolic
+            # Same goes for 'symbolic'
         else:
             assert(time_array is not sinn._NoValue
                    or sinn._NoValue not in [t0, tn, dt])
@@ -642,8 +652,8 @@ class History(HistoryBase):
             else:
                 stop = self.get_t_idx(key.stop)
                 stop = shim.ifelse(stop >= 0,
-                                    stop,
-                                    len(self._tarr) + stop)
+                                   stop,
+                                   len(self._tarr) + stop)
 
             # allow to select beyond the end, to be consistent
             # with slicing conventions
@@ -1425,10 +1435,21 @@ class History(HistoryBase):
         except AttributeError:
             pass
 
-    def convert_to_theano(self):
-        assert((self._cur_tidx.get_value() == self._original_tidx.get_value()).all())
-        assert((self._data.get_value() == self._original_data.get_value()).all())
-        for attrname in dir(self):
+    def recreate_data(self):
+        """
+        Recreate the internal data by calling `shim.shared` on the current value.
+        This 'resets' the state of the data with the current state of `shim`,
+        which may be desired if a shimmed library was loaded or unloaded after
+        creating the history.
+        Will fail if either the data or current index is a symbolic (rather
+        than shared) variable.
+        This overwrites the original data; consider first making a deepcopy
+        if you need to keep the original.
+        """
+        assert(self._cur_tidx.get_value() == self._original_tidx.get_value())
+        assert(np.all(self._data.get_value() == self._original_data.get_value()))
+        # for attrname in dir(self):
+        for attrname in ['_original_tidx', '_original_data']:
             attr = getattr(self, attrname)
             if isinstance(attr, shim.ShimmedShared):
                 setattr(self, attrname, shim.shared(attr.get_value(), name=attr.name))
@@ -1839,12 +1860,21 @@ class History(HistoryBase):
                   for hist in input_list):
             # The potential cyclical dependency chain has been broken
             retval = True
+        elif self._original_tidx.get_value() >= self.tnidx:
+            return True
+        elif shim.is_theano_object(up_to):
+            # A symbolic `up_to` can always be higher than _cur_tidx, unless
+            # it's actually the same variable
+            retval = (up_to == self._cur_tidx)
+                # NOTE/TODO: This isn't a perfect test; e.g. if `up_to` is
+                # equal to `_cur_tidx - 1`, batch_computable will return False
+                # It will also fail if `up_to` is a time (float)
+        elif up_to != 'end':
+            # A symbolic `up_to` can always be higher than the cur_tidx
+            up_to = self.get_t_idx(up_to)
+            retval = (up_to <= self._original_tidx.get_value())
         else:
-            if up_to != 'end':
-                up_to = self.get_t_idx(up_to)
-                retval = (up_to <= self._original_tidx.get_value())
-            else:
-                retval = False
+            retval = False
 
         del self._batch_loop_flag
 
@@ -2535,7 +2565,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
 
         assert(self._cur_tidx.get_value() >= tslice.stop - 1)
 
-        data_arr = self._data.tocsr()
+        data_arr = self._data.get_value().tocsr()
         if neuron is None:
             if pop is None:
                 return data_arr[tslice]
@@ -3097,14 +3127,20 @@ class Series(ConvolveMixin, History):
                 if not shim.graph.is_computable([value]):
                     raise ValueError("You are trying to update a pure numpy series ({}) "
                                      "with a Theano variable. You need to make the "
-                                     "series a Theano variable as well."
+                                     "series a Theano variable as well or ensure "
+                                     "that `value` does not depend on any "
+                                     "symbolic inputs."
                                      .format(self.name))
                 value = shim.graph.eval(value, max_cost=None)
             if shim.is_theano_object(tidx):
-                raise ValueError("You are trying to update a pure numpy series ({}) "
-                                 "with a time idx that is a Theano variable. You need "
-                                 "to make the series a Theano variable as well."
-                                 .format(self.name))
+                if not shim.graph.is_computable([tidx]):
+                    raise ValueError("You are trying to update a pure numpy series ({}) "
+                                     "with a time idx that is a Theano variable. You need "
+                                     "to make the series a Theano variable as well "
+                                     "or ensure that `tidx` does not depend "
+                                     "on any symbolic inputs."
+                                     .format(self.name))
+                tidx = shim.graph.eval(tidx, max_cost=None)
 
             dataobject = self._data.get_value(borrow=True)
 
