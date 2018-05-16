@@ -9,7 +9,7 @@ author: Alexandre René
 
 __all__ = ['mean', 'diff', 'smooth', 'subsample',
            'window_mean', 'window_variance',
-           'plot', 'get_axes', 'get_axis_labels']
+           'cleanname', 'plot', 'get_axes', 'get_axis_labels']
 
 import logging
 import collections

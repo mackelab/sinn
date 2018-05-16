@@ -757,17 +757,21 @@ class SeriesSGD(SGDBase):
 
         return ConvergeStatus.NOTCONVERGED
 
-    def fit(self, Nmax):
+    def fit(self, Nmax, threadidx=0):
         """
         Parameters
         ----------
-
-        **kwargs: Additional keyword arguments are passed to `step`.
+        Nmax: int
+            Maximum number of iterations.
+        threadidx: int
+            (Optional) If you have multiple fitting threads, giving each a
+            separate index ensures the progress bars are kept separate. Default
+            is zero.
         """
 
         Nmax = int(Nmax)
         try:
-            for i in tqdm(range(Nmax)):
+            for i in tqdm(range(Nmax), position=threadidx):
                 status = self.step()
                 if status in [ConvergeStatus.CONVERGED, ConvergeStatus.ABORT]:
                     break
