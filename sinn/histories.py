@@ -464,7 +464,7 @@ class History(HistoryBase):
         #     raw['name'] = self.name # Replace with non-compiled name
         # else:
 
-        if (self._data != self._original_data
+        if (np.all(self._data != self._original_data)
             or self._cur_tidx != self._original_tidx):
             logger.warning("Saving symbolic history '{}'; only the data "
                            "(i.e. what has already been computed) is saved. "
