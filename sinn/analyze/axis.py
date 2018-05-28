@@ -72,10 +72,17 @@ class Axis:
             else:
                 if isinstance(label, ParameterLabel):
                     label_idx = label.idx
-                    if ( isinstance(transformed_label, ParameterLabel)
-                         and tuple(transformed_label.idx) != tuple(label_idx) ):
-                        raise ValueError("Index of `label` and `transformed_label` "
-                                         "don't match.")
+                    if (isinstance(transformed_label, ParameterLabel)
+                        and label_idx != transformed_label.idx):
+                        label_idx_t = (
+                          tuple(label_idx) if isinstance(label_idx, Iterable)
+                          else label_idx)
+                        trans_label_idx_t = (
+                          tuple(transformed_label.idx) if isinstance(transformed_label.idx, Iterable)
+                          else transformed_label.idx)
+                        if label_idx_t != trans_label_idx_t:
+                            raise ValueError("Index of `label` and `transformed_label` "
+                                             "don't match.")
                 else:
                     label_idx = transformed_label.idx
 
