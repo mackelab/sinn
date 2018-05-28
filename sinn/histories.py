@@ -10,6 +10,7 @@ import numpy as np
 import scipy as sp
 import collections
 from collections import deque, Iterable
+from copy import deepcopy
 import itertools
 import operator
 import logging
@@ -36,6 +37,7 @@ class LockedHistoryError(RuntimeError):
 ########################
 # TODO: Remove everything related to compilation – this is better done with Model
 #       A lot of compilation logic can be found by search 'self.symbolic', '_compiling'
+# TODO: Replace tn attribute by a @property.
 # FIXME: Currently `discretize_kernel()` CANNOT be used with Theano – it does
 #        not preserve the computational graph
 
@@ -227,10 +229,6 @@ class History(HistoryBase):
             Time at which the history ends. /Deprecated: use `time_array`./
         dt: float
             Timestep. /Deprecated: use `time_array`./
-        t0idx: int
-            Index corresponding to t0 in the underlying data. (Not implemented)
-        tnidx: int
-            Index corresponding to tn in the underlying data. (Not implemented)
         shape: int tuple
             Shape of a history slice at a single point in time.
             E.g. a movie history might store NxN frames in an TxNxN array.
@@ -432,6 +430,14 @@ class History(HistoryBase):
         """Returns a tuple with the left and right padding."""
         return (self.t0idx, len(self._tarr) - self.tnidx - 1)
 
+    @property
+    def cur_tidx(self):
+        """Returns the time index up to which the history has been computed.
+        Returned index is not corrected for padding; to get the number of bins
+        computed beyond t0, do `hist.cur_tidx - hist.t0idx`.
+        """
+        return self._original_tidx.get_value()
+
     @classmethod
     def from_repr_np(cls, repr_np):
         return cls.from_raw(repr_np)
@@ -449,38 +455,48 @@ class History(HistoryBase):
             This argument exists to allow specialization in derived classes.
         """
 
-        if self.symbolic:
-            if self.compiled_history is not None:
-                raw = self.compiled_history.raw()
-            else:
-                raise AttributeError("The `raw` method for uncompiled Theano "
-                                     "histories is undefined.")
-            raw['name'] = self.name # Replace with non-compiled name
-        else:
-            # We do it this way in case kwd substitutions are there to
-            # avoid an error (such as _data not having a .get_value() method)
-            raw = {}
-            raw['type'] = sinn.common.find_registered_typename(type(self))
-                 # find_registered_typename returns the closest registered type name in the hierarchy
-                 # E.g. if we are saving a subclass of Series, this will return the name under which
-                 # that class was registered, and if it wasn't registered, the name under which
-                 # 'Series' is registered. This ensures that ml.iotools.load() is always able to
-                 # reconstruct the series afterwards.
-            raw['name'] = kwargs.pop('name') if 'name' in kwargs else self.name
-            raw['t0'] = kwargs.pop('t0') if 't0' in kwargs else self.t0
-            raw['tn'] = kwargs.pop('tn') if 'tn' in kwargs else self.tn
-            raw['dt'] = kwargs.pop('dt') if 'dt' in kwargs else self.dt
-            raw['t0idx'] = kwargs.pop('t0idx') if 't0idx' in kwargs else self.t0idx
-            raw['_unpadded_length'] = kwargs.pop('_unpadded_length') if '_unpadded_length' in kwargs else self._unpadded_length
-            raw['_cur_tidx'] = kwargs.pop('_cur_tidx') if '_cur_tidx' in kwargs else self._cur_tidx.get_value()
-            raw['shape'] = kwargs.pop('shape') if 'shape' in kwargs else self.shape
-            raw['ndim'] = kwargs.pop('ndim') if 'ndim' in kwargs else self.ndim
-            raw['_tarr'] = kwargs.pop('_tarr') if '_tarr' in kwargs else self._tarr
-            raw['_data'] = kwargs.pop('_data') if '_data' in kwargs else self._data.get_value()
-            raw['_iterative'] = kwargs.pop('_iterative') if '_iterative' in kwargs else self._iterative
-            raw['locked'] = kwargs.pop('locked') if 'locked' in kwargs else self.locked
+        # if self.symbolic:
+        #     if self.compiled_history is not None:
+        #         raw = self.compiled_history.raw()
+        #     else:
+        #         raise AttributeError("The `raw` method for uncompiled Theano "
+        #                              "histories is undefined.")
+        #     raw['name'] = self.name # Replace with non-compiled name
+        # else:
 
-            raw.update(kwargs)
+        if (self._data != self._original_data
+            or self._cur_tidx != self._original_tidx):
+            logger.warning("Saving symbolic history '{}'; only the data "
+                           "(i.e. what has already been computed) is saved. "
+                           "Symbolic state will be discarded.")
+        # We do it this way in case kwd substitutions are there to
+        # avoid an error (such as _data not having a .get_value() method)
+        raw = {}
+        raw['type'] = sinn.common.find_registered_typename(type(self))
+             # find_registered_typename returns the closest registered type name in the hierarchy
+             # E.g. if we are saving a subclass of Series, this will return the name under which
+             # that class was registered, and if it wasn't registered, the name under which
+             # 'Series' is registered. This ensures that ml.iotools.load() is always able to
+             # reconstruct the series afterwards.
+        raw['name'] = kwargs.pop('name') if 'name' in kwargs else self.name
+        raw['t0'] = kwargs.pop('t0') if 't0' in kwargs else self.t0
+        raw['tn'] = kwargs.pop('tn') if 'tn' in kwargs else self.tn
+        raw['dt'] = kwargs.pop('dt') if 'dt' in kwargs else self.dt
+        raw['t0idx'] = kwargs.pop('t0idx') if 't0idx' in kwargs else self.t0idx
+        raw['_unpadded_length'] = kwargs.pop('_unpadded_length') if '_unpadded_length' in kwargs else self._unpadded_length
+        raw['_cur_tidx'] = (kwargs.pop('_cur_tidx') if '_cur_tidx' in kwargs
+                            else kwargs.pop('_original_tidx') if '_original_tidx' in kwargs
+                            else self._original_tidx.get_value())
+        raw['shape'] = kwargs.pop('shape') if 'shape' in kwargs else self.shape
+        raw['ndim'] = kwargs.pop('ndim') if 'ndim' in kwargs else self.ndim
+        raw['_tarr'] = kwargs.pop('_tarr') if '_tarr' in kwargs else self._tarr
+        raw['_data'] = (kwargs.pop('_data') if '_data' in kwargs
+                        else kwargs.pop('_original_data') if '_original_data' in kwargs
+                        else self._original_data.get_value())
+        raw['_iterative'] = kwargs.pop('_iterative') if '_iterative' in kwargs else self._iterative
+        raw['locked'] = kwargs.pop('locked') if 'locked' in kwargs else self.locked
+
+        raw.update(kwargs)
         return raw
 
     @classmethod
@@ -528,7 +544,8 @@ class History(HistoryBase):
                                               name = 't idx (' + rethist.name + ')' ,
                                               symbolic=symbolic)
         rethist._cur_tidx = rethist._original_tidx
-        rethist._data = shim.shared(raw['_data'], name = rethist.name + " data")
+        rethist._original_data = shim.shared(raw['_data'], name = rethist.name + " data")
+        rethist._data = rethist._original_data
         if lock:
             rethist.lock()
         else:
@@ -774,6 +791,20 @@ class History(HistoryBase):
     def trace(self):
         return self.get_trace()
 
+    def copy(self):
+        """Work in progress. At the moment just calls `copy.deepcopy` on itself.
+        Will expand to better treat internal data in the future.
+        TODO: Return a view instead of actual copy.
+        """
+        return deepcopy(self)
+
+    def deepcopy(self):
+        """Work in progress. At the moment just calls `copy.deepcopy` on itself.
+        Will expand to better treat internal data in the future.
+        TODO: Allow not copying certain attributes (e.g. '_data')
+        """
+        return deepcopy(self)
+
     def clear(self):
         """
         Invalidate the history data, forcing it to be recomputed the next time its queried.
@@ -972,30 +1003,63 @@ class History(HistoryBase):
 
         return Δbefore_idx, Δafter_idx
 
-    def truncate_self(self, end):
+    def truncate(self, start, end=None, allow_rounding=True, inplace=False):
+        """
+        Parameters
+        ----------
+        start: idx | time
+            If `None`, no initial truncation. In particular, keeps any padding.
+            If `end` is given, initial time of the truncated history.
+            If `end` is omitted, value is used for `end` instead. `start` is
+            set to `None`.
+        end: idx | time
+            Latest time of the truncated history.
+        allow_rounding: bool
+            Whether to allow rounding start and end times to the nearest time
+            index. Default is `True`.
+        inplace: bool
+            Whether to modify the present history inplace, or create and modify
+            a copy. Default is use make copy.
+        """
+        # TODO: if inplace=False, return a view of the data
         # TODO: invalidate caches ?
         # TODO: check lock
         # TODO: Theano _data ? _cur_tidx ?
         # TODO: Sparse _data (Spiketrain)
         # TODO: Can't pad (resize) after truncate
-        logger.warning("Function `truncate_self()` is a work in progress.")
-        imax = self.get_t_idx(end)
-        if (isinstance(self._data, sp.sparse.spmatrix)
-            and not isinstance(self._data, sp.sparse.lil_matrix)):
-            self._data = self._data.tocsr()[:imax+1].tocoo()
+        logger.warning("Function `truncate()` is a work in progress.")
+        if self._cur_tidx != self._original_tidx:
+            raise NotImplementedError  # Building Theano graph
+
+        if end is None:
+            end = start
+            start = None
+        imin = 0 if start is None else self.get_tidx(start)
+        imax = len(self._tarr) if end is None else self.get_tidx(end)
+
+        hist = self if inplace else self.deepcopy()
+        # TODO: Don't copy _data
+
+        if (isinstance(hist._data, sp.sparse.spmatrix)
+            and not isinstance(hist._data, sp.sparse.lil_matrix)):
+            hist._data = self._data.tocsr()[imin:imax+1].tocoo()
                 # csc matrices can also be indexed by row, but there's no
                 # performance hit to converting to csr first.
         else:
-            self._data = self._data[:imax+1]  # +1 because imax must be included
-        self._tarr = self._tarr[:imax+1]
+            hist._data = self._data[imin:imax+1]  # +1 because imax must be included
+        hist._tarr = self._tarr[imin:imax+1]
+        if self.t0idx < imin:
+            hist.t0 = hist._tarr[0]
+            hist.t0idx = 0
+        else:
+            hist.t0idx = self.t0idx - imin
         if self.tnidx > imax:
-            self.tn = self._tarr[-1]
-            self._unpadded_length = len(self._tarr) - self.t0idx
-        if self._cur_tidx != self._original_tidx:
-            assert(False) # Building Theano graph
-        elif self._original_tidx > imax:
-            self._original_tidx.set_value(imax)
-            self._cur_tidx.set_value(imax)
+            hist.tn = hist._tarr[-1]
+            hist._unpadded_length = imax - hist.t0idx
+
+        if self._original_tidx.get_value() > imax:
+            hist._original_tidx.set_value(imax)
+            hist._cur_tidx.set_value(imax)
 
     def compute_up_to(self, tidx, start='symbolic'):
         """Compute the history up to `tidx` inclusive.
@@ -3332,12 +3396,12 @@ class Series(ConvolveMixin, History):
         assert(self._cur_tidx.get_value() >= tslice.stop - 1)
 
         if component is None:
-            return self._data.get_value()[tslice]
+            return self._original_data.get_value()[tslice]
         elif isinstance(component, (int, slice)):
-            return self._data.get_value()[tslice, component]
+            return self._original_data.get_value()[tslice, component]
         elif isinstance(component, Iterable):
             idx = (tslice,) + tuple(component)
-            return self._data.get_value()[idx]
+            return self._original_data.get_value()[idx]
         else:
             raise ValueError("Unrecognized series component '{}' of type '{}'"
                              .format(component, type(component)))
