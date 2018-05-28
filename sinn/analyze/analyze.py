@@ -7,7 +7,7 @@ Created Tue Feb 21 2017
 author: Alexandre René
 """
 
-__all__ = ['mean', 'diff', 'smooth', 'subsample',
+__all__ = ['mean', 'diff', 'smooth', 'subsample', 'decimate',
            'window_mean', 'window_variance',
            'cleanname', 'plot', 'get_axes', 'get_axis_labels']
 
@@ -175,6 +175,7 @@ def diff(hist, mode='centered'):
     """
 
     hist = histories.DataView(hist)
+    # FIXME: Do all time bin manipulations without floats
 
     if mode == 'centered':
         # Remove consumed bins, but only if there's no padding
@@ -354,9 +355,10 @@ def subsample(series, amount):
     #     else:
     #         raise ValueError("Cannot subsample a Theano array.")
     newdt = series.dt64 * amount
-    nbins = int( (series.tn - series.t0) // newdt )
+    nbins = int( (series.tn - series.t0) // newdt ) + 1
         # We might chop off a few bins, if the new dt is not commensurate with
         # the original number of bins.
+        # +1 because this is the number of bins, not steps
     res = histories.Series(name = series.name + "_subsampled_by_" + str(amount),
                            time_array = np.arange(nbins) * newdt + series.t0,
                            #t0 = series.t0,
@@ -365,14 +367,76 @@ def subsample(series, amount):
                            #dt   = newdt,
                            shape = series.shape,
                            iterative = False, dtype = shim.config.floatX)
-    data = series.get_trace()[:nbins*amount]
+    data = series.trace[:nbins*amount]
         # Slicing removes bins which are not commensurate with the subsampling factor
     t0idx = series.t0idx
-    res.set(shim.cast(np.sum(data[i : i+nbins*amount : amount] for i in range(amount))/amount,
+    res.set(shim.cast(sum(data[i : (i+nbins)*amount : amount] for i in range(amount))/amount,
                       res.dtype))
         # Can't use np.mean on a generator
     res.lock()
     return res
+
+def decimate(history, factor=None, target_dt=None, allow_rounding=False):
+    """Reduce the number of time bins by discarding a fraction `(factor-1)/factor`.
+    Iterates across `history`, keeping only bins whose index is a multiple of
+    `factor`.
+    In contrast to `subsample`, removed bins are simply discarded rather
+    than averaged.
+    TODO: add mode parameter to allow keeping the centre of a window.
+
+    Parameters
+    ----------
+    history: Series instance
+    factor: integer
+        The factor by which the number of bins in `history` is reduced.
+    target_dt: float
+        Alternative to specifying a decimation factor. Sets the desired time step
+        of the result; factor is calculated accordingly. Should be a multiple of
+        the history's `dt`.
+    allow_rounding: bool
+        If `True` (the default), `target_dt` must be an exact multiple of the
+        history's `dt`.
+
+    Returns
+    -------
+    Series instance
+        The result will be `factor` times shorter than `history`.
+        Only one bin out of every `factor` is kept; rest of the bins are
+        discarded. Bins are identified by the time at which they begin.
+
+    See also
+    --------
+    subsample
+    """
+    if factor == 1 or target_dt == history.dt:
+        # Nothing to do
+        return history
+    if ( (factor is None and target_dt is None)
+         or (factor is not None and target_dt is not None) ):
+        raise ValueError("Exactly one of `factor` or `target_dt` must be specified.")
+    elif factor is None:
+        factor = history.index_interval(target_dt)
+    assert(np.issubdtype(np.asarray(factor).dtype, np.int))
+
+    if isinstance(history, np.ndarray):
+        return history[::factor]
+    else:
+        hist = histories.DataView(history)
+
+        newdt = hist.dt64 * factor
+        nbins = int( (hist.tn - hist.t0) // newdt ) + 1
+            # We might chop off a few bins, if the new dt is not commensurate with
+            # the original number of bins.
+            # +1 because this is the number of bins, not steps
+        res = type(history)(name = hist.name + "_decimated_by" + str(factor),
+                            time_array = np.arange(nbins) * newdt + hist.t0,
+                            shape = hist.shape,
+                            iterative = False, dtype = shim.config.floatX)
+        data = hist.trace[:nbins*factor:factor]
+        t0idx = hist.t0idx
+        res.set(data)
+        res.lock()
+        return res
 
 def window_mean(series, window_len, name=None):
     if name is None:
@@ -463,8 +527,8 @@ def plot(data, **kwargs):
     if isinstance(data, histories.History):
         data = histories.DataView(data)
         start = kwargs.pop('start', data.t0idx)
-        stop = kwargs.pop('stop', data._cur_tidx+1)
-        stop = min(stop, data._cur_tidx+1)
+        stop = kwargs.pop('stop', data.cur_tidx+1)
+        stop = min(stop, data.cur_tidx+1)
         tslice = slice(start, stop)
 
     # TODO: Collect repeated code
