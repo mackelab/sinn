@@ -453,6 +453,10 @@ class History(HistoryBase):
             Passed keywords will be added to the raw structure, or replace
             an existing keyword if it is already included.
             This argument exists to allow specialization in derived classes.
+            In particular, if a specialized class does not provide a particular
+            attribute (e.g. '_original_data'), a keyword can be used to prevent
+            `raw()` from trying to retrieve that attribute and triggering an
+            error.
         """
 
         # if self.symbolic:
@@ -464,8 +468,10 @@ class History(HistoryBase):
         #     raw['name'] = self.name # Replace with non-compiled name
         # else:
 
-        if (np.all(self._data != self._original_data)
-            or self._cur_tidx != self._original_tidx):
+        if ((hasattr(self, '_original_data')
+             and np.all(self._data != self._original_data))
+            or (hasattr(self, '_original_tidx')
+                and self._cur_tidx != self._original_tidx)):
             logger.warning("Saving symbolic history '{}'; only the data "
                            "(i.e. what has already been computed) is saved. "
                            "Symbolic state will be discarded.")
@@ -492,7 +498,10 @@ class History(HistoryBase):
         raw['_tarr'] = kwargs.pop('_tarr') if '_tarr' in kwargs else self._tarr
         raw['_data'] = (kwargs.pop('_data') if '_data' in kwargs
                         else kwargs.pop('_original_data') if '_original_data' in kwargs
-                        else self._original_data.get_value())
+                        else self._original_data.get_value() if hasattr(self, '_original_data')
+                        else self._data.get_value() if hasattr(self._data, 'get_value')
+                        else self._data)
+            # Pure NumPy histories don't need '_original_data'
         raw['_iterative'] = kwargs.pop('_iterative') if '_iterative' in kwargs else self._iterative
         raw['locked'] = kwargs.pop('locked') if 'locked' in kwargs else self.locked
 
@@ -2629,7 +2638,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
 
         assert(self._cur_tidx.get_value() >= tslice.stop - 1)
 
-        data_arr = self._data.get_value().tocsr()
+        data_arr = self._data.tocsr()
         if neuron is None:
             if pop is None:
                 return data_arr[tslice]
