@@ -355,7 +355,7 @@ def subsample(series, amount):
     #     else:
     #         raise ValueError("Cannot subsample a Theano array.")
     newdt = series.dt64 * amount
-    nbins = int( (series.tn - series.t0) // newdt ) + 1
+    nbins = (series.tnidx - series.t0idx + 1) // amount
         # We might chop off a few bins, if the new dt is not commensurate with
         # the original number of bins.
         # +1 because this is the number of bins, not steps
