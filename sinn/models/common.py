@@ -534,8 +534,14 @@ class Model(com.ParameterMixin):
         The update function is compiled only once, so subsequent calls to
         `advance` are much faster and benefit from the acceleration of running
         on compiled code.
+
+        Parameters
+        ----------
+        stop: int, float
+            Compute history up to this point (inclusive).
         """
 
+        # TODO: Rename stopidx -> endidx
         if stop == 'end':
             stopidx = self.tnidx
         else:
@@ -555,15 +561,15 @@ class Model(com.ParameterMixin):
             self._refhist[stopidx - self.t0idx + self._refhist.t0idx]
             # We want to compute the whole model up to stopidx, not just what is required for refhist
             for hist in self.statehists:
-                hist[stopidx - self.t0idx + hist.t0idx]
+                hist.compute_up_to(stopidx - self.t0idx + hist.t0idx)
 
         else:
             curtidx = min( hist._original_tidx.get_value() - hist.t0idx + self.t0idx
                            for hist in self.statehists )
             assert(curtidx >= -1)
 
-            if curtidx+1 < stopidx:
-                self._advance(stopidx)
+            if curtidx < stopidx:
+                self._advance(stopidx+1)
                 for hist in self.statehists:
                     hist.theano_reset()
 
@@ -602,7 +608,7 @@ class Model(com.ParameterMixin):
             which fills in the histories up to `stopidx`.
         """
         self.remove_other_histories()  # HACK
-        self.clear_unlocked_histories()
+        # self.clear_unlocked_histories()
         self.theano_reset()
 
         if len(self.statehists) == 0:
