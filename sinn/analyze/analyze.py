@@ -91,7 +91,7 @@ def mean(hist, pop_slices=None, time_array=None, **kwargs):
         except AttributeError:
             raise ValueError("Histories of type '{}' don't provide a `get_trace` method. "
                              "You can try passing a raw NumPy array, or better yet, defining "
-                             "`get_trace` for this history type.".type(hist.hist))
+                             "`get_trace` for this history type.".format(type(hist.hist)))
         if data_arr.shape[0] != len(hist):
             # data_arr may be sparse, in which case len(data_arr) is ambiguous)
             logger.warning("History was not fully computed; padding data with 0s.")
