@@ -819,6 +819,7 @@ class SGDView(SGDBase):
             assert(isinstance(_instance, cls))
             o = _instance
         else:
+            # TODO: Use an SGDBase to extract SGDBase keywords
             kwargs = {'cost_format': repr['cost_format'],
                       'trace': repr['trace'][()],
                       'trace_stops': repr['trace_stops'],
@@ -2156,13 +2157,18 @@ class FitCollection:
     def __next__(self):
         return next(self._iterator).data
 
-    def load(self, fit_list, **kwargs):
+    def load(self, fit_list, load=None, **kwargs):
         """
         Parameters
         ----------
         fit_list: iterable
             Each element of iterable should have attributes 'parameters'
             and 'outputpath'.
+        load: function (loaded data) -> SGDView
+            Allows specifying a custom loader. Should take whatever
+            `mackelab.iotools.load()` returns, and return a SGDView instance.
+            Intended for loading data that wasn't originally exported
+            from an SGDView instance, as otherwise the default loader suffices.
         **kwargs:
             Keyword arguments are passed on to mackelab.iotools.load()
         """
@@ -2201,7 +2207,9 @@ class FitCollection:
 
             data = ml.iotools.load(fit.outputpath, input_format=input_format,
                                    **kwargs)
-            if isinstance(data, np.lib.npyio.NpzFile):
+            if load is not None:
+                data = load(data)
+            elif isinstance(data, np.lib.npyio.NpzFile):
                 data = SGDView.from_repr_np(data)
             # TODO: Check if sgd is already loaded ?
             self.fits.append( FitCollection.Fit(fit.parameters, data) )
