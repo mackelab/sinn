@@ -30,10 +30,10 @@ from mackelab.stylelib import colorschemes
 from . import common as com
 from .axis import Axis
 
-__ALL__ = ['ScalarGridData']
+__ALL__ = ['ScalarAxisData']
 
-class ScalarGridData:
-    # TODO: Change name to ScalarGridData
+class ScalarAxisData:
+    # TODO: Change name to ScalarAxisData
     # changes: HeatMap -> ScalarArrayData
     #          hm -> scalararraydata
     #          heat map -> scalar array data
@@ -54,7 +54,7 @@ class ScalarGridData:
                 we evaluate a function over a grid.
             Note that the ztype says nothing about whether the values are normalized.
         """
-        if isinstance(zlabel, ScalarGridData):
+        if isinstance(zlabel, ScalarAxisData):
             src = zlabel
             ztype = src.ztype if ztype is None else ztype
             data = src.data if data is None else data
@@ -76,6 +76,13 @@ class ScalarGridData:
             self.cmap = 'viridis'
             self.op_res_type = type(self)
 
+            if len(self.axes) != self.data.ndim:
+                # TODO: Better error type
+                raise TypeError("There must be as many axes are there are "
+                                "data dimensions.\n"
+                                "Data dimensions: {}\n"
+                                "# axes: {}".format(len(self.axes),
+                                                    self.data.ndim))
             assert( all( len(ax.centers.stops) == s
                          for ax, s in zip(self.axes, self.data.shape ) ) )
             #self._marginals = None
@@ -329,7 +336,7 @@ class ScalarGridData:
               - 'centers': (default) The grid values correspond to the centers
                 of each discretization cell. This is the format used internally
                 by heat map, and is best suited if the goal is to evaluate
-                a function over its domain, or otherwise produce a new ScalarGridData.
+                a function over its domain, or otherwise produce a new ScalarAxisData.
               - 'edges': The grid values correspond to the edges of each
                 discretization cell. This is the format expected by many
                 plotting functions, such as matplotlib's `pcolormesh`.
@@ -380,7 +387,7 @@ class ScalarGridData:
         data = vecf(*self.meshgrid(format='centers'))
         if label is None:
             label = ""
-        return ScalarGridData(label, ztype, data, self.axes)
+        return ScalarAxisData(label, ztype, data, self.axes)
 
     def get_normalized_data(self, recompute=False):
         logger.warning("Deprecation warning: 'get_normalized_data' is planned for removal.")
@@ -393,7 +400,7 @@ class ScalarGridData:
         """
         Returns
         -------
-        float or ScalarGridData
+        float or ScalarAxisData
             Returns a scalar if all axes are summed, otherwise
             a heat map for the remaining axes.
         """
@@ -420,7 +427,7 @@ class ScalarGridData:
 
         Returns
         -------
-        ScalarGridData
+        ScalarAxisData
             The original data is not copied: the new instances data is a view of
             the original.
         """
@@ -507,12 +514,12 @@ class ScalarGridData:
         """
         Apply the operator specified by `op` on the scalar value at every point
         of the domain. If `b` is given, it is provided as a second argument to `op`.
-        `b` may be another ScalarGridData instance; in this case it is aligned with
+        `b` may be another ScalarAxisData instance; in this case it is aligned with
         this heat map and the operation is carried out element-wise. Note that in
         this case the operation is not symmetric: this heat map's grid is used,
         and the other is interpolated onto it.
 
-        The result is returned as a new ScalarGridData, whose data array is the result
+        The result is returned as a new ScalarAxisData, whose data array is the result
         of the operation.
 
         FIXME: At present the result is always a heat map of same
@@ -526,13 +533,13 @@ class ScalarGridData:
         op: callable
             Operation to apply.
         b: (Optional)
-            Second argument to provide to `op`, if required. If a ScalarGridData, it
+            Second argument to provide to `op`, if required. If a ScalarAxisData, it
             is cropped and aligned with this heat map's domain, and the operation
             performed element-wise.
 
         Returns
         -------
-        ScalarGridData
+        ScalarAxisData
             Will have the same (possibly cropped) axis stops as 'self', as well as
             the same norm.
         """
@@ -541,9 +548,9 @@ class ScalarGridData:
             return self.op_res_type(new_label, self.ztype, op(self.data),
                                     self.axes, self.norm)
         else:
-            if isinstance(b, ScalarGridData):
+            if isinstance(b, ScalarAxisData):
                 # Check that heat map types are compatible:
-                # subclasses of ScalarGridData can only operate on heat maps
+                # subclasses of ScalarAxisData can only operate on heat maps
                 # of the same or of a parent type.
                 if not (issubclass(type(b), type(self))
                         or issubclass(type(self), type(b))):
@@ -672,7 +679,7 @@ class ScalarGridData:
         collapse_method: str
             What to do with unplotted dimensions. If None (default), an
             error is raised if there are any unplotted dimensions.
-            The base ScalarGridData implementation only provides:
+            The base ScalarAxisData implementation only provides:
               - 'sum': Sum along collapsed dimensions.
             Derived data types (e.g. Probability) may provide additional methods.
 
@@ -795,14 +802,14 @@ def get_axis_labels(param_axes):
 #################################
 #################################
 
-class LogLikelihood(ScalarGridData):
+class LogLikelihood(ScalarAxisData):
 
     def __init__(self, zlabel, ztype=None, data=None, param_axes=None, norm='linear', depth=100):
         """
         Parameters
         ----------
         zlabel, ztype, data, param_axes, norm
-            See `ScalarGridData`.
+            See `ScalarAxisData`.
         depth: int
             Likelihoods this many orders of magnitude less than the maximum
             are considered zero. Effectively sets the difference between
@@ -815,7 +822,7 @@ class LogLikelihood(ScalarGridData):
             param_axes = src.axes if param_axes is None else param_axes
             self.__init__(src.zlabel, ztype, data, param_axes, src.norm, src.depth)
         else:
-            if not isinstance(zlabel, ScalarGridData):
+            if not isinstance(zlabel, ScalarAxisData):
                 assert( all(arg is not None for arg in [ztype, data, param_axes]) )
             super().__init__(zlabel, ztype, data, param_axes, norm=norm)
             self._floor = None
@@ -866,7 +873,7 @@ class LogProbability(LogLikelihood):
         # TODO: Analog to `likelihood()`
         raise NotImplementedError
 
-class Probability(ScalarGridData):
+class Probability(ScalarAxisData):
     # TODO: Make Probability subclass of Likelihood rather than other way around ?
 
     def __init__(self, zlabel, ztype=None, data=None, param_axes=None,
@@ -875,7 +882,7 @@ class Probability(ScalarGridData):
         Parameters
         ----------
         zlabel, ztype, data, param_axes, norm
-            See `ScalarGridData`.
+            See `ScalarAxisData`.
         normalized: bool
             If set to True (default), the data is automatically normalized
             during creation such that the integral over the heat map is 1.
@@ -886,9 +893,9 @@ class Probability(ScalarGridData):
             data = src.data if data is None else data
             param_axes = src.axes if param_axes is None else param_axes
             self.__init__(src.zlabel, ztype, data, param_axes, src.norm, src.normalized)
-            self.op_res_type = ScalarGridData
+            self.op_res_type = ScalarAxisData
         else:
-            if not isinstance(self, ScalarGridData):
+            if not isinstance(self, ScalarAxisData):
                 assert( all(arg is not None for arg in [ztype, data, param_axes]) )
             super().__init__(zlabel, ztype, data, param_axes, norm)
             if normalized:
@@ -971,7 +978,7 @@ class Probability(ScalarGridData):
 
         Returns
         -------
-        ScalarGridData of dimension d, where d is the number axes in `axis`.
+        ScalarAxisData of dimension d, where d is the number axes in `axis`.
         """
         ax_idcs = self._get_axis_idcs(axis)
         if len(ax_idcs) == self.ndim:
@@ -1081,13 +1088,13 @@ class MarginalCollection:
                  #key_sanitizer=None,
                  **kwargs):
         """
-        Construct a collection of ScalarGridData objects. Internally maintains a dictionary
+        Construct a collection of ScalarAxisData objects. Internally maintains a dictionary
         of the axes, so that specific axes can be formatted; this dictionary is an
         instance of ml.utils.SanitizedOrderedDict, to allow "close-enough" indexing.
 
         Parameters
         ---------------
-        data: sequence of ScalarGridData | PyMC3 MultiTrace
+        data: sequence of ScalarAxisData | PyMC3 MultiTrace
             The data for which we want to compute marginals.
         params: dict
             Dictionary of ParamDim elements for which we want the marginals.
@@ -1114,7 +1121,7 @@ class MarginalCollection:
             internal axes dictionary.
             Taken from `params`
         **kwargs:
-            Additional keyword arguments are passed to the ScalarGridData constructor.
+            Additional keyword arguments are passed to the ScalarAxisData constructor.
         """
 
         # Try to import PyMC3 MultiTrace
@@ -1133,9 +1140,9 @@ class MarginalCollection:
         self.params = params
 
         # Get the parameters and data
-        if isinstance(data, Sequence) and isinstance(data[0], ScalarGridData):
+        if isinstance(data, Sequence) and isinstance(data[0], ScalarAxisData):
             # Use Sequence instead of Iterable to ensure `data[0]` doesn't eat the first element
-            raise NotImplementedError("Building a collection from ScalarGridData objects is not yet implemented.")
+            raise NotImplementedError("Building a collection from ScalarAxisData objects is not yet implemented.")
 
         elif pymc_MultiTrace is not None and isinstance(data, pymc_MultiTrace):
             marginals1D, marginals2D = self.marginals_from_mcmc(data, params,
@@ -1181,7 +1188,7 @@ class MarginalCollection:
             NOTE: It's currently only possible to provide a single set of histogram keyword
             arguments, so if range is provided, all plots will have the same.
         **kwargs:
-            Additional keyword arguments are passed to the ScalarGridData constructor.
+            Additional keyword arguments are passed to the ScalarAxisData constructor.
         """
         # TODO: Allow parameter-specific histogram_kwargs (e.g. range, weights)
         flat_params = params
@@ -1458,7 +1465,7 @@ class MarginalCollection:
             Value is passed on to the 's' keyword of `scatter()` which plots the markers.
             If not specified, calculated from the axes witdh.
         **kwargs:
-            Keyword arguments passed to `ScalarGridData.histogram_plot()`.
+            Keyword arguments passed to `ScalarAxisData.histogram_plot()`.
         """
         hm = self.marginals2D[(keyj, keyi)].density
             # Invert keyi, keyj to put column parameter (j) on x axis
@@ -1773,4 +1780,4 @@ class MarginalCollection:
                     raise ValueError("Unrecognized grid layout '{}'.".format(layout))
 
 
-ml.iotools.register_datatype(ScalarGridData)
+ml.iotools.register_datatype(ScalarAxisData)

@@ -32,7 +32,7 @@ import theano_shim as shim
 
 import sinn.histories as histories
 from . import common as com
-from . import heatmap
+from . import axisdata
 
 # ==================================
 # Data types
@@ -418,7 +418,7 @@ def plot(data, **kwargs):
     data: a sinn data structure
         This parameter's type will determin the type of plot.
         - Series: produces a line plot (w/ plt.plot(.))
-        - HeatMap: produces a 2D density (w/ pcolormesh(.))
+        - ScalarAxisData (2D): produces a 2D density (w/ pcolormesh(.))
         - Spiketimes: produces a raster plot (not implemented)
 
     TODO: Organize all keywords by data type
@@ -451,7 +451,7 @@ def plot(data, **kwargs):
         - `component`
           Defined for: Series
           Restrict plotting to the specified components.
-          TODO: Implement for Heatmap
+          TODO: Implement for AxisData
     Returns
     -------
     A list of the return values of the plotting calls.
@@ -644,7 +644,7 @@ def plot(data, **kwargs):
 
         return lines
 
-    elif isinstance(data, heatmap.HeatMap):
+    elif isinstance(data, axisdata.ScalarAxisData):
         # TODO: Override keyword arguments with **kwargs
         if len(plot_kwds) > 1:
             raise ValueError("Expanded keywords not implemented for heatmaps.")
