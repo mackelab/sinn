@@ -108,7 +108,9 @@ precision_dict = {
     '32': {'abs': 2e-5,
            'rel': 1e-4},
     '64': {'abs': 1e-10,
-           'rel': 1e-8}}
+           'rel': 1e-8},
+    'int': {'abs': 0,
+            'rel': 0}}
 
 def get_tolerance(var, tol_type):
     """
@@ -141,6 +143,8 @@ def get_tolerance(var, tol_type):
             return precision_dict['32'][tol_type]
         elif var_type in [np.float64, 'float64']:
             return precision_dict['64'][tol_type]
+        elif np.issubdtype(var_type, np.integer):
+            return precision_dict['int'][tol_type]
         else:
             raise ValueError("Numerical tolerance is undefined for dtype '{}'.".format(var_type))
 
@@ -194,7 +198,7 @@ def set_floatX(floatX_str = None):
 
 
     # Direct access to the floatX tolerance:
-    rel_tolerance = get_rel_tolerance(shim.cast_floatX(1))
-    abs_tolerance = get_abs_tolerance(shim.cast_floatX(1))
+    rel_tolerance = get_rel_tolerance(shim.cast_floatX(1, same_kind=False))
+    abs_tolerance = get_abs_tolerance(shim.cast_floatX(1, same_kind=False))
 
 set_floatX()

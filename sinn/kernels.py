@@ -412,7 +412,7 @@ class ExpKernel(Kernel):
 
     def _eval_f(self, t, from_idx=slice(None,None)):
         return shim.switch(shim.lt(t, self.params.t_offset[:,from_idx]),
-                           shim.cast(0, self.dtype),
+                           shim.cast(0, self.dtype, same_kind=False),
                            self.params.height[:,from_idx]
                              * shim.cast(
                                 shim.exp(-(t-self.params.t_offset[:,from_idx])

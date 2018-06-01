@@ -11,6 +11,7 @@ import scipy as sp
 #from collections import namedtuple
 import logging
 logger = logging.getLogger("sinn.models.common")
+from collections import OrderedDict
 from inspect import isclass
 
 import theano_shim as shim
@@ -118,6 +119,10 @@ class Model(com.ParameterMixin):
     @property
     def tnidx(self):
         return self._refhist.tnidx - self._refhist.t0idx + self.t0idx
+
+    @property
+    def tidx_dtype(self):
+        return self._refhist.tidx_dtype
 
     @property
     def dt(self):
@@ -583,7 +588,8 @@ class Model(com.ParameterMixin):
         return self._advance_fn
 
     def compile_advance_function(self):
-        stopidx_var = shim.getT().lscalar()
+        stopidx_var = shim.getT().scalar('stopidx (model)',
+                                         dtype=self.tidx_dtype)
         stopidx_var.tag.test_value = 2
             # Allow model to work with compute_test_value != 'ignore'
         logger.info("Compiling advance function.")
@@ -610,6 +616,11 @@ class Model(com.ParameterMixin):
         self.remove_other_histories()  # HACK
         # self.clear_unlocked_histories()
         self.theano_reset()
+        if not all(np.can_cast(stopidx.dtype, hist.tidx_dtype)
+                   for hist in self.statehists):
+            raise TypeError("`stopidx` cannot be safely cast to a time index. "
+                            "This can happen if e.g. a history uses `int32` for "
+                            "its time indices while `stopidx` is `int64`.")
 
         if len(self.statehists) == 0:
             raise NotImplementedError
@@ -630,6 +641,9 @@ class Model(com.ParameterMixin):
         # symbolic updates from the history update functions
         def onestep(tidx, *args):
             state_outputs, updates = self.symbolic_update(tidx, *args)
+            for i in range(len(state_outputs)):
+                state_outputs[i] = shim.cast(state_outputs[i],
+                                             self.statehists[i].dtype)
             return state_outputs, updates
             #return list(state_outputs.values()), updates
 
@@ -648,15 +662,27 @@ class Model(com.ParameterMixin):
                 # FIXME Maybe not necessary if built into lag history
             if len(lags) == 1:
                 assert(maxlag == 1)
-                outputs_info.append( hist._data[tidx])
+                outputs_info.append( sinn.upcast(hist._data[tidx],
+                                                 to_dtype=hist.dtype,
+                                                 same_kind=True,
+                                                 disable_rounding=True))
             else:
-                outputs_info.append({'initial': hist._data[tidx+1-maxlag:tidx+1],
-                                     'taps': lags})
+                outputs_info.append(
+                    {'initial': sinn.upcast(hist._data[tidx+1-maxlag:tidx+1],
+                                            to_dtype=hist.dtype,
+                                            same_kind=True,
+                                            disable_rounding=True),
+                     'taps': lags})
 
 
         outputs, upds = shim.gettheano().scan(onestep,
                                               sequences = shim.arange(startidx+1, stopidx),
                                               outputs_info = outputs_info)
+        # Ensure that all updates are of the right type
+        upds = OrderedDict([(orig_var,
+                             sinn.upcast(upd, to_dtype=orig_var.dtype,
+                                         same_kind=True, disable_rounding=True))
+                            for orig_var, upd in upds.items()])
         self.apply_updates(upds)
             # Applying updates ensures we remove the iteration variable
             # scan introduces from the shim updates dictionary
@@ -670,7 +696,13 @@ class Model(com.ParameterMixin):
                              stopidx  - self.t0idx + hist.t0idx)
             hist.update(valslice, output)
 
-        return shim.get_updates()
+        hist_upds = shim.get_updates()
+        # Ensure that all updates are of the right type
+        hist_upds = OrderedDict([(orig_var,
+                                  sinn.upcast(upd, to_dtype=orig_var.dtype,
+                                              same_kind=True, disable_rounding=True))
+                                 for orig_var, upd in hist_upds.items()])
+        return hist_upds
 
 
 def Surrogate(model):

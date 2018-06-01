@@ -58,7 +58,7 @@ class History(HistoryBase):
         + dt               : floatX. Timestep size
         + dt64             : float64. Timestep size; for some index calculations
                              double precision is sometimes required.
-        + idx_dtype        : numpy integer dtype. Type to use for time slice indices.
+        + idx_dtype        : numpy integer dtype. Type to use for indices within one time slice.
         + tidx_dtype        : numpy integer dtype. Type to use for time indices.
         + locked           : bool. Whether modifications to history are allowed. Modify through method
         + _tarr            : float ndarray. Ordered array of all time bins
@@ -314,23 +314,46 @@ class History(HistoryBase):
             # Default value
             iterative = True
         if time_array is not sinn._NoValue:
+            # Set time dtype to "smallest" of floatX, time_array.dtype
+            if np.can_cast(time_array.dtype, shim.config.floatX):
+                t_dtype = time_array.dtype
+            else:
+                t_dtype = np.dtype(shim.config.floatX)
+            time_array = time_array.astype(t_dtype)
             t0 = time_array[0]
             tn = time_array[-1]
-            dt64 = np.float64(time_array[-1] - time_array[0]) / (len(time_array)-1)
-                 # If time_array is float32, this should be more precise than time_array[1] - time_array[0]
-            assert( np.all(sinn.isclose(time_array[1:] - time_array[:-1], dt64)) )
+            dt64 = sinn.upcast(tn.astype('float64') - t0.astype('float64'),
+                               to_dtype=np.float64,
+                               from_dtype=np.float32) / (len(time_array)-1)
+                 # Esp. if time_array is float32, this should be more precise than time_array[1] - time_array[0]
+            dt = dt64.astype(t_dtype)
+            assert( np.all(sinn.isclose(time_array[1:] - time_array[:-1], dt)) )
         else:
+            t_dtype = np.result_type(t0, tn)
+                # Don't consider dt – dt should always be passed as double
+                # even when we want time dtype to be 32-bit
+            if np.can_cast(shim.config.floatX, t_dtype):
+                t_dtype = np.dtype(shim.config.floatX)
             # Ensure (tn-t0) is a round multiple of dt
-            dt64 = np.float64(dt)
-                # Normally dt should already be float64, but convert just in case
-            tn = np.ceil( (tn - t0)/dt64 ) * dt64 + t0
-            time_array = np.arange(t0,
-                                   tn + dt64 - config.abs_tolerance,
-                                   dt64,
-                                   dtype=shim.config.floatX)
+            # t0 = shim.cast(t0, t_dtype)
+            # tn = np.ceil( (tn - t0)/dt ) * dt + t0
+            # Get time step
+            n_steps = np.rint((tn - t0)/dt).astype(np.int)
+            if np.can_cast(np.float64, dt.dtype):
+                dt64 = dt
+            else:
+                # Compute dt64 with t0 and tn, which is more precise than
+                # upconverting dt
+                dt64 = (tn.astype(np.float64) - t0.astype(np.float64))/n_steps
+            # time_array = np.arange(t0,
+            #                        tn + dt64 - config.abs_tolerance,
+            #                        dt64,
+            #                        dtype=t_dtype)
+            time_array = (np.arange(0, n_steps+1) * dt64).astype(t_dtype)
                 # 'self.tn+self.dt' ensures the upper bound is inclusive,
                 # -config.abs_tolerance avoids including an extra bin because of rounding errors
-            tn = time_array[-1]   # Remove any risk of mismatch due to rounding
+            t0 = time_array[0]    # Remove any risk of mismatch due to rounding
+            tn = time_array[-1]   # and ensure all dtypes match
 
         # Deprecated ?
         # Determine whether the series data will use Theano.
@@ -360,10 +383,10 @@ class History(HistoryBase):
             # passed e.g. as an ndarray
         self.ndim = len(shape)
 
-        self.dt = shim.cast(dt64, shim.config.floatX)
+        self.dt = shim.cast(dt64, t_dtype)
         self.dt64 = dt64
-        self.idx_dtype = np.result_type(max(self.shape))
-        self.tidx_dtype = np.result_type(-2*len(time_array))
+        self.idx_dtype = np.min_scalar_type(max(self.shape))
+        self.tidx_dtype = np.min_scalar_type(-2*len(time_array))
             # Leave enough space in time indices to double the time array
             # Using a negative value forces the type to be 'int' and not 'uint',
             # which we need to store -1
@@ -396,7 +419,7 @@ class History(HistoryBase):
             self.set_update_function(f)
         self._compute_range = None
 
-        self._tarr = time_array
+        self._tarr = time_array.astype(t_dtype)
         self.t0idx = shim.cast(0, self._cur_tidx.dtype)       # the index associated to t0
         self.tn = tn
         self._unpadded_length = len(self._tarr)     # Save this, because _tarr might change with padding
@@ -444,7 +467,11 @@ class History(HistoryBase):
 
     def raw(self, **kwargs):
         # The raw format is meant for data longevity, and so should
-        # seldom, if ever, be changed
+        # seldom, be changed
+        # Versions:
+        #   1 original
+        #   2 (31 mai 2018)
+        #     + dt64
         """
 
         Parameters
@@ -478,6 +505,7 @@ class History(HistoryBase):
         # We do it this way in case kwd substitutions are there to
         # avoid an error (such as _data not having a .get_value() method)
         raw = {}
+        raw['version'] = 2
         raw['type'] = sinn.common.find_registered_typename(type(self))
              # find_registered_typename returns the closest registered type name in the hierarchy
              # E.g. if we are saving a subclass of Series, this will return the name under which
@@ -488,6 +516,7 @@ class History(HistoryBase):
         raw['t0'] = kwargs.pop('t0') if 't0' in kwargs else self.t0
         raw['tn'] = kwargs.pop('tn') if 'tn' in kwargs else self.tn
         raw['dt'] = kwargs.pop('dt') if 'dt' in kwargs else self.dt
+        raw['dt64'] = kwargs.pop('dt') if 'dt' in kwargs else self.dt
         raw['t0idx'] = kwargs.pop('t0idx') if 't0idx' in kwargs else self.t0idx
         raw['_unpadded_length'] = kwargs.pop('_unpadded_length') if '_unpadded_length' in kwargs else self._unpadded_length
         raw['_cur_tidx'] = (kwargs.pop('_cur_tidx') if '_cur_tidx' in kwargs
@@ -515,7 +544,7 @@ class History(HistoryBase):
         Parameters
         ----------
         symbolic: bool
-            If True, a second Theano history will be constructed, and the loaded
+            (Deprecated) If True, a second Theano history will be constructed, and the loaded
             one attached as its `compiled_history` attribute.
             If unspecified, the behaviour is the same as for the History initializer.
         **kwds:
@@ -524,21 +553,31 @@ class History(HistoryBase):
         """
         if not isinstance(raw, np.lib.npyio.NpzFile):
             raise TypeError("'raw' data must be a Numpy archive.")
+        version = raw['version'] if 'version' in raw else 1
+        dt = raw['dt']
+        dt64 = raw['dt64'] if version >= 2 else raw['dt']
+        t0 = raw['t0'].astype(dt.dtype)
+        tn = raw['tn'].astype(dt.dtype)
         hist =  cls(name = str(raw['name']),
-                    t0 = float(raw['t0']), tn = float(raw['tn']), dt = float(raw['dt']),
+                    t0 = t0, tn = tn, dt = dt64,
                     shape = tuple(raw['shape']),
                     f = update_function,
                     iterative = bool(raw['_iterative']),
                     symbolic = False,
                     **kwds)
-        hist.t0idx = int(raw['t0idx'])
-        hist._unpadded_length = int(raw['_unpadded_length'])
+        # Change dtypes because History.__init__ always initializes to floatX
+        # TODO: Initialize hist w/ _tarr instead of t0, tn, dt
+        hist.dt = hist.dt.astype(dt.dtype)
+        hist.t0 = hist.t0.astype(dt.dtype)
+        hist.tn = hist.tn.astype(dt.dtype)
+        hist._tarr = raw['_tarr'].astype(dt.dtype)
+        hist.t0idx = raw['t0idx'].astype(hist.tidx_dtype)
+        hist._unpadded_length = raw['_unpadded_length'].astype(hist.tidx_dtype)
         hist.locked = bool(raw['locked'])
             # Could probably be removed, since we set a lock status later, but
             # ensures the history is first loaded in the same state
 
-        hist._tarr = raw['_tarr']
-        # Decide whether to wrap the history in another Theano history
+        # Decide whether to wrap the history in another Theano history (Deprecated)
         if symbolic is sinn._NoValue:
             symbolic = shim.config.use_theano
         if symbolic:
@@ -549,7 +588,7 @@ class History(HistoryBase):
         else:
             hist.name = str(raw['name'])
             rethist = hist
-        rethist._original_tidx = shim.shared( np.array(int(raw['_cur_tidx']), dtype='int64'),
+        rethist._original_tidx = shim.shared( raw['_cur_tidx'].astype(hist.tidx_dtype),
                                               name = 't idx (' + rethist.name + ')' ,
                                               symbolic=symbolic)
         rethist._cur_tidx = rethist._original_tidx
@@ -977,8 +1016,10 @@ class History(HistoryBase):
         #                         dtype=self._tarr.dtype)
             # Use of _tarr ensures we don't add more padding than necessary
 
-        Δbefore_idx = max(before_idx_len - self.padding[0], 0)
-        Δafter_idx = max(after_idx_len - self.padding[1], 0)
+        Δbefore_idx = shim.cast(max(before_idx_len - self.padding[0], 0),
+                                self.tidx_dtype)
+        Δafter_idx = shim.cast(max(after_idx_len - self.padding[1], 0),
+                               self.tidx_dtype)
             # Take max because requested padding may be less than what we have
         before_array = (np.arange(-Δbefore_idx, 0) * self.dt64
                         + self._tarr[0]).astype(self._tarr.dtype)
@@ -988,7 +1029,7 @@ class History(HistoryBase):
         self._tarr = np.hstack((before_array,
                                 self._tarr,#[self.t0idx:self.t0idx+len(self)],
                                 after_array))
-        self.t0idx += len(before_array)
+        self.t0idx += shim.cast(len(before_array), self.tidx_dtype)
 
         # Update the current time index
         if Δbefore_idx > 0:
@@ -1059,9 +1100,9 @@ class History(HistoryBase):
         hist._tarr = self._tarr[imin:imax+1]
         if self.t0idx < imin:
             hist.t0 = hist._tarr[0]
-            hist.t0idx = 0
+            hist.t0idx = shim.cast(0, self.tidx_dtype)
         else:
-            hist.t0idx = self.t0idx - imin
+            hist.t0idx = shim.cast(self.t0idx - imin, self.tidx_dtype)
         if self.tnidx > imax:
             hist.tn = hist._tarr[-1]
             hist._unpadded_length = imax - hist.t0idx
@@ -1358,11 +1399,12 @@ class History(HistoryBase):
                 # try:
                 #     shim.check( shim.abs(quotient - rquotient) < config.get_abs_tolerance(Δt) / self.dt64 )
                 # except AssertionError:
-                if not sinn.isclose(quotient, rquotient):
+                if not sinn.isclose(quotient, rquotient, tol=Δt):
                     logger.error("Δt: {}, dt: {}".format(Δt, self.dt64) )
-                    raise ValueError("Tried to convert t=" + str(Δt) + " to an index interval "
-                                     "but its not a multiple of dt.")
-            return shim.cast( rquotient, self.tidx_dtype )
+                    raise ValueError("Tried to convert t={} to an index interval "
+                                     "but its not a multiple of dt={}."
+                                    .format(Δt, self.dt64))
+            return shim.cast(rquotient, self.tidx_dtype, same_kind=False)
 
     def get_time(self, t):
         """
@@ -1431,7 +1473,9 @@ class History(HistoryBase):
                                      .format(t, self._tarr[0], t - self._tarr[0], t_idx, self.dt64) )
                         raise ValueError("Tried to obtain the time index of t=" +
                                         str(t) + ", but it does not seem to exist.")
-                    return shim.cast(r_t_idx, dtype = self.tidx_dtype)
+                    return shim.cast(r_t_idx,
+                                     dtype = self.tidx_dtype,
+                                     same_kind = False)
 
                 else:
                     # Allow t to take any value, and round down to closest

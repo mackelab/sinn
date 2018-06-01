@@ -18,7 +18,8 @@ import theano.tensor as T
 
 import mackelab as ml
 import mackelab.iotools
-from mackelab.optimizers import Adam, NPAdam
+import mackelab.optimizers as optimizers
+#from mackelab.optimizers import Adam, NPAdam
 import theano_shim as shim
 import sinn
 import sinn.analyze as anlz
@@ -429,6 +430,8 @@ class SeriesSGD(SGDBase):
         # self.mode
 
         super().__init__(cost_format)
+        start = shim.cast(start, start_var.dtype)
+        batch_size = shim.cast(batch_size, batch_size_var.dtype)
         self.cost_track_freq = cost_track_freq
         self.var_track_freq = var_track_freq
         self.optimizer = optimizer
@@ -454,21 +457,23 @@ class SeriesSGD(SGDBase):
         batch_size = np.asarray(batch_size)
 
         # Get time index dtype
-        tidx_dtype = start.dtype
+        assert(all(np.issubdtype(i.dtype, np.integer)
+                   for i in (start, burnin, datalen, batch_size)))
+        # tidx_dtype = np.result_type(start, burnin, datalen, batch_size)
 
-        # Check fit parameters
-        def check_fit_arg(arg, name):
-            if not np.issubdtype(arg.dtype, int):
-                raise ValueError("'{}' argument refers to an index and therefore must be an integer"
-                                 .format(name))
-            if arg.dtype != tidx_dtype:
-                raise ValueError("All time indices should have the same type, but '{}' "
-                                 "and 'start' differ.".format(name))
-
-        check_fit_arg(start, 'start')
-        check_fit_arg(burnin, 'burnin')
-        check_fit_arg(datalen, 'datalen')
-        check_fit_arg(batch_size, 'batch_size')
+        # # Check fit parameters
+        # def check_fit_arg(arg, name):
+        #     if not np.issubdtype(arg.dtype, int):
+        #         raise ValueError("'{}' argument refers to an index and therefore must be an integer"
+        #                          .format(name))
+        #     if arg.dtype != tidx_dtype:
+        #         raise ValueError("All time indices should have the same type, but '{}' "
+        #                          "and 'start' differ.".format(name))
+        #
+        # check_fit_arg(start, 'start')
+        # check_fit_arg(burnin, 'burnin')
+        # check_fit_arg(datalen, 'datalen')
+        # check_fit_arg(batch_size, 'batch_size')
 
         # Get cost graph
         # self.tidx_var = shim.symbolic.scalar('tidx', dtype=tidx_dtype)
@@ -505,7 +510,8 @@ class SeriesSGD(SGDBase):
         self.var_subs = {orig: new for orig, new in zip(optimize_vars, self.optimize_vars)}
         cost_graph = shim.graph.clone(cost_graph, replace=self.var_subs)
         for var, upd in advance_updates.items():
-            advance_updates[var] = shim.graph.clone(upd, replace=self.var_subs)
+            upd = shim.graph.clone(upd, replace=self.var_subs)
+            advance_updates[var] = shim.cast(upd, var.dtype, same_kind=True)
         if isinstance(lr, dict):
             # TODO: Move some of this to `standardize_lr()` ?
             subbed_shared_names = {s.name: s for s in self.var_subs}
@@ -527,8 +533,19 @@ class SeriesSGD(SGDBase):
         # cost_graph_subs = shim.clone(cost_graph, {self.tidx_var: start,
         #                                           self.batch_size_var: datalen})
         logger.info("Compiling the cost function.")
-        self.cost = shim.graph.compile([], cost_graph,
-                                       givens=[(self.tidx_var, start), (self.batch_size_var, datalen)])
+        if 'nanguard' not in optimizers.debug_flags:
+            self.cost = shim.graph.compile([], cost_graph,
+                                           givens=[(self.tidx_var, start), (self.batch_size_var, datalen)])
+        else:
+            if optimizers.debug_flags['nanguard'] is True:
+                nanguard = {'nan_is_error': True, 'inf_is_error': True, 'big_is_error': False}
+            else:
+                nanguard = optimizers.debug_flags['nanguard']
+                assert('nan_is_error' in nanguard and 'inf_is_error' in nanguard) # Required arguments to NanGuardMode
+            from theano.compile.nanguardmode import NanGuardMode
+            self.cost = shim.graph.compile([], cost_graph,
+                                           givens=[(self.tidx_var, start), (self.batch_size_var, datalen)],
+                                           mode=NanGuardMode(**nanguard))
         logger.info("Done compilation.")
 
         # Compile the advance function
@@ -550,7 +567,7 @@ class SeriesSGD(SGDBase):
         if isinstance(self.optimizer, str):
             if self.optimizer == 'adam':
                 logger.info("Calculating Adam optimizer updates.")
-                optimizer_updates = Adam(cost_to_min, self.optimize_vars, lr=lr)
+                optimizer_updates = optimizers.Adam(cost_to_min, self.optimize_vars, lr=lr)
             else:
                 raise ValueError("Unrecognized optimizer '{}'.".format(self.optimizer))
 
@@ -1492,7 +1509,7 @@ class SGD_old:
         if isinstance(self.optimizer, str):
             if self.optimizer == 'adam':
                 logger.info("Calculating Adam optimizer updates.")
-                optimizer_updates = Adam(cost_to_min, self.fitparams, lr=lr, **kwargs)
+                optimizer_updates = optimizers.Adam(cost_to_min, self.fitparams, lr=lr, **kwargs)
             else:
                 raise ValueError("Unrecognized optimizer '{}'.".format(self.optimizer))
 

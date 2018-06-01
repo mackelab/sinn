@@ -118,16 +118,30 @@ def clip_probabilities(prob_array, min_prob = None, max_prob = None):
         # Clipping a little bit within the interval [0,1] avoids problems
         # with likelihoods (which tend to blow up when p = 0 or 1)
 
-def isclose(a, b, rtol=None, atol=None, equal_nan=False):
-    """Wrapper around numpy.isclose, which uses the sinn.config tolerances."""
+def isclose(a, b, tol=None, rtol=None, atol=None, equal_nan=False):
+    """
+    Wrapper around numpy.isclose, which uses the sinn.config tolerances.
+    Tolerance is determined based on the smallest dtype between a and b.
+    Use `tol` to set both `atol` and `rtol` simultaneously.
+    """
+    # Use `tol` as default value for rtol, atol
+    if rtol is None: rtol = tol
+    if atol is None: atol = tol
+    dtype = np.result_type(a, b)
     if shim.is_theano_object(a, b):
         logger.warning("Called `sinn.isclose` on a Theano object. This always returns True.")
         return True
     else:
         if rtol is None:
-            rtol = config.rel_tolerance  # floatX precision
+            rtol = config.get_rel_tolerance(dtype)
+        elif isinstance(rtol, (np.dtype, str)):
+            # rtol is actually a dtype
+            rtol = config.get_rel_tolerance(rtol)
         if atol is None:
-            atol = config.abs_tolerance  # floatX precision
+            atol = config.get_abs_tolerance(dtype)
+        elif isinstance(atol, (np.dtype, str)):
+            # atol is actually a dtype
+            atol = config.get_rel_tolerance(atol)
         return np.isclose(a, b, rtol, atol, equal_nan)
 
 def ismultiple(x, base, rtol=None, atol=None):
@@ -136,9 +150,69 @@ def ismultiple(x, base, rtol=None, atol=None):
         logger.warning("Called `sinn.ismultiple` on a Theano object. This always returns True.")
         return True
     else:
+        # Get lowest precision type
+        x = np.asarray(x)
+        base = np.asarray(base)
+        if (np.issubdtype(x.dtype, np.integer)
+            != np.issubdtype(base.dtype, np.integer)):
+            # One is a float, the other an integer. Take float as dtype.
+            if np.issubdtype(x.dtype, np.integer):
+                assert(np.issubdtype(base.dtype, np.inexact))
+                dtype = base.dtype
+            else:
+                assert(np.issubdtype(x.dtype, np.inexact))
+                dtype = x.dtype
+        else:
+            # Use the lowest precision of the chosen type class
+            if np.can_cast(x.dtype, base.dtype):
+                dtype = x.dtype
+            else:
+                dtype = base.dtype
+        rtol = dtype if rtol is None else rtol
+        atol = dtype if atol is None else atol
         return isclose(0, shim.round(x/base) - x/base, rtol, atol)
             # Tolerance for isclose(a,b) is atol + rtol*abs(b),
             # so the '0' above must be first argument
+
+def upcast(x, to_dtype=np.float64, from_dtype=None, cast_integers=False,
+           same_kind=True, disable_rounding=False):
+    """
+    Upcast `x` to `to_dtype`, rounding out numerical errors due to the lower
+    precision of the type of `x`.
+    The rounding precision is determined by calling `get_abs_tolerance(x)`.
+    Note that the rounding behaviour will raise an error if `x` is a Theano
+    object.
+    The rounding behaviour can be disable by setting `disable_rounding=False`.
+    If `from_dtype` is None, use `x.dtype`.
+    By default, integers are not upcast; to change this behaviour, pass
+    `cast_integers=True`.
+    When `same_kind` is `True`, only casts e.g. between 'float32' and 'float64'
+    are permitted; others raise `TypeError`.
+
+    Parameters
+    ----------
+    ...
+    """
+    # NOTE I'm not a use fan of working with string representations of dtypes,
+    # but that's what Theano uses. Rewriting using  np.issubdtype & co. would
+    # probably be better.
+    x = shim.asarray(x)
+    if np.issubdtype(x.dtype, np.integer) and not cast_integers:
+        return x
+    if from_dtype is None:
+        from_dtype = x.dtype
+    if np.can_cast(to_dtype, from_dtype):
+        return x
+    newx = shim.cast(x, to_dtype, same_kind=same_kind)
+    if disable_rounding:
+        return newx
+    else:
+        if shim.is_theano_object(x):
+            raise ValueError("Disable rounding when using `upcast()` on "
+                             "Theano variables.")
+        decimals = -np.rint(np.log10(
+                            config.get_abs_tolerance(from_dtype))).astype('int')
+        return np.round(x, decimals=decimals)
 
 def static_vars(**kwargs):
     """
@@ -251,8 +325,8 @@ inputs = DependencyGraph('sinn.inputs')
 class HistoryBase:
 
     def __init__(self, t0, tn):
-        self.t0 = shim.cast_floatX(t0)
-        self.tn = shim.cast_floatX(tn)
+        self.t0 = t0
+        self.tn = tn
         self._tarr = None # Implement in child classes
 
     def get_time(self, t):
