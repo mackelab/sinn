@@ -347,26 +347,32 @@ def subsample(series, amount):
         series. Bins are identified by the time at which they begin.
     """
     series = histories.DataView(series)
+    # Get lowest precision dtype between hist and floatX
+    if np.can_cast(series.dtype, shim.config.floatX):
+        res_dtype = series.dtype
+    else:
+        res_dtype = shim.config.floatX
 
-    assert(np.issubdtype(np.asarray(amount).dtype, np.int))
+    assert(np.issubdtype(np.asarray(amount).dtype, np.integer))
     # if hasattr(series, 'use_theano') and series.use_theano:
     #     if series.compiled_history is not None:
     #         series = series.compiled_history
     #     else:
     #         raise ValueError("Cannot subsample a Theano array.")
-    newdt = series.dt64 * amount
+    newdt = (series.dt64 * amount)
     nbins = (series.tnidx - series.t0idx + 1) // amount
         # We might chop off a few bins, if the new dt is not commensurate with
         # the original number of bins.
-        # +1 because this is the number of bins, not steps
+        # +1 because we want the number of bins, not steps
+    newtime_array = (np.arange(nbins) * newdt + series.t0)
     res = histories.Series(name = series.name + "_subsampled_by_" + str(amount),
-                           time_array = np.arange(nbins) * newdt + series.t0,
+                           time_array = newtime_array.astype(series.dt.dtype),
                            #t0 = series.t0,
                            #tn   = series.t0 + (nbins - 1) * newdt,
                            #    # nbins-1 because tn is inclusive
                            #dt   = newdt,
                            shape = series.shape,
-                           iterative = False, dtype = shim.config.floatX)
+                           iterative = False, dtype = res_dtype)
     data = series.trace[:nbins*amount]
         # Slicing removes bins which are not commensurate with the subsampling factor
     t0idx = series.t0idx
