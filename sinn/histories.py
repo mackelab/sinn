@@ -1069,7 +1069,12 @@ class History(HistoryBase):
             index. Default is `True`.
         inplace: bool
             Whether to modify the present history inplace, or create and modify
-            a copy. Default is use make copy.
+            a copy. Default is to make a copy.
+
+        Returns
+        -------
+        Series:
+            Truncated history.
         """
         # TODO: if inplace=False, return a view of the data
         # TODO: invalidate caches ?
@@ -1110,6 +1115,8 @@ class History(HistoryBase):
         if self._original_tidx.get_value() > imax:
             hist._original_tidx.set_value(imax)
             hist._cur_tidx.set_value(imax)
+
+        return hist
 
     def compute_up_to(self, tidx, start='symbolic'):
         """Compute the history up to `tidx` inclusive.
