@@ -1042,7 +1042,8 @@ class History(HistoryBase):
                 self._cur_tidx += Δbefore_idx
 
         # Check that the time index type can still store all time indices
-        if not np.can_cast(np.min_scalar_type(len(self._tarr)), self.tidx_dtype):
+        if not np.can_cast(np.min_scalar_type(-len(self._tarr)), self.tidx_dtype):
+            # '-' ensures we don't get a uint as min scalar type
             raise ValueError("With padding, this history now has a length of "
                              "{}, which is too large for the history's time "
                              "index type ({}).\nTo avoid this error, make sure "
@@ -3175,6 +3176,9 @@ class Series(ConvolveMixin, History):
             value = value[0]
         else:
             updates = None
+        # Convert Python plain data types to arrays
+        if isinstance(value, (int, float)):
+            value = np.asarray(value)
 
         # Adaptations depending on whether tidx is a single bin or a slice
         if shim.istype(tidx, 'int'):
