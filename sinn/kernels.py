@@ -355,7 +355,7 @@ class ExpKernel(Kernel):
     Parameters = com.define_parameters(Parameter_info)
 
     @checkcache
-    def initialize(self, name, params, shape, memory_time=None, t0=0, **kwargs):
+    def initialize(self, name, params, shape=None, memory_time=None, t0=0, **kwargs):
         """
         Parameters
         ----------
@@ -366,6 +366,9 @@ class ExpKernel(Kernel):
               Constant multiplying the exponential. c, in the expression above.
             - decay_const: float, ndarray, Theano var
               Characteristic time of the exponential. τ, in the expression above.
+        shape: tuple
+            (Optional) Overrides the default shape, which is computing by
+            broadcasting all elements.
         memory_time: float
             (Optional) Time after which we can truncate the kernel. If left
             unspecified, calculated automatically.
@@ -384,6 +387,14 @@ class ExpKernel(Kernel):
             # We want a numerical value, so we use the test value associated to the variables
             decay_const_val = np.max(shim.get_test_value(params.decay_const))
             memory_time = t0 - decay_const_val * np.log(config.truncation_ratio)
+
+        # Compute shape
+        if shape is None:
+            compute_shape = np.broadcast(shim.graph.eval(p) for p in params).shape
+            shape = compute_shape
+            # Impose a shape of at least (1,)
+            if shape == ():
+                shape = (1,)
 
         ########
         # Initialize base class
