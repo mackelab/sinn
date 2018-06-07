@@ -647,7 +647,7 @@ class History(HistoryBase):
     def __setitem__(self, key, value):
         if isinstance(key, slice):
             start = 0 if key.start is None else self.get_t_idx(key.start)
-            stop = len(self) if key.stop is None else self.get_t_idx(key.stop)
+            stop = len(self._tarr) if key.stop is None else self.get_t_idx(key.stop)
             if start > stop:
                 raise NotImplementedError("Assigning to inverted slices not implemented."
                                           "\nhistory: {}\nslice: {}"
@@ -2834,7 +2834,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             Amount of time to add after tn.
         """
         before_len, after_len = self.pad_time(before, after)
-        newshape = (len(self._tarr) + before_len + after_len, sum(self.shape))
+        newshape = (len(self._tarr), sum(self.shape))
         self._data.row += before_len
             # increment all time bins by the number that were added
         self._data = sp.sparse.coo_matrix((self._data.data, (self._data.row, self._data.col)),
