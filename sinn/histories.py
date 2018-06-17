@@ -280,6 +280,10 @@ class History(HistoryBase):
 
         if name is None:
             name = "history{}".format(self.instance_counter)
+        # Make sure numerical parameters have members dtype, etc.
+        if t0 is not sinn._NoValue: t0 = np.asarray(t0)
+        if tn is not sinn._NoValue: tn = np.asarray(tn)
+        if dt is not sinn._NoValue: dt = np.asarray(dt)
         # Grab defaults from the other instance:
         if hist is not sinn._NoValue:
             if not isinstance(hist, History):
@@ -329,7 +333,7 @@ class History(HistoryBase):
             dt = dt64.astype(t_dtype)
             assert( np.all(sinn.isclose(time_array[1:] - time_array[:-1], dt)) )
         else:
-            t_dtype = np.result_type(t0, tn)
+            t_dtype = np.result_type(t0, tn, np.float16)
                 # Don't consider dt – dt should always be passed as double
                 # even when we want time dtype to be 32-bit
             if np.can_cast(shim.config.floatX, t_dtype):
@@ -3650,11 +3654,12 @@ class Series(ConvolveMixin, History):
                     "Floats are treated as times, while integers are treated as time indices. "
                     .format(tidx))
             dim_diff = discretized_kernel.ndim - self.ndim
+            dtype = np.result_type(discretized_kernel.dtype, self.dtype)
             return shim.cast(self.dt64 * shim.sum(discretized_kernel[kernel_slice][::-1]
                                                   * shim.add_axes(self[hist_slice], dim_diff,
                                                                   -self.ndim),
                                                   axis=0),
-                             dtype=self._data.dtype)
+                             dtype=dtype)
                 # history needs to be augmented by a dimension to match the kernel
                 # Since kernels are [to idx][from idx], the augmentation has to be on
                 # the second-last axis for broadcasting to be correct.
@@ -3690,9 +3695,10 @@ class Series(ConvolveMixin, History):
                     "a starting point preceding the history's padding. Is it "
                     "possible you specified time as an integer rather than scalar ?")
             dis_kernel_shape = (kernel_slice.stop - kernel_slice.start,) + discretized_kernel.shape
+            dtype = np.result_type(discretized_kernel.dtype, self.dtype)
             retval = shim.cast(self.dt64 * shim.conv1d(self[:], discretized_kernel[kernel_slice],
                                                        len(self._tarr), dis_kernel_shape)[domain_slice],
-                               dtype=self._data.dtype)
+                               dtype=dtype)
             shim.check(shim.eq(retval.shape[0], len(self)))
                 # Check that there is enough padding after tn
             return retval

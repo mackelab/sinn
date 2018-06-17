@@ -18,6 +18,11 @@ History functions requiring a random number generator should also set the class 
 argument to the initializer, which can then be stored for use by `update_function`.
 """
 
+# IMPLEMENTATION NOTE:
+# All update functions use an unsafe cast, since we assume there is a reason the
+# user specifies a dtype.
+# TODO: Move casting into base type so it's not repeated in every derived class
+
 import numpy as np
 import logging
 logger = logging.getLogger("sinn.models.inputs")
@@ -58,7 +63,7 @@ class Constant(SeriesFunction):
         else:
             assert(t.ndim == 1)
             return shim.cast(shim.tile(self.value, (t.shape[0],) + (1,)*self.ndim),
-                             dtype=self.dtype)
+                             dtype=self.dtype, same_kind=False)
 
 
 class Step(SeriesFunction):
@@ -118,7 +123,7 @@ class Step(SeriesFunction):
             t = shim.add_axes(t, ndim, 'after')
         return shim.cast( shim.switch( shim.and_(self.left_cmp(t), self.right_cmp(t)),
                                        self.baseline_plus_height, self.baseline ),
-                          dtype=self.dtype )
+                          dtype=self.dtype, same_kind=False )
 
 class Sin(SeriesFunction):
     # TODO: Allow Theano parameters
@@ -172,7 +177,7 @@ class Sin(SeriesFunction):
         return shim.cast(self.baseline
                          + self.amplitude
                            * shim.sin(self.frequency*t + self.phase),
-                         dtype = self.dtype)
+                         dtype = self.dtype, same_kind=False)
 
 
 class GaussianWhiteNoise(SeriesFunction):
