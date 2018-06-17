@@ -333,7 +333,7 @@ class History(HistoryBase):
             dt = dt64.astype(t_dtype)
             assert( np.all(sinn.isclose(time_array[1:] - time_array[:-1], dt)) )
         else:
-            t_dtype = np.result_type(t0, tn, np.float16)
+            t_dtype = np.result_type(t0, tn, np.float32)
                 # Don't consider dt – dt should always be passed as double
                 # even when we want time dtype to be 32-bit
             if np.can_cast(shim.config.floatX, t_dtype):
