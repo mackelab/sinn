@@ -104,13 +104,13 @@ class Step(SeriesFunction):
         #self.stop = stop
 
         if interval in ('closed', 'half-open'):
-            self.left_cmp = lambda t: t >= start
+            self.left_cmp = lambda t: self.get_time(t) >= start
         else:
-            self.left_cmp = lambda t: t > start
+            self.left_cmp = lambda t: self.get_time(t) > start
         if interval in ('closed', 'half-open-inverted'):
-            self.right_cmp = lambda t: t <= stop
+            self.right_cmp = lambda t: self.get_time(t) <= stop
         else:
-            self.right_cmp = lambda t: t < stop
+            self.right_cmp = lambda t: self.get_time(t) < stop
 
         return self.baseline_plus_height.shape
             # `baseline + height` result is already broadcasted to the correct shape
