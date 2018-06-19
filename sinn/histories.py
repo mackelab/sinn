@@ -908,7 +908,7 @@ class History(HistoryBase):
         if self.symbolic and self.compiled_history is not None:
             self.compiled_history.unlock()
 
-    def set_update_function(self, func, _return_dtype=None):
+    def set_update_function(self, func, cast=True, _return_dtype=None):
         """
 
         Parameters
@@ -916,6 +916,12 @@ class History(HistoryBase):
         func: callable
             The update function. Its signature should be
             `func(t)`
+        cast: bool
+            (Default: True) True indicates to cast the result of a the update
+            function to the expected type. Only 'same_kind' casts are permitted.
+            This option can be convenient, as it avoids the need to explicitly
+            cast in all return functions when using mixed types. For the most
+            stringent debugging though this should be set to False.
         _return_dtype: numpy dtype or str equivalent
             The type the function should return. Designed to allow classes to
             override the default type check, which is to check the return
@@ -935,11 +941,15 @@ class History(HistoryBase):
             logger.debug("Compute " + self.name)
             res = func(t)
             logger.debug("Done computing " + self.name)
-            if res.dtype != return_dtype:
-                raise TypeError("Update function for history '{}' returned a "
-                                "value of dtype '{}', but history update "
-                                " expects dtype '{}'."
-                                .format(self.name, res.dtype, return_dtype))
+            if cast:
+                res = shim.cast(res, return_dtype, same_kind=True)
+                # shim.cast does its own type checking
+            else:
+                if res.dtype != return_dtype:
+                    raise TypeError("Update function for history '{}' returned a "
+                                    "value of dtype '{}', but history update "
+                                    " expects dtype '{}'."
+                                    .format(self.name, res.dtype, return_dtype))
             if shim.isscalar(res):
                 # update functions need to output an object with a shape
                 return shim.add_axes(res, 1)
@@ -2383,7 +2393,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
     """
     A class to store spiketrains, grouped into populations.
 
-    These are stored in a sparse array where spikes are indicated by 1s.
+    These are stored in a sparse array where spikes are indicated by ones.
     Instead of the `shape` parameter, we use `pop_slices` to indicate the neurons
     associated to each population, from which `shape` is automatically deduced.
     Only 1d timeslices are currently supported (i.e. all populations are arranged
@@ -2622,9 +2632,9 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
 
     def set_update_function(self, func, _return_dtype=None):
         if _return_dtype is None:
-            super().set_update_function(func, self.idx_dtype)
+            super().set_update_function(func, _return_dtype=self.idx_dtype)
         else:
-            super().set_update_function(func, _return_dtype)
+            super().set_update_function(func, _return_dtype=_return_dtype)
 
 
     def get_trace(self, pop=None, neuron=None, include_padding='none', time_slice=None):
