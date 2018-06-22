@@ -28,15 +28,15 @@ class ShapeError(ValueError):
 
 class PopTerm(np.ndarray):
     """
-    Subclasses of numpy.ndarray which introduces an extra broadcasting
+    Subclass of numpy.ndarray which introduces an extra broadcasting
     block level (the "population"). Normal array operations (+,-,*, etc.)
     are carried out by transparently broadcasting along blocks when
     required. General support for all numpy methods is not yet implemented:
-    currently each is added by head as it is needed (currently 'max', 'min',
+    currently each is added by hand as it is needed (currently 'max', 'min',
     'dot' and 'flatten' are supported).
 
     Block broadcasting:
-    Suppose we have. a (600,) PopTerm array representing 2 populations of size
+    Suppose we have a (600,) PopTerm array representing 2 populations of size
     500 and 100. This can multiplied by a (2,) array (PopTerm or plain
     ndarray), and broadcasting will happen as expected, the elements of the
     second array being matched to populations of the first.
@@ -217,6 +217,8 @@ class PopTerm(np.ndarray):
         else:
             return super().ndim
 
+    # TODO: Implement with dictionary interface instead, so we can iterate
+    # over block sizes with `items()`
     def block_size(self, block_type):
         if block_type == 'Micro':
             return sum(self.pop_sizes)
@@ -437,9 +439,14 @@ class PopTerm(np.ndarray):
             'Plain'
             for size in shape )
         if not allow_plain and 'Plain' in block_types:
-            raise ShapeError("At least one dimension is not compatible "
-                             "with the population sizes. Shape: {}."
-                             .format(shape))
+            error_str = ("\n\nAt least one dimension is not compatible "
+                         "with the population sizes;\n"
+                         "Shape: {};\n".format(shape))
+            # TODO: Use dictionary interface to `block_size` when implemented
+            #       to avoid hard-coding block names
+            block_size_str = ''.join(["  {}: {}\n".format(blockname, self.block_size(blockname))
+                                      for blockname in ['Macro', 'Meso', 'Micro']])
+            raise ShapeError(error_str + "Block sizes:\n" + block_size_str)
         return block_types
 
     def _apply_op(self, op, b=None):
