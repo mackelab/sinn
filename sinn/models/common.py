@@ -679,9 +679,12 @@ class Model(com.ParameterMixin):
                                               sequences = shim.arange(startidx+1, stopidx),
                                               outputs_info = outputs_info)
         # Ensure that all updates are of the right type
+        # Theano can add updates for variables that don't have a dtype, e.g.
+        # a RandomStateType variable, which is why we include the hasattr guard
         upds = OrderedDict([(orig_var,
-                             sinn.upcast(upd, to_dtype=orig_var.dtype,
-                                         same_kind=True, disable_rounding=True))
+                             (sinn.upcast(upd, to_dtype=orig_var.dtype,
+                                          same_kind=True, disable_rounding=True))
+                              if hasattr(orig_var, 'dtype') else upd)
                             for orig_var, upd in upds.items()])
         self.apply_updates(upds)
             # Applying updates ensures we remove the iteration variable
@@ -698,9 +701,12 @@ class Model(com.ParameterMixin):
 
         hist_upds = shim.get_updates()
         # Ensure that all updates are of the right type
+        # Theano can add updates for variables that don't have a dtype, e.g.
+        # a RandomStateType variable, which is why we include the hasattr guard
         hist_upds = OrderedDict([(orig_var,
-                                  sinn.upcast(upd, to_dtype=orig_var.dtype,
+                                  (sinn.upcast(upd, to_dtype=orig_var.dtype,
                                               same_kind=True, disable_rounding=True))
+                                   if hasattr(orig_var, 'dtype') else upd)
                                  for orig_var, upd in hist_upds.items()])
         return hist_upds
 
