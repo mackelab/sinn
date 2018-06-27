@@ -739,7 +739,7 @@ class ParameterMixin:
                             if temp_val.ndim < 2:
                                 param_dict[key] = shim.shared( shim.add_axes(temp_val, 2 - temp_val.ndim),
                                                                name = key )
-                    except KeyError:
+                    except IndexError:
                         pass
                     if param_dict[key] is None:
                         # `ensure_2d` is either False or unset
