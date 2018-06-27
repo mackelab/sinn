@@ -439,6 +439,10 @@ class History(HistoryBase):
             raise TypeError("'Lesser than' comparison is not supported between objects of type History and {}."
                             .format(type(other)))
 
+    def __reduce__(self):
+        # Allows pickling
+        return (self.from_repr_np, (self.repr_np,))
+
     @property
     def dtype(self):
         """Data type of the data."""
@@ -539,7 +543,10 @@ class History(HistoryBase):
         raw['locked'] = kwargs.pop('locked') if 'locked' in kwargs else self.locked
 
         raw.update(kwargs)
-        return raw
+        # If we write to NpzFile, all entries are converted to arrays;
+        # we just do it preemptively, which ensures consistent unpacking whether
+        # we saved to NpzFile or not.
+        return {key: np.array(value) for key, value in raw.items()}
 
     @classmethod
     def from_raw(cls, raw, update_function=sinn._NoValue, symbolic=False, lock=True, **kwds):
@@ -555,8 +562,8 @@ class History(HistoryBase):
             Will be passed along to the class constructor
             Exists to allow specialization in derived classes.
         """
-        if not isinstance(raw, np.lib.npyio.NpzFile):
-            raise TypeError("'raw' data must be a Numpy archive.")
+        if not isinstance(raw, (dict, np.lib.npyio.NpzFile)):
+            raise TypeError("'raw' data must be either a dict or a Numpy archive.")
         version = raw['version'] if 'version' in raw else 1
         dt = raw['dt']
         dt64 = raw['dt64'] if version >= 2 else raw['dt']
