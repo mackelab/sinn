@@ -315,8 +315,8 @@ class SeriesSGD(SGDBase):
 
     def __init__(self, cost, start_var, batch_size_var, cost_format, optimizer,
                  optimize_vars, track_vars,
-                 start, datalen, burnin, batch_size, lr,
-                 advance, initialize=None, mode='random', mode_params=None,
+                 start, datalen, burnin, batch_size, lr, advance,
+                 reset=None, initialize=None, mode='random', mode_params=None,
                  cost_track_freq=100, var_track_freq=1):
         """
 
@@ -370,6 +370,10 @@ class SeriesSGD(SGDBase):
             single input the current time index.
             If any of the `optimize_vars` are not shared variables, they are
             substituted by the corresponding shared variable before compilation.
+        reset: function () -> None
+            (Optional) Arbitrary function to run before each batch. This allows
+            to reset any state variable between parameter updates.
+            If both are defined, this function is executed before `initialize()`.
         initialize: function  (time index) -> None
             (Optional) Arbitrary function to run before computing the cost. This allows to set any state
             variables required to compute the cost.
@@ -444,6 +448,11 @@ class SeriesSGD(SGDBase):
             self.track_vars = OrderedDict(track_vars)
         else:
             self.track_vars = track_vars
+        if reset is None:
+            # Make a dummy function
+            self.reset_model = lambda: None
+        else:
+            self.reset_model = reset
         if initialize is None:
             # Make a dummy function
             self.initialize_model = lambda t: None
@@ -731,6 +740,7 @@ class SeriesSGD(SGDBase):
                 self._tracked_cost_iterations.append(self.step_i)
 
     def step(self):
+        self.reset_model()
         if self.mode == 'sequential':
             if (self.curtidx < self.start
                 or self.curtidx > self.start + self.datalen
