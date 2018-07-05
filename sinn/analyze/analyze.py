@@ -579,7 +579,10 @@ def plot(data, **kwargs):
                     comp_list = [tuple(c) for c in comp_list]
 
         if comp_list is not None:
-            if label is None or isinstance(label, str):
+            if isinstance(label, str) and label[0] == '_':
+                # Labels starting with '_' indicate to omit from legend
+                labels = [label for comp in comp_list]
+            elif label is None or isinstance(label, str):
                 name = label if label is not None else "y"
                 # Loop over the components
                 #if len(comp_list) > 1:
@@ -634,7 +637,10 @@ def plot(data, **kwargs):
             if not isinstance(comp_list, collections.Iterable):
                 comp_list = [comp_list]
 
-        if label is None or isinstance(label, str):
+        if isinstance(label, str) and label[0] == '_':
+            # Labels starting with '_' indicate to omit from legend
+            labels = [label for comp in comp_list]
+        elif label is None or isinstance(label, str):
             name = label if label is not None else data.name
             # Loop over the components
             #if len(comp_list) > 1:
