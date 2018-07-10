@@ -665,12 +665,13 @@ def set_parameters(target, source):
             getattr(target, field).set_value( val )
     else:
         assert(isinstance(source, dict))
-        assert( set(target._fields) == set(source.keys()) )
-        for field in target._fields:
-            val = source[field]
+        # assert( set(target._fields) == set(source.keys()) )
+        assert( set(source.keys()).issubset(set(target._fields)) )
+        for pname, val in source.items():
+            # val = source[field]
             if shim.isshared(val):
                 val = val.get_value()
-            getattr(target, field).set_value( val )
+            getattr(target, pname).set_value( val )
 
 def convert_parameters_to_theano(params):
     param_dict = params._asdict()

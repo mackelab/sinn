@@ -212,7 +212,7 @@ class Model(com.ParameterMixin):
         Call this function on all Kernel and History objects that should be
         saved to the disk cache.
         This function is cheap to call: the object is only written out when
-        its removed from program memory.
+        it's removed from program memory.
         """
 
         if isinstance(obj, sinn.kernels.Kernel):
@@ -249,14 +249,23 @@ class Model(com.ParameterMixin):
         Update model parameters. Clears all histories except those whose `locked`
         attribute is True, as well as any kernel which depends on these parameters.
 
+        TODO: Make `new_params` a dict and just update parameters in the dict.
+
         Parameters
         ----------
-        new_params: same type as model.params
+        new_params: same type as model.params | dict
+            # TODO: Allow also **kwargs
         """
         def gettype(param):
             return type(param.get_value()) if shim.isshared(param) else type(param)
-        assert(all( gettype(param) == gettype(new_param)
-                    for param, new_param in zip(self.params, new_params) ))
+        if isinstance(new_params, self.Parameters):
+            assert(all( gettype(param) == gettype(new_param)
+                        for param, new_param in zip(self.params, new_params) ))
+        elif isinstance(new_params, dict):
+            assert(all( gettype(val) == gettype(getattr(self.params, name))
+                        for name, val in new_params.items() ))
+        else:
+            raise NotImplementedError
         logger.monitor("Model params are now {}. Updating kernels...".format(self.params))
 
         # HACK Make sure sinn.inputs and models.history_inputs coincide
@@ -265,13 +274,20 @@ class Model(com.ParameterMixin):
 
         # Determine the kernels for which parameters have changed
         kernels_to_update = []
-        for kernel in self.kernel_list:
-            if not sinn.params_are_equal(
-                    kernel.get_parameter_subset(new_params), kernel.params):
-                # Grab the subset of the new parameters relevant to this kernel,
-                # and compare to the kernel's current parameters. If any of
-                # them differ, add the kernel to the list of kernels to update.
-                kernels_to_update.append(kernel)
+        if isinstance(new_params, self.Parameters):
+            for kernel in self.kernel_list:
+                if not sinn.params_are_equal(
+                        kernel.get_parameter_subset(new_params), kernel.params):
+                    # Grab the subset of the new parameters relevant to this kernel,
+                    # and compare to the kernel's current parameters. If any of
+                    # them differ, add the kernel to the list of kernels to update.
+                    kernels_to_update.append(kernel)
+        else:
+            assert(isinstance(new_params, dict))
+            for kernel in self.kernel_list:
+                if any(param_name in kernel.Parameters._fields
+                       for param_name in new_params):
+                    kernels_to_update.append(kernel)
 
         # Now update parameters. This must be done after the check above,
         # because Theano parameters automatically propagate to the kernels.
