@@ -377,8 +377,9 @@ def subsample(series, amount):
         # Slicing removes bins which are not commensurate with the subsampling factor
     t0idx = series.t0idx
     res.set(shim.cast(sum(data[i : (i+nbins)*amount : amount] for i in range(amount))/amount,
-                      res.dtype))
+                      res.dtype, same_kind=False))
         # Can't use np.mean on a generator
+        # same_kind set to `False` is required e.g. when averaging integers
     res.lock()
     return res
 

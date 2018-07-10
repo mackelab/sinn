@@ -2622,11 +2622,13 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
                                               shape=(len(self._tarr), nneurons),
                                               dtype=dtype)
             csc_data[:n,:] = shim.sparse.csc_from_dense(init_data.astype(dtype))
-            # This may through an efficiency warning, but we can ignore it since
+            # This may throw an efficiency warning, but we can ignore it since
             # self._data is empty
             self._data = csc_data.tocoo()
             # WARNING: This will break with Theano until/if we implement a
             #          coo matrix interface in theano_shim.
+
+        self._original_data = self._data
 
     def clear(self, init_data=None):
         """Spiketrains shouldn't just be invalidated, since then multiple runs
