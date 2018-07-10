@@ -310,6 +310,9 @@ class SGDBase:
     def MLE(self):
         return {name: trace[-1] for name, trace in self.trace.items()}
 
+def _dummy_reset_function(**kwargs):
+    return None
+
 class SeriesSGD(SGDBase):
     # TODO: Spin out SGD class and inherit
 
@@ -370,10 +373,14 @@ class SeriesSGD(SGDBase):
             single input the current time index.
             If any of the `optimize_vars` are not shared variables, they are
             substituted by the corresponding shared variable before compilation.
-        reset: function () -> None
+        reset: function (**shared vars) -> None
             (Optional) Arbitrary function to run before each batch. This allows
             to reset any state variable between parameter updates.
             If both are defined, this function is executed before `initialize()`.
+            The optimization variables are passed as keyword arguments
+            `name: shared`, where `name` is the name of variables passed to
+            `optimize_vars` and `shared` is the internal shared variable holding
+            its current value during the optimization.
         initialize: function  (time index) -> None
             (Optional) Arbitrary function to run before computing the cost. This allows to set any state
             variables required to compute the cost.
@@ -449,12 +456,12 @@ class SeriesSGD(SGDBase):
         else:
             self.track_vars = track_vars
         if reset is None:
-            # Make a dummy function
-            self.reset_model = lambda: None
+            # Use the dummy function
+            self.reset_model = _dummy_reset_function
         else:
             self.reset_model = reset
         if initialize is None:
-            # Make a dummy function
+            # Use a dummy function
             self.initialize_model = lambda t: None
         else:
             self.initialize_model = initialize
@@ -499,10 +506,14 @@ class SeriesSGD(SGDBase):
 
         # Optimization vars must be shared variables
         self.optimize_vars = []
+        self.optimize_vars_access = OrderedDict()  # TODO: Combine w/ optimize_vars
+            # Uses the source variable names as keys (before conversion to shared),
+            # so that users know them can use them.
         for var in optimize_vars:
             if shim.isshared(var):
                 # This variable is already a shared variable; just use it
                 self.optimize_vars.append(var)
+                self.optimize_vars_access[var.name] = var
             else:
                 # Create a shared variable to replace `var`
                 try:
@@ -514,6 +525,13 @@ class SeriesSGD(SGDBase):
                     raise NotImplementedError
                 shared_var = shim.shared(value, var.name + '_sgd')
                 self.optimize_vars.append(shared_var)
+                self.optimize_vars_access[var.name] = shared_var
+
+        # Ensure all optimization variables have unique names
+        if len(self.optimize_vars_access) != len(optimize_vars):
+            raise ValueError("The optimization variables must have unique names.\n"
+                             "Optimization variables: {}"
+                            .format([v.name for v in optimize_vars]))
 
         # Substitute the new shared variables in the computational graphs
         self.var_subs = {orig: new for orig, new in zip(optimize_vars, self.optimize_vars)}
@@ -740,7 +758,7 @@ class SeriesSGD(SGDBase):
                 self._tracked_cost_iterations.append(self.step_i)
 
     def step(self):
-        self.reset_model()
+        self.reset_model(**self.optimize_vars_access)
         if self.mode == 'sequential':
             if (self.curtidx < self.start
                 or self.curtidx > self.start + self.datalen
