@@ -172,6 +172,8 @@ def set_floatX(floatX_str = None):
     # global floatX, cast_floatX
     global rel_tolerance, abs_tolerance
 
+    if floatX_str is not None:
+        logger.warning("set_floatX() actually ignores 'floatX_str'")
     # if floatX_str is None:
     #     if 'theano' in librairies:
     #         floatX = shim.config.floatX

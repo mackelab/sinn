@@ -316,9 +316,10 @@ def _dummy_reset_function(**kwargs):
 class SeriesSGD(SGDBase):
     # TODO: Spin out SGD class and inherit
 
-    def __init__(self, cost, start_var, batch_size_var, cost_format, optimizer,
+    def __init__(self, cost, start_var, batch_size_var, cost_format,
                  optimize_vars, track_vars,
-                 start, datalen, burnin, batch_size, lr, advance,
+                 start, datalen, burnin, batch_size, advance,
+                 optimizer='adam', optimizer_kwargs=None,
                  reset=None, initialize=None, mode='random', mode_params=None,
                  cost_track_freq=100, var_track_freq=1):
         """
@@ -342,7 +343,17 @@ class SeriesSGD(SGDBase):
             String specifying the optimizer to use. Possible values:
               - 'adam'
             If a class/factory function, should have the signature
-              `optimizer(cost, fitparams, **kwargs)`
+              `optimizer(cost, fitparams, **optimizer_kwargs)`
+        optimizer_kwargs: dict | None
+            Keyword arguments to pass to the optimizer initializer. For the
+            default ADAM optimizer, possible keyword arguments are `lr`, `b1`,
+            `b2`, `e`, `clip` and `grad_fn`. If `None`, no keyword are passed;
+            this requires that the optimizer defines default values for all its
+            parameters.
+            FIXME: there is a current hard-coded requirement for 'lr' to be in
+            optimizer_kwargs.
+            TODO: Parameters (e.g. learning rate) which depend on on iteration
+            index or convergence status.
         optimize_vars: List of symbolic variables
             Symbolic variable/graph for the cost function we want to optimize.
             All variables should be inputs to the `cost` graph.
@@ -363,9 +374,6 @@ class SeriesSGD(SGDBase):
             Amount of data discarded at the beginning of every batch. In the model's time units (float)
             or in number of bins (int).
         batch_size: int
-        lr: float
-            Learning rate.
-            TODO: Learning rate which depends on the iteration index (or convergence status ?)
         advance: function (tidx) -> update dictionary
             Function returning a set of updates which advance the time series
             with the current parameters.
@@ -465,6 +473,8 @@ class SeriesSGD(SGDBase):
             self.initialize_model = lambda t: None
         else:
             self.initialize_model = initialize
+        if optimizer_kwargs is None:
+            optimizer_kwargs = {}
 
         # Make fit parameters array-like
         start = np.asarray(start)
@@ -539,6 +549,7 @@ class SeriesSGD(SGDBase):
         for var, upd in advance_updates.items():
             upd = shim.graph.clone(upd, replace=self.var_subs)
             advance_updates[var] = shim.cast(upd, var.dtype, same_kind=True)
+        lr = optimizer_kwargs['lr']
         if isinstance(lr, dict):
             # TODO: Move some of this to `standardize_lr()` ?
             subbed_shared_names = {s.name: s for s in self.var_subs}
@@ -555,6 +566,8 @@ class SeriesSGD(SGDBase):
                     assert(new_key not in lr)
                     lr[new_name] = lr[key]
                     del lr[key]
+        lr = standardize_lr(lr, self.optimize_vars)
+        optimizer_kwargs['lr'] = lr
 
         # Compile cost function
         # cost_graph_subs = shim.clone(cost_graph, {self.tidx_var: start,
@@ -587,14 +600,13 @@ class SeriesSGD(SGDBase):
 
         # Compile optimizer updates
         # FIXME: changed names in `optimize_vars`
-        lr = standardize_lr(lr, self.optimize_vars)
         cost_to_min = self.Cost(cost_graph).cost
             # Ensures we have a cost to minimize (and not, e.g., a likelihood)
         ## Get optimizer updates
         if isinstance(self.optimizer, str):
             if self.optimizer == 'adam':
                 logger.info("Calculating Adam optimizer updates.")
-                optimizer_updates = optimizers.Adam(cost_to_min, self.optimize_vars, lr=lr)
+                optimizer_updates = optimizers.Adam(cost_to_min, self.optimize_vars, **optimizer_kwargs)
             else:
                 raise ValueError("Unrecognized optimizer '{}'.".format(self.optimizer))
 
@@ -602,7 +614,7 @@ class SeriesSGD(SGDBase):
             # Treat optimizer as a factory class or function
             try:
                 logger.info("Calculating custom optimizer updates.")
-                optimizer_updates = self.optimizer(cost_to_min, self.optimize_vars, lr=lr, **kwargs)
+                optimizer_updates = self.optimizer(cost_to_min, self.optimize_vars, **optimizer_kwargs)
             except TypeError as e:
                 if 'is not callable' not in str(e):
                     # Some other TypeError was triggered; reraise
@@ -614,7 +626,19 @@ class SeriesSGD(SGDBase):
                                      + str(e))
         ## Compile
         logger.info("Compiling the optimization step function.")
-        self._step = shim.graph.compile([self.tidx_var, self.batch_size_var], [], updates=optimizer_updates)
+        if 'nanguard' not in optimizers.debug_flags:
+            self._step = shim.graph.compile([self.tidx_var, self.batch_size_var], [], updates=optimizer_updates)
+        else:
+            # TODO: Remove duplicate with above
+            if optimizers.debug_flags['nanguard'] is True:
+                nanguard = {'nan_is_error': True, 'inf_is_error': True, 'big_is_error': False}
+            else:
+                nanguard = optimizers.debug_flags['nanguard']
+                assert('nan_is_error' in nanguard and 'inf_is_error' in nanguard) # Required arguments to NanGuardMode
+            from theano.compile.nanguardmode import NanGuardMode
+            self._step = shim.graph.compile([self.tidx_var, self.batch_size_var],
+                                            [], updates=optimizer_updates,
+                                            mode=NanGuardMode(**nanguard))
         logger.info("Done compilation.")
 
         # Compile a function to extract tracking variables
