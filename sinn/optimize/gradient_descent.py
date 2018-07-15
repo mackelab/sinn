@@ -1,4 +1,3 @@
-from enum import Enum
 from collections import OrderedDict, deque, namedtuple, Iterable
 from itertools import chain
 import os.path
@@ -19,6 +18,7 @@ import theano.tensor as T
 import mackelab as ml
 import mackelab.iotools
 import mackelab.optimizers as optimizers
+from mackelab.utils import OrderedEnum
 #from mackelab.optimizers import Adam, NPAdam
 import theano_shim as shim
 import sinn
@@ -55,10 +55,18 @@ else:
 #
 #######################################
 
-class ConvergeStatus(Enum):
-    CONVERGED = 0
+class ConvergeStatus(OrderedEnum):
+    # These numbers are saved with the SGD and so should not be changed.
+    NOTSTARTED = 0
     NOTCONVERGED = 1
-    ABORT = 2
+    UNKNOWN = 6  # Used for loading legacy fits that didn't save status
+    # Numbers greater or equal to 'STOP' stop SGD iterations
+    STOP = 10
+    CONVERGED = 11
+    ABORTED = 12
+    ERROR = 20
+    # Specific errors we want to identify can be added with numbers > 20, and
+    # a corresponding test added in the `fit()` function.
 
 ######################################
 #
@@ -260,19 +268,21 @@ class Cost:
 
 class SGDBase:
     # TODO: Spin out GDBase class and inherit
-    # TODO: Make an ABC
+    # TODO: Make an ABC (abstract base class)
 
     def __init__(self, cost_format):
         self.cost_format = cost_format
+        self.status = ConvergeStatus.NOTSTARTED
 
     @property
     def repr_np(self):
-        repr = {'version': 1,
+        repr = {'version': 2,
                 'type'   : 'SGDBase'}
 
         repr['cost_format'] = self.cost_format
-        repr['cost_trace'] = self.cost_trace.value
-        repr['cost_trace_stops'] = self.cost_trace_stops
+        repr['status'] = self.status
+        repr['cost_trace'] = self.cost_trace.value  # Property
+        repr['cost_trace_stops'] = self.cost_trace_stops  # Property
 
         return repr
 
@@ -286,14 +296,26 @@ class SGDBase:
         _instance: None | class instance
             For internal use.
             If not None, use this class instance instead of creating a new one.
-            Designed for calling `from_repr_np()` from descendent classes.
+            Designed for calling `from_repr_np()` from derived classes.
+            (See `SGDView.from_repr_np` for an example.)
+            For abtract base classes this is a required parameter, since we
+            should always be calling the method from within a derived class'
+            `from_repr_np` method.
         """
+        version = repr['version']
         if _instance is not None:
             assert(isinstance(_instance, cls))
             o = _instance
         else:
             kwargs = {'cost_format': repr['cost_format']}
             o = cls(**kwargs)
+
+        if version >= 2:
+            o.status = repr['status']
+        else:
+            o.status = ConvergeStatus.UNKNOWN
+        # Since `cost_trace` and `cost_trace_stops` are properties, they must
+        # be set by the derived class' `from_repr_np` method.
 
         return o
 
@@ -818,6 +840,7 @@ class SeriesSGD(SGDBase):
         self.curtidx += burnin
         self.advance(self.curtidx)
         self._step(self.curtidx, self.batch_size)
+
         self.record()
 
         self.step_i += 1
@@ -841,13 +864,21 @@ class SeriesSGD(SGDBase):
         Nmax = int(Nmax)
         try:
             for i in tqdm(range(Nmax), position=threadidx):
-                status = self.step()
-                if status in [ConvergeStatus.CONVERGED, ConvergeStatus.ABORT]:
+                self.status = self.step()
+                if self.status >= ConvergeStatus.STOP:
                     break
-        except KeyboardInterrupt:
-            print("Gradient descent was interrupted by external signal.")
+        except (KeyboardInterrupt, SystemExit):
+            self.status = ConvergeStatus.ABORTED
+            logger.error("Gradient descent was interrupted by external signal.")
+                # This isn't an error per se, but we want to make sure
+                # it is printed no matter what the logging level is
+        except Exception as e:
+            # Catch errors, so we can save fit data before terminating.
+            # We may need this data to know why the error occured.
+            self.status = ConvergeStatus.ERROR
+            logger.error(e)
 
-        if status != ConvergeStatus.CONVERGED:
+        if self.status != ConvergeStatus.CONVERGED:
             print("Did not converge.")
 
         # TODO: Print timing statistics ?
@@ -896,6 +927,8 @@ class SGDView(SGDBase):
                       'cost_trace_stops': repr['cost_trace_stops']}
                 # Weird [()] indexing extracts element from 0-dim array
             o = cls(**kwargs)
+
+        super().from_repr_np(repr, o)
 
         return o
 
@@ -2226,13 +2259,19 @@ class FitCollection:
     def __next__(self):
         return next(self._iterator).data
 
-    def load(self, fit_list, load=None, **kwargs):
+    def load(self, fit_list, parameters=None, load=None, **kwargs):
         """
         Parameters
         ----------
-        fit_list: iterable
+        fit_list: iterable of (paths | fits | Sumatra records)
             Each element of iterable should have attributes 'parameters'
             and 'outputpath'.
+        parameters: iterable of ParameterSets | ParameterSet | None
+            Parameters to associate to each fit. If only one ParameterSet is
+            given, associate the same to each fit.
+            The default value of `None` is appropriate if we don't need to
+            associate parameters to fits, or if we are loading fits from
+            Sumatra records (which already provide parameters).
         load: function (loaded data) -> SGDView
             Allows specifying a custom loader. Should take whatever
             `mackelab.iotools.load()` returns, and return a SGDView instance.
@@ -2258,30 +2297,55 @@ class FitCollection:
         else:
             default_input_format = None
 
-        for fit in fit_list:
+        if (isinstance(parameters, (str, ParameterSet))
+            or not isinstance(parameters, Iterable)):
+            parameters = [parameters]*len(fit_list)
+
+        for fit, params in zip(fit_list, parameters):
             #params = fit.parameters
             #record.outputpath = os.path.join(record.datastore.root,
                                            #record.output_data[0].path)
 
-            # TODO: Remove when we don't need to read .sir files anymore
-            if default_input_format is not None:
-                input_format = default_input_format
+            if isinstance(fit, SGDBase):
+                data = fit
+
             else:
-                if os.path.splitext(fit.outputpath)[-1] == '.sir':
-                    # .sir was renamed to .npr
-                    input_format = 'npr'
+                if isinstance(fit, str):
+                    fitpath = fit
+                elif hasattr(fit, 'outputpath'):
+                    # Assume this has a Sumatra record interface
+                    fitpath = fit.outputpath
+                    # Overwrite passed parameters with record's parameters
+                    if params is not None:
+                        logger.warning("`parameters` argument is ignored for "
+                                       "Sumatra records, since they already "
+                                       "provide fit parameter.")
+                    params = fit.parameters
+                else:
+                    raise ValueError("`fit_list` items should be Fit objects, "
+                                     "paths to saved fit objects, or Sumatra "
+                                     "records pointing to saved fit objects.")
+                if default_input_format is not None:
+                    input_format = default_input_format
                 else:
                     # Get format from file extension
                     input_format = None
+                #     # TODO: Remove when we don't need to read .sir files anymore
+                #     if os.path.splitext(fit.outputpath)[-1] == '.sir':
+                #         # .sir was renamed to .npr
+                #         input_format = 'npr'
+                #     else:
+                #         # Get format from file extension
+                #         input_format = None
 
-            data = ml.iotools.load(fit.outputpath, input_format=input_format,
-                                   **kwargs)
-            if load is not None:
-                data = load(data)
-            elif isinstance(data, np.lib.npyio.NpzFile):
-                data = SGDView.from_repr_np(data)
+                data = ml.iotools.load(fitpath, input_format=input_format,
+                                       **kwargs)
+                if load is not None:
+                    data = load(data)
+                elif isinstance(data, np.lib.npyio.NpzFile):
+                    data = SGDView.from_repr_np(data)
             # TODO: Check if sgd is already loaded ?
-            self.fits.append( FitCollection.Fit(fit.parameters, data) )
+            self.fits.append( FitCollection.Fit(params, data) )
             #self.sgds[-1].verify_transforms(trust_automatically=True)
             #self.sgds[-1].set_params_to_evols()
             #sgd.record = record
