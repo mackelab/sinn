@@ -495,8 +495,12 @@ class SeriesSGD(SGDBase):
             self.initialize_model = lambda t: None
         else:
             self.initialize_model = initialize
+        # We use 'copy' to make sure we don't modify passed parameters
+        mode_params = copy.deepcopy(mode_params)
         if optimizer_kwargs is None:
             optimizer_kwargs = {}
+        else:
+            optimizer_kwargs = copy.deepcopy(optimizer_kwargs)
 
         # Make fit parameters array-like
         start = np.asarray(start)
