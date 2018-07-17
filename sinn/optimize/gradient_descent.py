@@ -1,5 +1,6 @@
 from collections import OrderedDict, deque, namedtuple, Iterable
 from itertools import chain
+import itertools
 import os.path
 import time
 import logging
@@ -270,17 +271,34 @@ class SGDBase:
     # TODO: Spin out GDBase class and inherit
     # TODO: Make an ABC (abstract base class)
 
-    def __init__(self, cost_format):
+    def __init__(self, cost_format, result_choice='take_last'):
+        """
+        Parameters
+        ----------
+        cost_format: str
+            One of the cost formats listed in Cost.conversions.
+        result_choice: str
+            One of:
+              - 'take_last': result is the last iteration step, regardless of
+                cost. This is probably the best option if the cost, like the
+                gradient, is evaluated on mini-batches.
+              - 'take_best': result is the iteration step with the lowest cost.
+                This is most appropriate when we trust the evaluation of the
+                cost, e.g. if it is evaluated on the whole trace rather than a
+                batch.
+        """
         self.cost_format = cost_format
         self.status = ConvergeStatus.NOTSTARTED
+        self.result_choice = result_choice
 
     @property
     def repr_np(self):
-        repr = {'version': 2,
+        repr = {'version_sgdbase': 2.1,
                 'type'   : 'SGDBase'}
 
         repr['cost_format'] = self.cost_format
         repr['status'] = self.status
+        repr['result_choice'] = self.result_choice
         repr['cost_trace'] = self.cost_trace.value  # Property
         repr['cost_trace_stops'] = self.cost_trace_stops  # Property
 
@@ -302,7 +320,8 @@ class SGDBase:
             should always be calling the method from within a derived class'
             `from_repr_np` method.
         """
-        version = repr['version']
+        version = (repr['version_sgdbase'] if hasattr(repr, 'version_sgdbase')
+                   else repr['version'])
         if _instance is not None:
             assert(isinstance(_instance, cls))
             o = _instance
@@ -310,10 +329,14 @@ class SGDBase:
             kwargs = {'cost_format': repr['cost_format']}
             o = cls(**kwargs)
 
-        if version >= 2:
+        if version >= 2 or version == 1 and hasattr(repr, 'status'):
             o.status = repr['status']
         else:
             o.status = ConvergeStatus.UNKNOWN
+        if version >= 2.1:
+            o.result_choice = repr['result_choice']
+        else:
+            o.result_choice = 'take_last'
         # Since `cost_trace` and `cost_trace_stops` are properties, they must
         # be set by the derived class' `from_repr_np` method.
 
@@ -322,6 +345,7 @@ class SGDBase:
     def Cost(self, cost):
         return Cost(cost, self.cost_format)
 
+    # Abstract definitions
     @property
     def cost_trace(self):
         raise NotImplementedError
@@ -329,8 +353,40 @@ class SGDBase:
     def cost_trace_stops(self):
         raise NotImplementedError
     @property
-    def MLE(self):
-        return {name: trace[-1] for name, trace in self.trace.items()}
+    def trace(self):
+        raise NotImplementedError
+    @property
+    def trace_stops(self):
+        raise NotImplementedError
+
+    # Result access methods
+    # Depending on `self.result_choice`, return either the last iteration or the
+    # one with the lowest cost
+    @property
+    def result_cost_idx(self):
+        if self.result_choice == 'take_last':
+            return len(self.cost_trace_stops) - 1
+        else:
+            assert(self.result_choice == 'take_best')
+            return np.argmin(self.cost_trace.cost)
+    @property
+    def result_cost(self):
+        return self.cost_trace[self.result_cost_idx]
+    @property
+    def result_idx(self):
+        if self.result_choice == 'take_last':
+            return len(self.trace_stops) - 1
+        else:
+            assert(self.result_choice == 'take_best')
+            result_stop = self.cost_trace_stops[self.result_cost_idx]
+            return np.searchsorted(self.trace_stops, result_stop)
+    @property
+    def result(self):
+        idx = self.result_idx
+        return {name: trace[idx] for name, trace in self.trace.items()}
+    @property
+    def MLE(self):  # For backwards compatibility
+        return self.result
 
 def _dummy_reset_function(**kwargs):
     return None
@@ -897,8 +953,8 @@ class SGDView(SGDBase):
     def __init__(self, cost_format,
                  trace, trace_stops, cost_trace, cost_trace_stops):
         super().__init__(cost_format)
-        self.trace = trace
-        self.trace_stops = trace_stops
+        self._trace = trace
+        self._trace_stops = trace_stops
         self._cost_trace = self.Cost(cost_trace)
         self._cost_trace_stops = cost_trace_stops
 
@@ -907,7 +963,7 @@ class SGDView(SGDBase):
         # TODO: Store enough state information (basically, the optimize vars
         #       and transforms) to continue a fit that was saved ot file.
         repr = super().repr_np
-        repr['version'] = 1
+        repr['version_sgdview'] = 2
         repr['type'] = 'SGDView'
 
         repr['trace'] = self.trace
@@ -923,6 +979,8 @@ class SGDView(SGDBase):
             assert(isinstance(_instance, cls))
             o = _instance
         else:
+            version = (repr['version_sgdview'] if hasattr(repr, 'version_sgdview')
+                       else repr['version'])
             # TODO: Use an SGDBase to extract SGDBase keywords
             kwargs = {'cost_format': repr['cost_format'],
                       'trace': repr['trace'][()],
@@ -942,6 +1000,12 @@ class SGDView(SGDBase):
     @property
     def cost_trace_stops(self):
         return self._cost_trace_stops
+    @property
+    def trace(self):
+        return self._trace
+    @property
+    def trace_stops(self):
+        return self._trace_stops
 
 class SeriesSGDView(SGDView):
     """
@@ -952,7 +1016,7 @@ class SeriesSGDView(SGDView):
     @property
     def repr_np(self):
         repr = super().repr_np
-        repr['version'] = 1
+        repr['version_seriessgdview'] = 1
         repr['type'] = 'SeriesSGDView'
         return repr
 
@@ -2303,7 +2367,7 @@ class FitCollection:
 
         if (isinstance(parameters, (str, ParameterSet))
             or not isinstance(parameters, Iterable)):
-            parameters = [parameters]*len(fit_list)
+            parameters = itertools.repeat(parameters)
 
         for fit, params in zip(fit_list, parameters):
             #params = fit.parameters
@@ -2359,13 +2423,19 @@ class FitCollection:
         else:
             logger.warning("No fit files were found.")
 
+    # Result access methods
+    @property
+    def result(self):
+        return self.fits[self.result_index].data.MLE
     @property
     def MLE(self):
-        return self.fits[self.MLE_index].data.MLE
-
+        return self.result
     @property
-    def MLE_index(self):
-        return np.nanargmax([fit.data.cost_trace[-1].logL for fit in self.fits])
+    def result_index(self):
+        return np.nanargmin([fit.data.result_cost.cost for fit in self.fits])
+    @property
+    def result_cost(self):
+        return self.fits[self.result_index].data.result_cost
 
     @property
     def nonfinite_fits(self):
@@ -2388,7 +2458,7 @@ class FitCollection:
                     self._ffits.append(fit)
         return self._ffits
 
-    def plot_cost(self, **kwargs):
+    def plot_cost(self, only_finite=True, **kwargs):
         """
         Parameters
         ----------
@@ -2406,6 +2476,8 @@ class FitCollection:
               Color to use for the 'discarded' traces.
           true_color: matplotlib color
               Color to use for the horizontal line indicating the true parameter value.
+        only_finite: bool
+            If `True`, only plot traces which do not contain NaNs or Infs.
         linewidth: size 2 tuple
             Linewidths to use for the plot of the 'kept' and 'discarded'
             fits. Index 0 corresponds to 'kept', index 1 to 'discarded'.
@@ -2423,12 +2495,22 @@ class FitCollection:
                 with this locator.
         """
         #traces = fitcoll.fits[0].data.cost_trace.logL
-        traces = (fit.data.cost_trace.logL for fit in self.finite_fits)
-        stops = (fit.data.cost_trace_stops for fit in self.finite_fits)
-        self._plot(stops, traces, **kwargs)
+        if only_finite:
+            traces = [fit.data.cost_trace.logL for fit in self.finite_fits]
+            stops = [fit.data.cost_trace_stops for fit in self.finite_fits]
+            if len(traces) == 0:
+                raise RuntimeError("The list of finite fits is empty")
+        else:
+            traces = [fit.data.cost_trace.logL for fit in self.fits]
+            stops = [fit.data.cost_trace_stops for fit in self.fits]
+            if len(traces) == 0:
+                raise RuntimeError("The list of fits is empty")
+
+        self._plot(stops, traces, only_finite=only_finite, **kwargs)
 
     def plot(self, var, idx=None, *args,
-             targets=None, true_color='#222222', **kwargs):
+             targets=None, true_color='#222222',
+             only_finite=True, **kwargs):
         """
         Parameters
         ----------
@@ -2455,6 +2537,8 @@ class FitCollection:
               Color to use for the 'discarded' traces.
           true_color: matplotlib color
               Color to use for the horizontal line indicating the true parameter value.
+        only_finite: bool
+            If `True`, only plot traces which do not contain NaNs or Infs.
         linewidth: size 2 tuple
             Linewidths to use for the plot of the 'kept' and 'discarded'
             fits. Index 0 corresponds to 'kept', index 1 to 'discarded'.
@@ -2493,7 +2577,17 @@ class FitCollection:
         #     traces = [ fit.data.trace[param.name]
         #                for fit in self.finite_fits ]
 
-        traces = [ fit.data.trace[var] for fit in self.finite_fits ]
+        if only_finite:
+            traces = [ fit.data.trace[var] for fit in self.finite_fits ]
+            trace_stops = ( fit.data.trace_stops for fit in self.finite_fits )
+            if len(traces) == 0:
+                raise RuntimeError("The list of finite fits is empty")
+        else:
+            traces = [ fit.data.trace[var] for fit in self.fits ]
+            trace_stops = ( fit.data.trace_stops for fit in self.fits )
+            if len(traces) == 0:
+                raise RuntimeError("The list of fits is empty")
+
 
         # Standardize the `idx` argument
         if idx is None:
@@ -2543,8 +2637,7 @@ class FitCollection:
         kwargs['logscale'] = logscale
 
         # Plot
-        trace_stops = ( fit.data.trace_stops for fit in self.finite_fits )
-        self._plot(trace_stops, plot_traces, **kwargs)
+        self._plot(trace_stops, plot_traces, only_finite=only_finite, **kwargs)
 
         # Draw the true value line
         if true_color is not None and targets is not None:
@@ -2557,7 +2650,7 @@ class FitCollection:
                 plt.axhline(target, color=true_color, zorder=0)
 
 
-    def _plot(self, stops, traces, numpoints=150,
+    def _plot(self, stops, traces, numpoints=150, only_finite=True,
               keep_range=5,
               keep_color='#BA3A05', discard_color='#BBBBBB',
               linewidth=(2.5, 0.8), logscale=None,
@@ -2567,6 +2660,8 @@ class FitCollection:
         ----------
         numpoints: int
             Number of points to plot. Defalut is 150.
+        only_finite: bool
+            If `True`, only plot traces which do not contain NaNs or Infs.
         keep_range: float
             Parameter traces who's ultimate loglikelihood is within
             this amount of the maximum logL will be coloured as 'kept'.
@@ -2600,7 +2695,10 @@ class FitCollection:
         """
 
         # Definitions
-        logLs = [fit.data.cost_trace[-1].logL for fit in self.finite_fits]
+        if only_finite:
+            logLs = [fit.data.cost_trace[-1].logL for fit in self.finite_fits]
+        else:
+            logLs = [fit.data.cost_trace[-1].logL for fit in self.fits]
         maxlogL = max(logLs)
 
         def get_color(logL):
