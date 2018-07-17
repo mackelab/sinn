@@ -320,7 +320,7 @@ class SGDBase:
             should always be calling the method from within a derived class'
             `from_repr_np` method.
         """
-        version = (repr['version_sgdbase'] if hasattr(repr, 'version_sgdbase')
+        version = (repr['version_sgdbase'] if 'version_sgdbase' in repr
                    else repr['version'])
         if _instance is not None:
             assert(isinstance(_instance, cls))
@@ -329,7 +329,7 @@ class SGDBase:
             kwargs = {'cost_format': repr['cost_format']}
             o = cls(**kwargs)
 
-        if version >= 2 or version == 1 and hasattr(repr, 'status'):
+        if version >= 2 or version == 1 and 'status' in repr:
             o.status = repr['status']
         else:
             o.status = ConvergeStatus.UNKNOWN
@@ -979,7 +979,7 @@ class SGDView(SGDBase):
             assert(isinstance(_instance, cls))
             o = _instance
         else:
-            version = (repr['version_sgdview'] if hasattr(repr, 'version_sgdview')
+            version = (repr['version_sgdview'] if 'version_sgdview' in repr
                        else repr['version'])
             # TODO: Use an SGDBase to extract SGDBase keywords
             kwargs = {'cost_format': repr['cost_format'],
