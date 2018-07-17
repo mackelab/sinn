@@ -3728,12 +3728,15 @@ class Series(ConvolveMixin, History):
     #####################################################
 
     def _apply_op(self, op, b=None):
-        new_series = Series(self)
         if b is None:
+            new_series = Series(self)
             new_series.set_update_function(lambda t: op(self[t]))
             new_series.set_range_update_function(lambda tarr: op(self[self.time_array_to_slice(tarr)]))
             new_series.add_input(self)
         else:
+            # HACK Should write function that doesn't create empty arrays
+            shape = np.broadcast(np.empty(self.shape), np.empty(b.shape)).shape
+            new_series = Series(self, shape=shape)
             if isinstance(b, History):
                 new_series.set_update_function(lambda t: op(self[t], b[t]))
                 new_series.set_range_update_function(
