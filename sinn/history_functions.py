@@ -112,8 +112,14 @@ class Step(SeriesFunction):
         else:
             self.right_cmp = lambda t: self.get_time(t) < stop
 
-        return self.baseline_plus_height.shape
+        # if not hasattr(self.baseline_plus_height, 'shape'):
+        #     raise ValueError("[sinn.history_function.Step] At least one of the "
+        #                      "parameters `baseline` or `height` must be "
+        #                      "an array, to provide the expected shape. "
+        #                      "This can be a size 1 array.")
+        return getattr(self.baseline_plus_height, 'shape', (1,))
             # `baseline + height` result is already broadcasted to the correct shape
+            # If they are both scalars and have no shape, set shape to (1,)
 
     def update_function(self, t):
         if not shim.isscalar(t):
