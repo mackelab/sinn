@@ -923,7 +923,7 @@ class SeriesSGD(SGDBase):
 
         Nmax = int(Nmax)
         try:
-            for i in tqdm(range(Nmax), position=threadidx):
+            for i in tqdm(range(Nmax), position=threadidx, dynamic_ncols=True):
                 self.status = self.step()
                 if self.status >= ConvergeStatus.STOP:
                     break
