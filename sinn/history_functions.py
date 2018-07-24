@@ -149,18 +149,22 @@ class Sin(SeriesFunction):
 
         self.baseline = baseline
 
+        if (frequency is None) == (period is None):
+            raise ValueError("When creating a sin input, exactly one of "
+                             "`frequency` and `period` must be specified.")
+
         if unit.lower() == 'radians':
             self.amplitude = amplitude
             self.phase = phase
             self.frequency = frequency if frequency is not None else 2*np.pi/period
-            if period is not None and frequency != 2*np.pi/period:
-                raise ValueError("When creating a sin input, don't specify both frequency and period.")
+            # if period is not None and frequency != 2*np.pi/period:
+            #     raise ValueError("When creating a sin input, don't specify both frequency and period.")
         elif unit.lower() == 'hz':
             self.amplitude = amplitude
             self.phase = phase * 2 * np.pi
             self.frequency = frequency * 2*np.pi if frequency is not None else 2*np.pi/period
-            if period is not None and frequency != 2*np.pi/period:
-                raise ValueError("When creating a sin input, don't specify both frequency and period.")
+            # if period is not None and frequency != 2*np.pi/period:
+            #     raise ValueError("When creating a sin input, don't specify both frequency and period.")
         else:
             raise ValueError("When creating a sin input, 'unit' must be either "
                              "'radians' or 'Hz', not '{}'".format(unit))
@@ -180,6 +184,7 @@ class Sin(SeriesFunction):
             if ndim == 0:
                 ndim = 1
             t = shim.add_axes(t, ndim, 'after')
+        t = self.get_time(t)
         return shim.cast(self.baseline
                          + self.amplitude
                            * shim.sin(self.frequency*t + self.phase),
