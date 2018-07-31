@@ -2365,6 +2365,11 @@ class FitCollection:
         else:
             default_input_format = None
 
+        if (isinstance(fit_list, (str, SGDBase))
+            or hasattr(fit_list, 'outputpath')):
+            # "fit_list" is actually a single fit. Wrap in in a list
+            fit_list = [fit_list]
+
         if (isinstance(parameters, (str, ParameterSet))
             or not isinstance(parameters, Iterable)):
             parameters = itertools.repeat(parameters)
