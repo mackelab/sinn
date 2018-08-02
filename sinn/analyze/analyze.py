@@ -302,7 +302,7 @@ def smooth(series, amount=None, method='mean', name = None, **kwargs):
             name = series.name + "_smoothed"
 
         # Possibly shorten the length of data, if series was not computed to end
-        datalen = series._cur_tidx.get_value() - series.t0idx + 1
+        datalen = series.cur_tidx - series.t0idx + 1
         if datalen < amount:
             raise ValueError("The smoothing window is wider than the length "
                              "of data ({} bins vs {} bins)."
@@ -360,7 +360,7 @@ def subsample(series, amount):
     #     else:
     #         raise ValueError("Cannot subsample a Theano array.")
     newdt = (series.dt64 * amount)
-    nbins = (series.tnidx - series.t0idx + 1) // amount
+    nbins = (series.cur_tidx - series.t0idx + 1) // amount
         # We might chop off a few bins, if the new dt is not commensurate with
         # the original number of bins.
         # +1 because we want the number of bins, not steps
