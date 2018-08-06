@@ -2418,6 +2418,7 @@ class FitCollection:
                 elif isinstance(data, np.lib.npyio.NpzFile):
                     data = SGDView.from_repr_np(data)
             # TODO: Check if sgd is already loaded ?
+            # TODO: Check that all fits correspond to the same posterior/model
             self.fits.append( FitCollection.Fit(params, data) )
             #self.sgds[-1].verify_transforms(trust_automatically=True)
             #self.sgds[-1].set_params_to_evols()
