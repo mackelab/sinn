@@ -3544,7 +3544,8 @@ class Series(ConvolveMixin, History):
             self.compute_up_to('end')
 
         elif isinstance(source, History):
-            raise NotImplemented
+            raise NotImplementedError
+            # See fsGIF.core.get_meso_model for a first attempt at this
 
         elif (not hasattr(source, 'shape')
               and (shim.istype(source, 'float')
