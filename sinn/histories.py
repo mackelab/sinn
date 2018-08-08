@@ -3761,6 +3761,10 @@ class Series(ConvolveMixin, History):
 
     def __abs__(self):
         return self._apply_op(operator.abs)
+    def __neg__(self):
+        return self._apply_op(operator.neg)
+    def __pos__(self):
+        return self._apply_op(operator.pos)
     def __add__(self, other):
         return self._apply_op(operator.add, other)
     def __radd__(self, other):

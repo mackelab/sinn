@@ -11,7 +11,7 @@ import scipy as sp
 #from collections import namedtuple
 import logging
 logger = logging.getLogger("sinn.models.common")
-from collections import OrderedDict
+from collections import OrderedDict, Sequence
 from inspect import isclass
 
 import theano_shim as shim
@@ -71,7 +71,7 @@ class Model(com.ParameterMixin):
     As class methods, these don't require an instance – they can be called on the class directly.
     """
 
-    def __init__(self, params, reference_history=None):
+    def __init__(self, params, public_histories, reference_history=None):
         # History is optional because more complex models have multiple histories.
         # They should keep track of them themselves.
         # ParameterMixin requires params as a keyword parameter
@@ -80,20 +80,40 @@ class Model(com.ParameterMixin):
         ----------
         params: self.Parameters instance
 
+        public_histories: Ordered iterable
+            List of histories that were explicitly passed to the model
+            initializer. This allows to recover the histories that were passed
+            (as usually they contain the desired output) without needing to
+            know their internal name.
+
         reference_history: History instance
-            If provided, a reference is kept to this history: Model evaluation may require
-            querying some of its attributes, such as time step (dt). These may not be
-            constant in time.
+            If provided, a reference is kept to this history: Model evaluation
+            may require querying some of its attributes, such as time step (dt).
+            These attributes are allowed not to be constant.
+            If no reference is given, the first history in `public_histories`
+            is used.
         """
+        # Format checks
+        if not hasattr(self, 'requires_rng'):
+            raise SyntaxError("Models require a `requires_rng` bool attribute.")
+
         super().__init__(params=params)
         self.kernel_list = []
         self.history_set = set()
         self.history_inputs = sinn.DependencyGraph('model.history_inputs')
-        self.compiled = {}
+        self.compiled = {}  # DEPRECATED
+
+        if not isinstance(public_histories, (Sequence, OrderedDict)):
+            raise TypeError("`public_histories` (type: {}) must be an ordered "
+                            "container type. Recognized types: Sequence, "
+                            "OrderedDict.".format(type(public_histories)))
+        self.public_histories = public_histories
 
         if reference_history is not None:
             self._refhist = reference_history
             #self.add_history(reference_history)  # TODO: Possible to remove ?
+        elif len(public_histories) > 0:
+            self._refhist = self.public_histories[0]
         else:
             self._refhist = None
 
