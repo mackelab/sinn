@@ -844,14 +844,16 @@ class SeriesSGD(SGDBase):
         # Initialize traces with current values
         self.record()
 
-    def record(self, cost=True, params=True):
+    def record(self, cost=True, params=True, last=False):
         """
         Record the current cost and parameter values.
         Recording of either cost or parameters can be prevented by passing
         `cost=False` or `params=False`.
+        Passing `last` ensures that cost and params are recorded, no matter
+        what the current step is (unless `cost` or `params` is false).
         """
         if params:
-            if self.step_i % self.var_track_freq == 0:
+            if last or self.step_i % self.var_track_freq == 0:
                 state = self._get_tracked()
                 assert(len(self.track_vars) == len(state))
                 self._tracked_iterations.append(self.step_i)
@@ -859,7 +861,7 @@ class SeriesSGD(SGDBase):
                     self._traces[name].append(value)
         if cost:
             # Record the current cost
-            if self.step_i % self.cost_track_freq == 0:
+            if last or self.step_i % self.cost_track_freq == 0:
                 self._cost_trace.append(self.cost())
                 self._tracked_cost_iterations.append(self.step_i)
 
@@ -940,6 +942,10 @@ class SeriesSGD(SGDBase):
 
         if self.status != ConvergeStatus.CONVERGED:
             print("Did not converge.")
+
+        # Make sure the final state is saved
+        # TODO: `record()` should check if a state is already recorded
+        self.record(last=True)
 
         # TODO: Print timing statistics ?
         #       Like likelihood evaluation time vs total ?
