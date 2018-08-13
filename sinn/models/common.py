@@ -158,7 +158,7 @@ class Model(com.ParameterMixin):
         else:
             raise AttributeError("The reference history for this model was not set.")
 
-    def get_t_idx(self, t, allow_rounding=False):
+    def get_tidx(self, t, allow_rounding=False):
         """
         Returns the time index corresponding to t, with 0 corresponding to t0.
         """
@@ -166,9 +166,10 @@ class Model(com.ParameterMixin):
             if shim.istype(t, 'int'):
                 return t
             else:
-                return self._refhist.get_t_idx(t, allow_rounding) - self._refhist.t0idx + self.t0idx
+                return self._refhist.get_tidx(t, allow_rounding) - self._refhist.t0idx + self.t0idx
         else:
             raise AttributeError("The reference history for this model was not set.")
+    get_t_idx = get_tidx
 
     def index_interval(self, Δt, allow_rounding=False):
         if self._refhist is not None:
@@ -586,7 +587,7 @@ class Model(com.ParameterMixin):
         if stop == 'end':
             stopidx = self.tnidx
         else:
-            stopidx = self.get_t_idx(stop)
+            stopidx = self.get_tidx(stop)
 
         # Make sure we don't go beyond given data
         for hist in self.history_set:
@@ -776,7 +777,7 @@ def Surrogate(model):
             t0: float
                 The time corresponding to time index 0. By default this is 0.
             dt: float
-                The time step. Required in order to use `get_t_idx` and `index_interval`;
+                The time step. Required in order to use `get_tidx` and `index_interval`;
                 can be omitted if these functions are not used.
             """
             # Since we don't call super().__init__, we need to reproduce
@@ -793,10 +794,10 @@ def Surrogate(model):
         def dt(self):
             return self._dt
 
-        def get_t_idx(t, allow_rounding=False):
+        def get_tidx(self, t, allow_rounding=False):
             if self.dt is None:
                 raise AttributeError("You must provide a timestep 'dt' to the surrogate class "
-                                    "in order to call 'get_t_idx'.")
+                                    "in order to call 'get_tidx'.")
             if shim.istype(t, 'int'):
                 return t
             else:
