@@ -655,9 +655,17 @@ class SeriesSGD(SGDBase):
         # cost_graph_subs = shim.clone(cost_graph, {self.tidx_var: start,
         #                                           self.batch_size_var: datalen})
         logger.info("Compiling the cost function.")
+        # if 'debugprint' in optimizers.debug_flags:
+        #     # TODO: Move `debug_flags` to this module
+        #     self.sstart = shim.shared(
+        #           np.int32(optimizers.debug_flags['debugprint']), name='ssstart')
+        #     self.cost = shim.graph.compile([], cost_graph,
+        #                                    givens=[(self.tidx_var, self.sstart),
+        #                                            (self.batch_size_var, np.int32(1))])
         if 'nanguard' not in optimizers.debug_flags:
             self.cost = shim.graph.compile([], cost_graph,
-                                           givens=[(self.tidx_var, start), (self.batch_size_var, datalen)])
+                                           givens=[(self.tidx_var, start),
+                                                   (self.batch_size_var, datalen)])
         else:
             if optimizers.debug_flags['nanguard'] is True:
                 nanguard = {'nan_is_error': True, 'inf_is_error': True, 'big_is_error': False}
