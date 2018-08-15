@@ -2507,7 +2507,8 @@ class FitCollection:
             None: Use log scale for y-axis only if parameter was transformed.
                   (Default)
         xticks, yticks: float, array or matplotlib.Ticker.Locator instance
-            int: Number of ticks. Passed as 'numticks' argument to LinearLocator.
+            int: Number of ticks. Passed as 'nbins' argument to MaxNLocator
+                 after subtracting one.
             float: Use this value as a base for MultipleLocator. Ticks will
                  be placed at multiples of these values.
             list/array: Fixed tick locations.
@@ -2568,7 +2569,8 @@ class FitCollection:
             None: Use log scale for y-axis only if parameter was transformed.
                   (Default)
         xticks, yticks: float, array or matplotlib.Ticker.Locator instance
-            int: Number of ticks. Passed as 'numticks' argument to LinearLocator.
+            int: Number of ticks. Passed as 'nbins' argument to MaxNLocator
+                 after subtracting one.
                  Special case: If 0 is given, the axis is removed entirely.
                  If required, it can be added back with
                  `plt.gca().spines['left|right|top|bottom'].set_visible(True)`
@@ -2674,7 +2676,7 @@ class FitCollection:
               keep_range=5,
               keep_color='#BA3A05', discard_color='#BBBBBB',
               linewidth=(2.5, 0.8), logscale=None,
-              xticks=1, yticks=3):
+              xticks=1, yticks=3, yticklocator_options=None):
         """
         Parameters
         ----------
@@ -2703,7 +2705,8 @@ class FitCollection:
             None: Use log scale for y-axis only if parameter was transformed.
                   (Default)
         xticks, yticks: float, array or matplotlib.Ticker.Locator instance
-            int: Number of ticks. Passed as 'numticks' argument to LinearLocator.
+            int: Number of ticks. Passed as 'nbins' argument to
+                 MaxNLocator after subtracting one.
                  Special case: If 0 is given, the axis is removed entirely.
                  If required, it can be added back with
                  `plt.gca().spines['left|right|top|bottom'].set_visible(True)`
@@ -2712,6 +2715,9 @@ class FitCollection:
             list/array: Fixed tick locations.
             Locator instance: Will call ax.[xy]axis.set_major_locator()
                 with this locator.
+        yticklocator_options: dict
+            Provided as keyword arguments to the tick locator used for the
+            y axis. Which locator is used depends on the value of `yticks`.
         """
 
         # Definitions
@@ -2773,6 +2779,7 @@ class FitCollection:
 
         # Set the tick frequency
         ax = plt.gca()
+        if yticklocator_options is None: yticklocator_options = {}
         for axis, ticks in zip([ax.xaxis, ax.yaxis], [xticks, yticks]):
             if isinstance(ticks, int):
                 if axis is ax.yaxis:
@@ -2791,10 +2798,12 @@ class FitCollection:
                 elif ticks == 1:
                     axis.set_ticks([vmax])
                 else:
-                    axis.set_major_locator(ml.plot.LinearTickLocator(
-                        vmin, vmax, numticks=ticks))
+                    axis.set_major_locator(ml.plot.MaxNTickLocator(
+                        nbins=ticks-1, vmin=vmin, vmax=vmax,
+                        **yticklocator_options))
             elif isinstance(ticks, float):
-                axis.set_major_locator(mpl.ticker.MultipleLocator(ticks))
+                axis.set_major_locator(mpl.ticker.MultipleLocator(
+                    ticks, **yticklocator_options))
             elif isinstance(ticks, Iterable):
                 axis.set_ticks(ticks)
             elif isinstance(ticks, mpl.ticker.Locator):
