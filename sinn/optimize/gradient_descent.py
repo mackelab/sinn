@@ -593,9 +593,6 @@ class SeriesSGD(SGDBase):
         self.batch_size_var = batch_size_var
         cost_graph = cost  # TODO: Just use 'cost'
 
-        # Get advance updates
-        advance_updates = advance(self.tidx_var)
-
         # Optimization vars must be shared variables
         self.optimize_vars = []
         self.optimize_vars_access = OrderedDict()  # TODO: Combine w/ optimize_vars
@@ -628,9 +625,6 @@ class SeriesSGD(SGDBase):
         # Substitute the new shared variables in the computational graphs
         self.var_subs = {orig: new for orig, new in zip(optimize_vars, self.optimize_vars)}
         cost_graph = shim.graph.clone(cost_graph, replace=self.var_subs)
-        for var, upd in advance_updates.items():
-            upd = shim.graph.clone(upd, replace=self.var_subs)
-            advance_updates[var] = shim.cast(upd, var.dtype, same_kind=True)
         lr = optimizer_kwargs['lr']
         if isinstance(lr, dict):
             # TODO: Move some of this to `standardize_lr()` ?
@@ -677,6 +671,12 @@ class SeriesSGD(SGDBase):
                                            givens=[(self.tidx_var, start), (self.batch_size_var, datalen)],
                                            mode=NanGuardMode(**nanguard))
         logger.info("Done compilation.")
+
+        # Get advance updates
+        advance_updates = advance(self.tidx_var)
+        for var, upd in advance_updates.items():
+            upd = shim.graph.clone(upd, replace=self.var_subs)
+            advance_updates[var] = shim.cast(upd, var.dtype, same_kind=True)
 
         # Compile the advance function
         assert(self.tidx_var in shim.graph.symbolic_inputs(advance_updates.values()))
