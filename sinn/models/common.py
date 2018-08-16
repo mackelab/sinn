@@ -337,6 +337,11 @@ class Model(com.ParameterMixin):
             kernel.update_params(self.params)
 
         self.clear_unlocked_histories()
+        # TODO: If parameters change value but all keep their id (same shared
+        #       variable), we don't need to call `clear_advance_function`.
+        #       We should only call it when necessary, since it forces a
+        #       recompilation of the graph.
+        self.clear_advance_function()
 
     def clear_unlocked_histories(self):
         """Clear all histories that have not been explicitly locked."""
@@ -346,6 +351,16 @@ class Model(com.ParameterMixin):
             #       at correcting the same problem as fsgif.remove_other_histories
             if not hist.locked:
                 self.clear_history(hist)
+
+    def clear_advance_function(self):
+        """
+        Removes the compiled advance function, if present, forcing it to be
+        recompiled if called again.
+        We need to do this if any of the parameters change identity (e.g.
+        replaced by another shared variable).
+        """
+        if hasattr(self, '_advance_fn'):
+            del self._advance_fn
 
     def clear_other_histories(self):
         """
@@ -567,7 +582,7 @@ class Model(com.ParameterMixin):
     # ==============================================
     def advance(self, stop):
         """
-        Allows advancing (or progagating forward, or integrating) a symbolic
+        Allows advancing (aka progagating forward, integrating) a symbolic
         model.
         For a non-symbolic model the usual recursion is used – it's the
         same as calling `hist[stop]` on each history in the model.
