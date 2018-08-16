@@ -393,6 +393,10 @@ def _dummy_reset_function(**kwargs):
 
 class SeriesSGD(SGDBase):
     # TODO: Spin out SGD class and inherit
+    # TODO: Don't compile advance function. Take a plain function, and let it
+    #       produce whatever side-effects it needs.
+    #       Caller can use self.var_subs to substitute variables in the advance
+    #       function with those that are optimized.
 
     def __init__(self, cost, start_var, batch_size_var, cost_format,
                  optimize_vars, track_vars,
@@ -453,6 +457,7 @@ class SeriesSGD(SGDBase):
             or in number of bins (int).
         batch_size: int
         advance: function (tidx) -> update dictionary
+            NOTE: Will be changed to function relying on side-effects.
             Function returning a set of updates which advance the time series
             with the current parameters.
             The update dictionary is compiled into a function which takes as
@@ -886,7 +891,7 @@ class SeriesSGD(SGDBase):
                     self.curtidx = self.start
                 else:
                     self.curtidx = np.random.randint(self.start,
-                                                    self.start + self.mode_params.start_factor*self.batch_size)
+                                                     self.start + self.mode_params.start_factor*self.batch_size)
                 self.initialize_model(self.curtidx)
             else:
                 # This doesn't seem required anymore
