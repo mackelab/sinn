@@ -406,6 +406,9 @@ class SeriesSGD(SGDBase):
                  cost_track_freq=100, var_track_freq=1):
         """
 
+        ..TODO: Replace (start_var, start) & (batch_size_var, batch_size) with
+        shared variables.
+
         Parameters
         ----------
         cost: symbolic expression
@@ -564,13 +567,13 @@ class SeriesSGD(SGDBase):
             optimizer_kwargs = copy.deepcopy(optimizer_kwargs)
 
         # Make fit parameters array-like
-        start = np.asarray(start)
-        burnin = np.asarray(burnin)
-        datalen = np.asarray(datalen)
-        batch_size = np.asarray(batch_size)
+        start = shim.asarray(start)
+        burnin = shim.asarray(burnin)
+        datalen = shim.asarray(datalen)
+        batch_size = shim.asarray(batch_size)
 
         # Get time index dtype
-        assert(all(np.issubdtype(i.dtype, np.integer)
+        assert(all(np.issubdtype(np.dtype(i.dtype), np.integer)
                    for i in (start, burnin, datalen, batch_size)))
         # tidx_dtype = np.result_type(start, burnin, datalen, batch_size)
 
@@ -629,7 +632,9 @@ class SeriesSGD(SGDBase):
 
         # Substitute the new shared variables in the computational graphs
         self.var_subs = {orig: new for orig, new in zip(optimize_vars, self.optimize_vars)}
+        # self.cost_graph1 = cost_graph # DEBUG
         cost_graph = shim.graph.clone(cost_graph, replace=self.var_subs)
+        # self.cost_graph2 = cost_graph # DEBUG
         lr = optimizer_kwargs['lr']
         if isinstance(lr, dict):
             # TODO: Move some of this to `standardize_lr()` ?
@@ -715,32 +720,46 @@ class SeriesSGD(SGDBase):
                     # Some other TypeError was triggered; reraise
                     raise
                 else:
-                    raise ValueError("'optimizer' parameter should be either a string or a "
-                                     "callable which returns an optimizer (such as a class "
-                                     "name or a factory function).\nThe original error was:\n"
-                                     + str(e))
+                    raise ValueError(
+                        "'optimizer' parameter should be either a string or a "
+                        "callable which returning an optimizer (such as a "
+                        "class name or a factory function).\nThe original "
+                        "error was:\n" + str(e))
         ## Compile
         logger.info("Compiling the optimization step function.")
-        if 'nanguard' not in optimizers.debug_flags:
-            self._step = shim.graph.compile([self.tidx_var, self.batch_size_var], [], updates=optimizer_updates)
-        else:
-            # TODO: Remove duplicate with above
-            if optimizers.debug_flags['nanguard'] is True:
-                nanguard = {'nan_is_error': True, 'inf_is_error': True, 'big_is_error': False}
+        step_inputs = [self.tidx_var, self.batch_size_var]
+        step_inputs = [i for i in step_inputs
+                       if i in shim.graph.symbolic_inputs(
+                           optimizer_updates.values())]
+            # This line mostly for debugging: allows to have no optimization
+            # variables at all, which then have no inputs either
+        # TODO: Might not be the best test: updates might still be possible
+        if len(step_inputs) > 0:
+            if 'nanguard' not in optimizers.debug_flags:
+                self._step = shim.graph.compile(step_inputs, [],
+                                                updates=optimizer_updates)
             else:
-                nanguard = optimizers.debug_flags['nanguard']
-                assert('nan_is_error' in nanguard and 'inf_is_error' in nanguard) # Required arguments to NanGuardMode
-            from theano.compile.nanguardmode import NanGuardMode
-            self._step = shim.graph.compile([self.tidx_var, self.batch_size_var],
-                                            [], updates=optimizer_updates,
-                                            mode=NanGuardMode(**nanguard))
-        logger.info("Done compilation.")
+                # TODO: Remove duplicate with above
+                if optimizers.debug_flags['nanguard'] is True:
+                    nanguard = {'nan_is_error': True, 'inf_is_error': True, 'big_is_error': False}
+                else:
+                    nanguard = optimizers.debug_flags['nanguard']
+                    assert('nan_is_error' in nanguard and 'inf_is_error' in nanguard) # Required arguments to NanGuardMode
+                from theano.compile.nanguardmode import NanGuardMode
+                self._step = shim.graph.compile(step_inputs, [],
+                                                updates=optimizer_updates,
+                                                mode=NanGuardMode(**nanguard))
+            logger.info("Done compilation.")
 
-        # Compile a function to extract tracking variables
-        logger.info("Compiling parameter tracking function.")
-        self._get_tracked = shim.graph.compile([], list(self.track_vars.values()),
-                                               on_unused_input = 'ignore',
-                                               givens = self.var_subs.items())
+            # Compile a function to extract tracking variables
+            logger.info("Compiling parameter tracking function.")
+            self._get_tracked = shim.graph.compile([], list(self.track_vars.values()),
+                                                   on_unused_input = 'ignore',
+                                                   givens = self.var_subs.items())
+        else:
+            self._step = lambda: None
+            self._get_tracked = lambda: []
+            logger.info("Skipped step function compilation: nothing to update.")
 
         # Initialize the fitting state variables
         self.initialize_vars()
