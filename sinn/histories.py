@@ -773,13 +773,18 @@ class History(HistoryBase):
             end = self.get_t_idx(key[-1])
             earliest = shim.largest(0, shim.smallest(start, end))
             latest = shim.smallest(len(self._tarr) - 1, shim.largest(start, end))
+
             step = shim.ifelse(shim.eq(key.shape[0], 1),
                                # It's a 1 element array – just set step to 1 and don't worry
                                shim.cast(1, self.tidx_dtype),
-                               # Set the step as the difference of the first two elements
-                               shim.LazyEval(lambda key: self.index_interval(key[1] - key[0]), (key,) ))
-	                           # `LazyEval` prevents Python from greedily executing key[1]
-                                   # even when key has length 1
+                               # Set the step based on first and last elements
+                               # Compared to taking key[1] - key[0], this has
+                               # the advantage of being valid even when `key`
+                               # is length 1 and thus not requiring LazyEval.
+                               self.index_interval(key[-1] - key[0]) // shim.cast(key.shape[0], self.tidx_dtype) )
+                               # shim.LazyEval(lambda key: self.index_interval(key[1] - key[0]), (key,) ))
+	                           # # `LazyEval` prevents Python from greedily executing key[1]
+                               #     # even when key has length 1
             # Make sure the entire indexing array has the same step
             if not shim.is_theano_object(key) and key.shape[0] > 1:
                 assert(np.all(sinn.isclose(key[1:] - key[:-1], key[1]-key[0])))
