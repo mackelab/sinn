@@ -398,10 +398,10 @@ class SeriesSGD(SGDBase):
     #       Caller can use self.var_subs to substitute variables in the advance
     #       function with those that are optimized.
 
-    def __init__(self, cost, start_var, batch_size_var, cost_format,
+    def __init__(self, cost, start_var, batch_size_var,cost_format,
                  optimize_vars, track_vars,
                  start, datalen, burnin, batch_size, advance,
-                 optimizer='adam', optimizer_kwargs=None,
+                 avg_cost=True, optimizer='adam', optimizer_kwargs=None,
                  reset=None, initialize=None, mode='random', mode_params=None,
                  cost_track_freq=100, var_track_freq=1):
         """
@@ -412,7 +412,10 @@ class SeriesSGD(SGDBase):
         Parameters
         ----------
         cost: symbolic expression
-            Symbolic cost.
+            Symbolic cost. If `avg_cost` is `True` (the default), make sure the
+            cost is scaled to the size of the dataset. E.g. if your cost
+            expression is for a mini-batch, scale it by
+            `datalen / batch_size_var`.
         start_var, batch_size_var: symbolic variable
             Variables appearing in the graph of the cost
         cost_format: str
@@ -424,6 +427,12 @@ class SeriesSGD(SGDBase):
               + 'cost': An arbitrary cost to minimize. Conversion to other formats will
                    not be possible.
             May also be a subclass of `Cost`. (TODO)
+        avg_cost: bool
+            Whether to average the cost (i.e. divide by `datalen`) when fitting.
+            This does not affect the reported cost, only the expression for the
+            gradient. It's typically better to perform this averaging, as it
+            makes fitting parameters (e.g. learning rate) more consistent
+            across batch sizes.
         optimizer: str | class/factory function
             String specifying the optimizer to use. Possible values:
               - 'adam'
@@ -702,6 +711,8 @@ class SeriesSGD(SGDBase):
         # FIXME: changed names in `optimize_vars`
         cost_to_min = self.Cost(cost_graph).cost
             # Ensures we have a cost to minimize (and not, e.g., a likelihood)
+        if avg_cost:
+            cost_to_min /= datalen
         ## Get optimizer updates
         if isinstance(self.optimizer, str):
             if self.optimizer == 'adam':
@@ -2341,9 +2352,18 @@ class SeriesSGDView(SGDView):
 #             raise ValueError( "Overlays are not currently supported for base data of "
 #                               "type {}.".format( str(type(basedata)) ) )
 
+class Fit:
+    def __init__(self, parameters, data):
+        self.parameters = parameters
+        self.data = data
+    @property
+    def result(self):
+        return self.data.result
+
 class FitCollection:
     ParamID = namedtuple("ParamID", ['name', 'idx'])
-    Fit = namedtuple("Fit", ['parameters', 'data'])
+    # Fit = namedtuple("Fit", ['parameters', 'data'])
+    Fit = Fit  # Deprecate
 
     def __init__(self):
         #self.data_root = data_root
