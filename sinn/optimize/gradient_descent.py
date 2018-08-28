@@ -2411,12 +2411,6 @@ class FitCollection:
         self._nffits = None
         self._ffits = None
 
-        # Load the fits
-        try:
-            logger.info("Loading {} fits...".format(len(fit_list)))
-        except TypeError:
-            pass # fit_list may be iterable without having a length
-
         # TODO: Remove when we don't need to read .sir files
         if 'input_format' in kwargs:
             default_input_format = kwargs.pop('input_format')
@@ -2432,6 +2426,11 @@ class FitCollection:
             or not isinstance(parameters, Iterable)):
             parameters = itertools.repeat(parameters)
 
+        # Load the fits
+        try:
+            logger.info("Loading {} fits...".format(len(fit_list)))
+        except TypeError:
+            pass # fit_list may be iterable without having a length
         for fit, params in zip(fit_list, parameters):
             #params = fit.parameters
             #record.outputpath = os.path.join(record.datastore.root,
