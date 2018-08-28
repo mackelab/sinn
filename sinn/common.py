@@ -168,9 +168,20 @@ def ismultiple(x, base, rtol=None, atol=None):
                 dtype = x.dtype
             else:
                 dtype = base.dtype
-        rtol = dtype if rtol is None else rtol
-        atol = dtype if atol is None else atol
-        return isclose(0, shim.round(x/base) - x/base, rtol, atol)
+        if rtol is None:
+            rtol = config.get_rel_tolerance(dtype)
+        elif not isinstance(rtol, (np.floating, float)):
+            rtol = config.get_rel_tolerance(rtol)
+        if atol is None:
+            atol = config.get_abs_tolerance(dtype)
+        elif not isinstance(atol, (np.floating, float)):
+            atol = config.get_abs_tolerance(dtype)
+        # Because we've subtracted the multiple to have something
+        # close to zero, the relative error is going to be too
+        # small. So instead we scale it by the value and add it
+        # ourselves the absolute tolerance.
+        atol += rtol * x/base
+        return isclose(0, shim.round(x/base) - x/base, rtol=rtol, atol=atol)
             # Tolerance for isclose(a,b) is atol + rtol*abs(b),
             # so the '0' above must be first argument
 

@@ -107,8 +107,8 @@ class CompatVersion:
 precision_dict = {
     '32': {'abs': 2e-5,
            'rel': 1e-4},
-    '64': {'abs': 1e-10,
-           'rel': 1e-8},
+    '64': {'abs': 4e-10,
+           'rel': 4e-8},
     'int': {'abs': 0,
             'rel': 0}}
 
