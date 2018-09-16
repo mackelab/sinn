@@ -1129,6 +1129,8 @@ class History(HistoryBase):
                 # performance hit to converting to csr first.
         else:
             hist._data = self._data[imin:imax+1]  # +1 because imax must be included
+        # TODO: use `set_value` ?
+        hist._original_data = hist._data
         hist._tarr = self._tarr[imin:imax+1]
         if self.t0idx < imin:
             hist.t0 = hist._tarr[0]
