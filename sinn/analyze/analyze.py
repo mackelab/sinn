@@ -364,6 +364,9 @@ def subsample(series, amount):
         # We might chop off a few bins, if the new dt is not commensurate with
         # the original number of bins.
         # +1 because we want the number of bins, not steps
+    if nbins < 1:
+        raise RuntimeError("`Subsample` tried to reduce history to {} time "
+                           "bins.".format(nbins))
     newtime_array = (np.arange(nbins) * newdt + series.t0)
     res = histories.Series(name = series.name + "_subsampled_by_" + str(amount),
                            time_array = newtime_array.astype(series.dt.dtype),
