@@ -1135,15 +1135,23 @@ class History(HistoryBase):
         if self.t0idx < imin:
             hist.t0 = hist._tarr[0]
             hist.t0idx = shim.cast(0, self.tidx_dtype)
+            hist._unpadded_length -= (imin - self.t0idx)
         else:
             hist.t0idx = shim.cast(self.t0idx - imin, self.tidx_dtype)
         if self.tnidx > imax:
             hist.tn = hist._tarr[-1]
-            hist._unpadded_length = imax - hist.t0idx
+            hist._unpadded_length -= (self.tnidx - imax)
 
-        if self._original_tidx.get_value() > imax:
+        if self._original_tidx.get_value() < imin:
+            hist._original_tidx.set_value(-1)
+            hist._cur_tidx.set_value(-1)
+        elif self._original_tidx.get_value() > imax:
             hist._original_tidx.set_value(imax)
             hist._cur_tidx.set_value(imax)
+        else:
+            hist._original_tidx.set_value(self._original_tidx.get_value() - imin)
+            hist._cur_tidx.set_value(self._cur_tidx.get_value() - imin)
+
 
         return hist
 
