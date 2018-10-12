@@ -3749,29 +3749,44 @@ class Series(ConvolveMixin, History):
             new_series.set_update_function(lambda t: op(self[t]))
             new_series.set_range_update_function(lambda tarr: op(self[self.time_array_to_slice(tarr)]))
             new_series.add_input(self)
-        else:
+        elif isinstance(b, HistoryBase):
             # HACK Should write function that doesn't create empty arrays
             shape = np.broadcast(np.empty(self.shape), np.empty(b.shape)).shape
             new_series = Series(self, shape=shape)
-            if isinstance(b, History):
-                new_series.set_update_function(lambda t: op(self[t], b[t]))
-                new_series.set_range_update_function(
-                    lambda tarr: op(self[self.time_array_to_slice(tarr)],
-                                    b[b.time_array_to_slice(tarr)]))
+            new_series.set_update_function(lambda t: op(self[t], b[t]))
+            new_series.set_range_update_function(
+                lambda tarr: op(self[self.time_array_to_slice(tarr)],
+                                b[b.time_array_to_slice(tarr)]))
+            new_series.add_input(self)
+            computable_tidx = min(
+                self.get_tidx_for(self.cur_tidx, new_series),
+                b.get_tidx_for(b.cur_tidx, new_series))
+        else:
+            if hasattr(b, 'shape'):
+                shape = np.broadcast(np.empty(self.shape),
+                                     np.empty(b.shape)).shape
             else:
-                new_series.set_update_function(lambda t: op(self[t], b))
-                new_series.set_range_update_function(lambda tarr: op(self[self.time_array_to_slice(tarr)], b))
-            if isinstance(b, HistoryBase) or shim.is_theano_variable(b):
+                shape = self.shape
+            new_series = Series(self, shape=shape)
+            new_series.set_update_function(lambda t: op(self[t], b))
+            new_series.set_range_update_function(
+                lambda tarr: op(self[self.time_array_to_slice(tarr)], b))
+            if shim.is_theano_variable(b):
                 new_series.add_input([self, b])
             else:
                 new_series.add_input(self)
+            computable_tidx = self.get_tidx_for(self.cur_tidx, new_series)
 
-        if ( self._original_tidx.get_value() >= self.tnidx
-             and ( b is None
-                   or not isinstance(b, HistoryBase)
-                   or b._original_tidx >= b.tnidx ) ):
-             # All op members are computed, so filling the result series is 1) possible and 2) cheap
-             new_series.set()
+        # Since we assume the op is cheap, calculate as much as possible with
+        # triggering updates in the inputs
+        new_series.compute_up_to(computable_tidx)
+
+        # if ( self._original_tidx.get_value() >= self.tnidx
+        #      and ( b is None
+        #            or not isinstance(b, HistoryBase)
+        #            or b._original_tidx >= b.tnidx ) ):
+        #      # All op members are computed, so filling the result series is 1) possible and 2) cheap
+        #      new_series.set()
         return new_series
 
     def __abs__(self):
