@@ -1234,7 +1234,7 @@ class FitCollection:
                     self._ffits.append(fit)
         return self._ffits
 
-    def plot_cost(self, only_finite=True, **kwargs):
+    def plot_cost(self, only_finite=True, ax=None, **kwargs):
         """
         Parameters
         ----------
@@ -1250,18 +1250,14 @@ class FitCollection:
               Color to use for the 'kept' traces.
           discard_color: matplotlib color
               Color to use for the 'discarded' traces.
-          true_color: matplotlib color
-              Color to use for the horizontal line indicating the true parameter value.
         only_finite: bool
             If `True`, only plot traces which do not contain NaNs or Infs.
         linewidth: size 2 tuple
             Linewidths to use for the plot of the 'kept' and 'discarded'
             fits. Index 0 corresponds to 'kept', index 1 to 'discarded'.
-        logscale: bool or None
-            True: Use log scale for y-axis
-            False: Don't use log scale for y-axis
-            None: Use log scale for y-axis only if parameter was transformed.
-                  (Default)
+        yscale: str | None
+            None: (default): Use log scale for y-axis for transformed parameters
+            str: Pass on to `ax.set_scale`, forcing the scaling.
         xticks, yticks: float, array or matplotlib.Ticker.Locator instance
             int: Number of ticks. Passed as 'nbins' argument to MaxNLocator
                  after subtracting one.
@@ -1271,6 +1267,10 @@ class FitCollection:
             Locator instance: Will call ax.[xy]axis.set_major_locator()
                 with this locator.
         """
+        # Defaults
+        if ax is None:
+            ax = plt.gca()
+
         #traces = fitcoll.fits[0].data.cost_trace.logL
         if only_finite:
             traces = [fit.data.cost_trace.logL for fit in self.finite_fits]
@@ -1283,11 +1283,11 @@ class FitCollection:
             if len(traces) == 0:
                 raise RuntimeError("The list of fits is empty")
 
-        self._plot(stops, traces, only_finite=only_finite, **kwargs)
+        self._plot(ax, stops, traces, only_finite=only_finite, **kwargs)
 
-    def plot(self, var, idx=None, *args,
-             targets=None, true_color='#222222',
-             only_finite=True, **kwargs):
+    def plot(self, var, idx=None, ax=None, *args,
+             target=None, target_color='#222222',
+             only_finite=True, targetwidth=1, targetkwargs=None, **kwargs):
         """
         Parameters
         ----------
@@ -1296,7 +1296,9 @@ class FitCollection:
         idx: int, tuple, slice or None
             For multi-valued parameters, the component(s) to plot.
             The default value of 'None' plots all of them.
-        targets: list
+        ax: matplotlib axes
+            If omitted, obtained with `plt.gca()`.
+        target: list
             True value of the parameters. Should have a shape compatible with `idx`.
             If provided, a horizontal line is drawn at this value. Color of the
             line is determined by `true_color`.
@@ -1312,18 +1314,25 @@ class FitCollection:
               Color to use for the 'kept' traces.
           discard_color: matplotlib color
               Color to use for the 'discarded' traces.
-          true_color: matplotlib color
+          target_color: matplotlib color
               Color to use for the horizontal line indicating the true parameter value.
         only_finite: bool
             If `True`, only plot traces which do not contain NaNs or Infs.
-        linewidth: size 2 tuple
+        targetwidth:
+            Linewidth for the horizontal target line.
+        targetkwargs:
+            Extra keyword arguments passed on to the `axhline` call for plotting
+            target values.
+        linewidth: 2-tuple | number
             Linewidths to use for the plot of the 'kept' and 'discarded'
             fits. Index 0 corresponds to 'kept', index 1 to 'discarded'.
-        logscale: bool or None
-            True: Use log scale for y-axis
-            False: Don't use log scale for y-axis
-            None: Use log scale for y-axis only if parameter was transformed.
-                  (Default)
+            line.
+            If a single value is provided, it is used for all lines.
+        yscale: str | None
+            FIXME: 'None' doesn't work as expected because transformations
+                 are currently not saved.
+            None: (default): Use log scale for y-axis for transformed parameters
+            str: Pass on to `ax.set_scale`, forcing the scaling.
         xticks, yticks: float, array or matplotlib.Ticker.Locator instance
             int: Number of ticks. Passed as 'nbins' argument to MaxNLocator
                  after subtracting one.
@@ -1355,6 +1364,9 @@ class FitCollection:
         #     traces = [ fit.data.trace[param.name]
         #                for fit in self.finite_fits ]
 
+        if ax is None:
+            ax = plt.gca()
+
         if only_finite:
             traces = [ fit.data.trace[var] for fit in self.finite_fits ]
             trace_stops = ( fit.data.trace_stops for fit in self.finite_fits )
@@ -1383,6 +1395,7 @@ class FitCollection:
             raise ValueError("Index for variable '{}' has more components than "
                              "the variable itself.".format(var))
         elif Δdim > 1:
+            # FIXME: Clearly stale code, since `truevals` is not defined
             # There are unaccounted for dimensions, possibly due to a reshape parameter
             # If trace has size one dimensions, we can remove those
             # We remove dimensions from left to right, until the shapes of the trace
@@ -1408,36 +1421,92 @@ class FitCollection:
         plot_traces = (trace[(slice(None),) + idx] for trace in traces)
 
         # Set default value for log scale
-        logscale = kwargs.get('logscale', None)
-        if logscale is None:
-            # Use log scale if we tracked a log cost
-            logscale = 'log' in self.reffit.data.cost_format
-        kwargs['logscale'] = logscale
+        # FIXME: This is stale code. "log cost" ?
+        # logscale = kwargs.get('logscale', None)
+        # if logscale is None:
+        #     # Use log scale if we tracked a log cost
+        #     logscale = 'log' in self.reffit.data.cost_format
+        # kwargs['logscale'] = logscale
 
         # Plot
-        self._plot(trace_stops, plot_traces, only_finite=only_finite, **kwargs)
+        self._plot(ax, trace_stops, plot_traces, only_finite=only_finite,
+                   **kwargs)
 
-        # Draw the true value line
-        if true_color is not None and targets is not None:
-            targets = np.array(targets).reshape(traceshape[1:])
-            # TODO: Would be nice if shape were more reliable and we didn't
-            #       need to do so many reshapes.
-            # shape = param.get_value().shape
-            # truevals = truevals.reshape(shape)
-            for target in targets[idx].flat:
-                plt.axhline(target, color=true_color, zorder=0)
+        # Draw the target value line(s)
+        if target_color is not None and target is not None:
+            # First check if target is a data structure; if so, it must
+            # have the same keys|attributes as the fits
+            if hasattr(target, var):
+                target = getattr(target, var)
+            elif isinstance(target, dict) and var in target:
+                target = target[var]
+            # Target may be a list or nested list; convert to array to
+            # standardize checks
+            target = np.array(target)
+            ntargets = reftrace[0, idx].size  # HACK ? Not sure how safe this is
+            if target.ndim == 0:
+                # A single value was given; just draw a line there
+                targets = np.atleast_1d(target)
+            elif target.size == ntargets:
+                # There are just enough targets for each trace:
+                # assume target corresponds to one
+                targets = target.flat
+            else:
+                # Since sizes don't match, assume that the target must be
+                # indexed the same way as the slices
+                if len(idx) > 1:
+                    assert(len(idx) == target.ndim)
+                    targets = np.atleast_1d(target[idx].flat)
+                else:
+                    targets = np.atleast_1d(target.flat[idx])
+                if len(targets) != ntargets:
+                    raise ValueError("Target dimensions (shape {}) don't match "
+                                     "the number of traces ({})."
+                                     .format(target.shape, len(traces)))
+            if targetkwargs is None: targetkwargs = {}
+            zorder = targetkwargs.pop('zorder', -2)
+            targetwidth = targetkwargs.pop('linewidth', targetwidth)
+            for t in targets:
+                ax.axhline(t, color=target_color,
+                           zorder=zorder, linewidth=targetwidth,
+                           **targetkwargs)
 
-
-    def _plot(self, stops, traces, numpoints=150, only_finite=True,
-              keep_range=5,
-              keep_color='#BA3A05', discard_color='#BBBBBB',
-              linewidth=(2.5, 0.8), logscale=None,
-              xticks=1, yticks=3, yticklocator_options=None):
+    def _plot(self, ax, stops, traces,
+              ylabel=None, ylabelpos='corner', ylabelkwargs=None,
+              yscale=None, ylim=None,
+              numpoints=150, only_finite=True,
+              keep_range=5, keep_color='#BA3A05', discard_color='#BBBBBB',
+              linewidth=(1.3, 0.5),
+              xticks=1, yticks=3, yticklocator_options=None,
+              **plot_kwargs):
         """
         Parameters
         ----------
+        stops: 2D iterable
+            x-axis values. One list per trace.
+        traces: 2D iterable
+            y-axis values; list of traces to plot.
+            Each inner list must match the dimension of the corresponding list
+            in `stops`.
+            Number of lists|traces must match number of lists in `stops`.
+        ylabel: str
+            String to use to label the y-axis.
+        ylabelpos: 'corner' | 'middle'
+            Where to print the y label. Possible values are:
+               - 'corner': Print the y label with `mackelab.plot.corner_ylabel`
+                  This places the label in the top left corner, overwriting
+                  some of the tick labels.
+               - 'middle': Print the y label with the usual `axes.set_ylabel`
+                  This centers it vertcally, to the left of the tick labels.
+        ylabelkwargs: dict
+            Keywords to pass on to the function printing the y label.
+        yscale: str | None
+            None: (default): Use log scale for y-axis for transformed parameters
+            str: Pass on to `ax.set_scale`, forcing the scaling.
+        ylim: tuple
+            Passed on to `ax.set_ylim()`.
         numpoints: int
-            Number of points to plot. Defalut is 150.
+            Number of points to plot. Default is 150.
         only_finite: bool
             If `True`, only plot traces which do not contain NaNs or Infs.
         keep_range: float
@@ -1450,16 +1519,10 @@ class FitCollection:
               Color to use for the 'kept' traces.
           discard_color: matplotlib color
               Color to use for the 'discarded' traces.
-          true_color: matplotlib color
-              Color to use for the horizontal line indicating the true parameter value.
-        linewidth: size 2 tuple
+        linewidth: size 2 tuple | number
             Linewidths to use for the plot of the 'kept' and 'discarded'
             fits. Index 0 corresponds to 'kept', index 1 to 'discarded'.
-        logscale: bool or None
-            True: Use log scale for y-axis
-            False: Don't use log scale for y-axis
-            None: Use log scale for y-axis only if parameter was transformed.
-                  (Default)
+            If a single value is provided, it is used for all fits.
         xticks, yticks: float, array or matplotlib.Ticker.Locator instance
             int: Number of ticks. Passed as 'nbins' argument to
                  MaxNLocator after subtracting one.
@@ -1474,7 +1537,15 @@ class FitCollection:
         yticklocator_options: dict
             Provided as keyword arguments to the tick locator used for the
             y axis. Which locator is used depends on the value of `yticks`.
+        **plot_kwargs:
+            Additional keyword arguments passed on to `axes.plot()`.
         """
+
+        # Default values
+        if not isinstance(linewidth, Iterable):
+            linewidth = (linewidth, linewidth)
+        elif len(linewidth) < 2:
+            linewidth = (linewidth[0], linewidth[0])
 
         # Definitions
         if only_finite:
@@ -1497,9 +1568,10 @@ class FitCollection:
         # For each trace, create a range of all indices which we then prune
         trace_idcs = [ range(len(stops)) for stops in trace_stops ]
         tot_stops = max( len(idcs) for idcs in trace_idcs )
-        stride = max(int( np.rint( tot_stops // numpoints ) ), 1)
+        stride = max( int(np.rint( tot_stops // numpoints )), 1)
             # We prune by taking a value from trace only every 'stride' points
             # We do this making sure to include the first and last points
+        # TODO: Stride logarithmically if x-scale is logarithmic
         for i, idcs in enumerate(trace_idcs):
             trace_idcs[i] = list(idcs[::-stride][::-1])
                 # Stride backwards to keep last point
@@ -1527,14 +1599,19 @@ class FitCollection:
                           'linewidth': linewidth[1]}
 
             # Draw plot
-            plt.plot(stops, trace, **kwargs)
+            plot_kwargs.update(kwargs)
+            ax.plot(stops, trace, **plot_kwargs)
 
-        # Set the y scale (log or not)
-        if logscale:
-            plt.yscale('log')
+        # Make the background transparent
+        ax.set_facecolor('#FFFFFF00')
+
+        # Set the y scale and limits
+        if yscale is not None:
+            ax.set_yscale(yscale)
+        if ylim is not None:
+            ax.set_ylim(ylim)
 
         # Set the tick frequency
-        ax = plt.gca()
         if yticklocator_options is None: yticklocator_options = {}
         for axis, ticks in zip([ax.xaxis, ax.yaxis], [xticks, yticks]):
             if isinstance(ticks, int):
@@ -1567,6 +1644,17 @@ class FitCollection:
             else:
                 raise ValueError("Unrecognized tick placement specifier '{}'."
                                  .format(ticks))
+
+        # Add the y label
+        if ylabel is not None:
+            if ylabelkwargs is None: ylabelkwargs = {}
+            if ylabelpos == 'middle':
+                ax.set_ylabel(ylabel, **ylabelkwargs)
+            elif ylabelpos == 'corner':
+                ml.plot.add_corner_ylabel(ax, ylabel, **ylabelkwargs)
+            else:
+                raise ValueError("Unrecognized argument for `ylabelpos`: {}."
+                                 .format(ylabelpos))
 
 ################
 #

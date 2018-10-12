@@ -705,7 +705,7 @@ def plot(data, **kwargs):
                                             data._data.col < popslice.stop))[0]
             idcs = np.intersect1d(tidcs, popidcs)
 
-            alpha = kwds.get('alpha', 0.3)
+            alpha = kwds.pop('alpha', 0.3)
 
             # scatter() returns a PathCollection, not a list of lines like plot(),
             # so we use `append` instead of `extend`.
@@ -715,7 +715,7 @@ def plot(data, **kwargs):
                                       linestyle = linestyle,
                                       label = baselabel + str(i),
                                       alpha = alpha,
-                                      **kwargs)  )
+                                      **kwds)  )
 
         # Set the axis limits to see the whole time range
         # (if the beginning or end is empty, it would otherwise be truncated)
