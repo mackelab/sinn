@@ -286,6 +286,7 @@ class SGDBase:
         self.cost_format = cost_format
         self.status = ConvergeStatus.NOTSTARTED
         self.result_choice = result_choice
+        self.track_varstrings = {}  # Used to store fancy variable strings
 
     @property
     def repr_np(self):
@@ -383,6 +384,97 @@ class SGDBase:
     @property
     def MLE(self):  # For backwards compatibility
         return self.result
+
+    def set_varstrings(self, varstrings, check_names=True):
+        """
+        Set assign a string to each variable, which may be used in fancy
+        output (e.g. figures). Contrary to identifiers, variable strings may
+        by any string, so for example may contain '$' characters to indicate
+        TeX formatting.
+        Variable strings may be retrieved by `get_varstring`, and may be used
+        by more SGD functions in the future.
+        The default string simply appends the index to the identifier.
+
+        Note: It is not necessary to call this function to use the defaults.
+
+        Parameters
+        ----------
+        varstrings: dict
+            `{name: [string1, string2, …]}` pairs, or `{(name, idx): string}`
+            `name` should match the name of one of the tracked variables
+            (as given to the `track_vars` argument of the SGD constructor)
+            If key is just the name, the associated value should be a list of
+            of strings, one for each component.
+            If key is a tuple, `idx` is the flat component index, and `string`
+            the string to associate to that component.
+        check_names: bool
+            If `True`, variables names are checked to actually be part of the
+            tracked variables.
+        """
+        def check_name(name):
+            if name not in self._trace and check_names:
+                raise ValueError(
+                    "`{}` is not a tracked variable. You can disable this "
+                    "check by passing `check_names=False`.".format(name))
+        for key, value in varstrings.items():
+            if isinstance(key, tuple):
+                name, idx = key
+                check_name(name)
+                if not isinstance(varstrings, str):
+                    raise ValueError("There should be only a single string "
+                                     "associated to the variable `{}`."
+                                     ""
+                                     .format(key))
+                self.track_varstrings[(name, idx)] = value
+            else:
+                name = key
+                check_name(name)
+                for idx, s in enumerate(value):
+                    self.track_varstrings[name, idx] = s
+
+    def get_varstring(self, name, idx=None):
+        """
+        Retrieve the fancy string associated to a variable. Fancy strings can
+        be set with `set_varstrings`.
+        A `varidx` is composed of a tracked variable name, and an integer index.
+        (all variables are flattened internally; there are no multi-dim indices)
+        For convenience the `varidx` can be given as either the to components
+        or a tuple; i.e., the following calls will return the same string:
+            `get_varstring('w', 0)`, `get_varstring(('w', 0))`.
+
+        Parameters
+        ----------
+        name: tuple | str
+            If tuple, (name, index).
+        idx: int
+            Index, when `varidx` is just a string.
+        """
+        if idx is None:
+            name, idx = name
+        return self.track_varstrings.get((name, idx), name + str(idx))
+
+    def set_mode_params(self, mode_params):
+        # `defaults` is a dictionary of default values for each parameter
+        # `validate` is a dictionary with same keys as `defaults`, and for
+        #  each parameter provides a bool function returning False if the value
+        #  is invalid.
+        if self.mode == 'random':
+            defaults = {'burnin_factor': 0.1}
+            validate = {'burnin_factor': lambda x: x>=0}
+        elif self.mode == 'sequential':
+            defaults = {'burnin_factor': 0.1,
+                        'start_factor':  1.0}
+            validate = {'burnin_factor': lambda x: x>=0,
+                        'start_factor': lambda x: x>=0}
+        if mode_params is not None:
+            defaults.update({key: value for key, value in mode_params.items()
+                             if key in defaults})
+        # Check that mode_params are valid:
+        for key, value in defaults.items():
+            if not validate[key](value):
+                raise ValueError("Value of {} for mode parameter {} is invalid."
+                                 .format(value, key))
+        self.mode_params = ParameterSet(defaults)
 
 def _dummy_reset_function(**kwargs):
     return None
@@ -760,7 +852,8 @@ class SeriesSGD(SGDBase):
 
             # Compile a function to extract tracking variables
             logger.info("Compiling parameter tracking function.")
-            self._get_tracked = shim.graph.compile([], list(self.track_vars.values()),
+            self._get_tracked = shim.graph.compile([],
+                                                 list(self.track_vars.values()),
                                                    on_unused_input = 'ignore',
                                                    givens = self.var_subs.items())
         else:
@@ -812,29 +905,6 @@ class SeriesSGD(SGDBase):
                                    ).reshape((len(trace),)+trace[0].shape)
                               )
                               for varname, trace in self._traces.items() ) )
-
-    def set_mode_params(self, mode_params):
-        # `defaults` is a dictionary of default values for each parameter
-        # `validate` is a dictionary with same keys as `defaults`, and for
-        #  each parameter provides a bool function returning False if the value
-        #  is invalid.
-        if self.mode == 'random':
-            defaults = {'burnin_factor': 0.1}
-            validate = {'burnin_factor': lambda x: x>=0}
-        elif self.mode == 'sequential':
-            defaults = {'burnin_factor': 0.1,
-                        'start_factor':  1.0}
-            validate = {'burnin_factor': lambda x: x>=0,
-                        'start_factor': lambda x: x>=0}
-        if mode_params is not None:
-            defaults.update({key: value for key, value in mode_params.items()
-                             if key in defaults})
-        # Check that mode_params are valid:
-        for key, value in defaults.items():
-            if not validate[key](value):
-                raise ValueError("Value of {} for mode parameter {} is invalid."
-                                 .format(value, key))
-        self.mode_params = ParameterSet(defaults)
 
     def initialize_vars(self, init_vals=None):
         """
@@ -1098,6 +1168,9 @@ class FitCollection:
     def __next__(self):
         return next(self._iterator).data
 
+    def __getitem(self, key):
+        return self.fits[key].data
+
     def load(self, fit_list, parameters=None, load=None, **kwargs):
         """
         Parameters
@@ -1233,6 +1306,16 @@ class FitCollection:
                         for trace in fit.data.trace.values() ):
                     self._ffits.append(fit)
         return self._ffits
+
+    def set_varstrings(self, varstrings, check_names=True):
+        """
+        Call `set_varstring()` on all fits.
+        """
+        for fit in self.fits:
+            fit.data.set_varstrings(varstrings, check_names)
+
+    def get_varstring(self, name, idx=None):
+        return self.reffit.data.get_varstring(name, idx)
 
     def plot_cost(self, only_finite=True, ax=None, **kwargs):
         """
