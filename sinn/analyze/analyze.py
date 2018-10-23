@@ -13,7 +13,7 @@ __all__ = ['mean', 'diff', 'smooth', 'subsample', 'decimate',
 
 import logging
 import collections
-from collections import namedtuple, Iterable
+from collections import namedtuple, Iterable, Callable
 import itertools
 import numpy as np
 from scipy import sparse  # TODO: Replace with shim.sparse
@@ -30,6 +30,7 @@ except ImportError:
 from mackelab.stylelib import colorschemes
 import theano_shim as shim
 
+import sinn
 import sinn.histories as histories
 from . import common as com
 from . import axisdata
@@ -246,10 +247,10 @@ def diff(hist, mode='centered'):
     res.lock()
     return res
 
-def smooth(series, amount=None, method='mean', name = None, **kwargs):
-    """Smooth the `series` and return as another Series instance.
-    Data is smoothed by averaging over a certain number of data points
-    (determined by `amount`) at each time point.
+def filter(series, function, window, name = None, **kwargs):
+    """
+    Filter the `series` by applying an arbitrary function to a sliding window
+    and return the result as another Series instance.
 
     Parameters
     ----------
@@ -257,16 +258,17 @@ def smooth(series, amount=None, method='mean', name = None, **kwargs):
         The data we want to smooth.
         If provided as a plain NumPy array, a surrogate series is created
         with step size (dt) of 1.
-    amount: int | float
+    window: int | float
         A numerical parameter controlling the degree of smoothing.
-        Its interpretation depends on the chosen method.
-    method: string
-        One of:
+        Its interpretation depends on the chosen function.
+    function: string | Callable
+        If a string, one of:
           + 'mean': A running average along the data. The number
                     of bins is determined by `amount`.
           + 'gaussian': Not implemented
           + 'convolve': Not implemented
-        Default is 'mean'.
+        If a callable, should take as single input a slice of the series of
+        length `amount`.
     name: string
         Name to assign to the smoothed series. Default is to append
         '_smoothed' to the series' name.
@@ -295,42 +297,79 @@ def smooth(series, amount=None, method='mean', name = None, **kwargs):
     #         series = series.compiled_history
     #     else:
     #         raise ValueError("Cannot smooth a Theano array.")
-    if method == 'mean':
-        # TODO: Don't move t0 or tn if there is enough padding
-        assert(amount is not None)
-        if name is None:
-            name = series.name + "_smoothed"
+    # TODO: Don't move t0 or tn if there is enough padding
+    if name is None:
+        name = series.name + "_filtered"
+    window = series.index_interval(window, allow_rounding=True)
 
-        # Possibly shorten the length of data, if series was not computed to end
-        datalen = series.cur_tidx - series.t0idx + 1
-        if datalen < amount:
-            raise ValueError("The smoothing window is wider than the length "
-                             "of data ({} bins vs {} bins)."
-                             .format(amount, datalen))
-        # Create the result (smoothed) series
-        t0 = series.t0 + (amount-1)*series.dt64/2
-        res = histories.Series(name = name,
-                               time_array = np.arange(datalen-amount+1) * series.dt64 + t0,
-                               # t0 = series.t0 + (amount-1)*series.dt/2,
-                               # #tn = series.tn - (amount-1)*series.dt/2,
-                               # tn = series.t0 + (amount-1)*series.dt/2 + (datalen - amount)*series.dt,
-                               #     # Calculating tn this way avoids rounding errors that add an extra bin
-                               # dt = series.dt,
-                               shape = series.shape,
-                               iterative = False, dtype=shim.config.floatX)
-        assert(len(res) == datalen - amount + 1)
+    # Possibly shorten the length of data, if series was not computed to end
+    datalen = series.cur_tidx - series.t0idx + 1
+    if datalen < series.index_interval(window):
+        raise ValueError("The filter window is wider than the length "
+                         "of data ({} bins vs {} bins)."
+                         .format(window, datalen))
+    # Create the result (smoothed) series
+    t0 = series.t0 + (window-1)*series.dt64/2
+    res = histories.Series(name = name,
+                           time_array = np.arange(datalen-window+1) * series.dt64 + t0,
+                           # t0 = series.t0 + (window-1)*series.dt/2,
+                           # #tn = series.tn - (window-1)*series.dt/2,
+                           # tn = series.t0 + (window-1)*series.dt/2 + (datalen - window)*series.dt,
+                           #     # Calculating tn this way avoids rounding errors that add an extra bin
+                           # dt = series.dt,
+                           shape = series.shape,
+                           iterative = False, dtype=shim.config.floatX)
+    assert(len(res) == datalen - window + 1)
+
+    if function == 'mean':
         res.pad(series.t0idx, len(series._tarr) - len(series) - series.t0idx)
-            # Add the same amount of padding as series
-        res.set(shim.cast(_running_mean(series[:series.t0idx+datalen], amount), res.dtype))
-        res.lock()
-
-        return res
-
+            # Add the same window of padding as series
+        res.set(shim.cast(_running_mean(series[:series.t0idx+datalen], window), res.dtype))
+    elif isinstance(function, Callable):
+        # TODO: Do something smart (e.g. accumulate window in a buffer) so that
+        #       if `series` does not store its whole data vector, we don't
+        #       repeatedly compute it.
+        # TODO: Don't require iterative evaluation if `series` does not ?
+        # res._iterative = True  # series[] indexing can't deal with index array
+        res.add_input(series)
+        Δi = (window-1)/2
+        def f(tidx):
+            if isinstance(tidx, Iterable):
+                return np.array([f(j) for j in tidx])
+            else:
+                i = res.get_tidx_for(tidx, series, allow_fractional=True)
+                start = i-Δi
+                    # Both i and Δi may have .5 fractions, but they cancel
+                assert(sinn.ismultiple(start, 1))  # Ensure `start` is an int
+                assert(start >= 0)
+                start = int(start)
+                return function(series[start:start+window])
+        res.set_update_function(f)
+        res.set()
     else:
         raise NotImplementedError
 
-def subsample(series, amount):
-    """Reduce the number of time bins by averaging over `amount` bins.
+    res.lock()
+    return res
+
+def smooth(series, amount, method='mean', name = None, **kwargs):
+    """
+    Smooth the `series` and return as another Series instance.
+    Data is smoothed by averaging over a certain number of data points
+    (determined by `amount`) at each time point.
+
+    ..Note: This is actually just an alias for `filter()` which sets the
+    default method to'mean' and aliases `amount`->`window`,
+    `method`->`function`; see `filter` function for documentation.
+    """
+    if name is None and hasattr(series, 'name'):
+        name = series.name + "_smoothed"
+    return filter(series, window=amount, function=method, name=name, **kwargs)
+
+def subsample(series, amount, aggregation='mean'):
+    """
+    Reduce the number of time bins by aggregating every `amount` bins into one.
+    The aggregation function used is set by `aggregation`.
     TODO: add mode parameter to allow bins being identified by their centre or end time
 
     Parameters
@@ -338,7 +377,9 @@ def subsample(series, amount):
     history: Series instance
     amount: integer
         The factor by which the number of bins in `history` is reduced.
-
+    aggregation: str
+        One of 'mean', 'sum'.
+        The function to use to aggregate bins.
     Returns
     -------
     Series instance
@@ -346,6 +387,9 @@ def subsample(series, amount):
         of each new bin is the average over `amount` bins of the original
         series. Bins are identified by the time at which they begin.
     """
+    if aggregation not in ('mean', 'sum'):
+        raise ValueError("Aggregation function must be one of 'mean', 'sum', "
+                         "specified as a string.")
     series = histories.DataView(series)
     # Get lowest precision dtype between hist and floatX
     if np.can_cast(series.dtype, shim.config.floatX):
@@ -379,7 +423,9 @@ def subsample(series, amount):
     data = series.trace[:nbins*amount]
         # Slicing removes bins which are not commensurate with the subsampling factor
     t0idx = series.t0idx
-    res.set(shim.cast(sum(data[i : (i+nbins)*amount : amount] for i in range(amount))/amount,
+    normalizer = (amount if aggregation is 'mean' else 1)
+    res.set(shim.cast(sum(data[i : (i+nbins)*amount : amount]
+                          for i in range(amount))/normalizer,
                       res.dtype, same_kind=False))
         # Can't use np.mean on a generator
         # same_kind set to `False` is required e.g. when averaging integers
