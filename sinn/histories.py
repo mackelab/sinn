@@ -1401,7 +1401,7 @@ class History(HistoryBase):
         else:
             return Δt
 
-    def index_interval(self, Δt, allow_rounding=False):
+    def index_interval(self, Δt, allow_rounding=False, allow_fractional=False):
         """
         If Δt is a time (float), convert to index interval by multiplying by dt.
         If Δt is an index (int), do nothing.
@@ -1414,6 +1414,20 @@ class History(HistoryBase):
         the correct number of time bins.
 
         FIXME: Make this work with array arguments
+
+        Parameters
+        ----------
+        Δt: int | float
+            Interval to convert to indices
+        allow_rounding: bool
+            When True, if Δt is not a multiple of the history time step,
+            allow the returned value to be rounded to the nearest integer
+            instead of raising an error.
+            Ignored if `fractional` is True.
+        fractional: bool
+            If True and `Δt` is a time (i.e. float), return the interval as a
+            a float, possibly with decimal point if Δt is not a multiple of the
+            history time step.
 
         Returns
         -------
@@ -1431,6 +1445,9 @@ class History(HistoryBase):
                 Δt = shim.cast( Δt, self.tidx_dtype )
             return Δt
         else:
+            if allow_fractional:
+                return Δt/self.dt64
+
             try:
                 shim.check( Δt * config.get_rel_tolerance(Δt) < self.dt64 )
             except AssertionError:
@@ -1443,7 +1460,7 @@ class History(HistoryBase):
                 # try:
                 #     shim.check( shim.abs(quotient - rquotient) < config.get_abs_tolerance(Δt) / self.dt64 )
                 # except AssertionError:
-                if not sinn.isclose(quotient, rquotient, tol=Δt):
+                if not sinn.isclose(quotient, rquotient):#, atol=abs(Δt)):
                     logger.error("Δt: {}, dt: {}".format(Δt, self.dt64) )
                     raise ValueError("Tried to convert t={} to an index interval "
                                      "but its not a multiple of dt={}."
@@ -1536,21 +1553,26 @@ class History(HistoryBase):
     get_t_idx = get_tidx
         # For compability with older code
 
-    def get_tidx_for(self, t, target_hist):
+    def get_tidx_for(self, t, target_hist, allow_fractional=False):
         """
         Convert a time or time index into a time index for another history.
         """
         tidx = self.get_tidx(t)
-        if self.dt == target_hist.dt:
-            if self.t0idx == target_hist.t0idx:
-                # Don't add cruft to the computational graph
-                return tidx
-            else:
-                return tidx - self.t0idx + target_hist.t0idx
-        else:
+        if self.dt != target_hist.dt:
             raise NotImplementedError("`get_tidx_for()` is currently only "
                                       "implemented for histories with same "
                                       "timestep 'dt'.")
+        if self.t0idx != target_hist.t0idx:
+            # `if` avoids adding unneeded cruft to the computational graph
+            tidx += target_hist.t0idx - self.t0idx
+        if self.t0 != target_hist.t0:
+            Δt = self.index_interval(target_hist.t0 - self.t0,
+                                     allow_fractional=allow_fractional)
+            tidx -= Δt
+                # If `target_hist` has a higher t0, then we need to *decrease*
+                # the index correspondingly
+
+        return tidx
 
     def get_t_for(self, t, target_hist):
         """

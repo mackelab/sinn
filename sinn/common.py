@@ -151,8 +151,8 @@ def ismultiple(x, base, rtol=None, atol=None):
         return True
     else:
         # Get lowest precision type
-        x = np.asarray(x)
-        base = np.asarray(base)
+        x = abs(np.asarray(x))
+        base = abs(np.asarray(base))
         if (np.issubdtype(x.dtype, np.integer)
             != np.issubdtype(base.dtype, np.integer)):
             # One is a float, the other an integer. Take float as dtype.
