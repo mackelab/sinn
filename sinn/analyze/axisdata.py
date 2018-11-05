@@ -667,7 +667,8 @@ class ScalarAxisData:
     # Plotting
     ########################
 
-    def plot(self, axes=None, collapse_method=None, transformed=False, **kwargs):
+    def plot(self, axes=None, collapse_method=None, transformed=False,
+             ax=None, **kwargs):
         """
         TODO: Support plotting more than 2 axes
 
@@ -689,14 +690,20 @@ class ScalarAxisData:
         -------
         plot axis, colorbar axis
         """
+        if ax is None: ax = plt.gca()
+
         axes = self._get_axis_idcs(axes)
         if len(axes) == 2:
-            return self.heatmap2d(axes, collapse_method, transformed, **kwargs)
+            return self.plot_histogram2d(axes, collapse_method, transformed,
+                                         ax=ax, **kwargs)
         else:
             raise NotImplementedError("Only 2d heatmaps are currently implemented.")
 
-    def plot_histogram2d(self, axes=None, collapse_method=None, transformed=False, colorbar=True, **kwargs):
+    def plot_histogram2d(self, axes=None, collapse_method=None,
+                         transformed=False, colorbar=True, ax=None, **kwargs):
         assert(len(axes) == 2)
+        if ax is None: ax = plt.gca()
+
         # Use a default value of True for `rasterized`: vectorized heatmaps take up a lot
         # more memory (which can prevent compilation by LaTeX) and don't usually look
         # better than rasterized versions anyway.
@@ -712,15 +719,14 @@ class ScalarAxisData:
                                              transformed=transformed)
         zmin = datahm.floor #max(datahm.floor, data.min())
         zmax = datahm.ceil  #min(datahm.ceil, data.max())
-        quadmesh = plt.pcolormesh(ax1_grid, ax2_grid,
+        quadmesh = ax.pcolormesh(ax1_grid, ax2_grid,
                                   data.clip(datahm.floor, datahm.ceil),
                                   cmap = datahm.cmap,
                                   norm = datahm.get_norm(),
                                   vmin=zmin, vmax=zmax,
                                   **kwargs)
-        ax = plt.gca()
-        plt.xlabel(datahm.axes[axes[0]].name)
-        plt.ylabel(datahm.axes[axes[1]].name)
+        ax.set_xlabel(datahm.axes[axes[0]].name)
+        ax.set_ylabel(datahm.axes[axes[1]].name)
 
         color_scheme = colorschemes.cmaps[datahm.cmap]
         ax.tick_params(axis='both', which='both', color=color_scheme.white,
@@ -731,7 +737,7 @@ class ScalarAxisData:
             ax.spines[side].set_color('none')
 
         if colorbar:
-            cb = plt.colorbar()
+            cb = ax.get_figure().colorbar(quadmesh, ax=ax)
             cb.set_label(datahm.zlabel)
             cb.ax.tick_params(axis='y', which='both', left='off', right='off')
 
@@ -1015,7 +1021,7 @@ class Probability(ScalarAxisData):
                 estΣ[j,i] = estΣ[i,j]
         return estΣ
 
-    def plot_stddev_ellipse(self, width, **kwargs):
+    def plot_stddev_ellipse(self, width, ax=None, **kwargs):
         """
         Add an ellipse to a plot denoting a heatmap's spread. This function
         can be called after plotting the data, and adds the
@@ -1035,12 +1041,12 @@ class Probability(ScalarAxisData):
         """
         # TODO: Deal with higher than 2D heatmaps
         # FIXME: Only works with Probability (requires mean, cov)
+        if ax is None: ax = plt.gca()
 
         eigvals, eigvecs = np.linalg.eig(self.cov())
         sort_idcs = np.argsort(abs(eigvals))[::-1]
         eigvals = eigvals[sort_idcs]
         eigvecs = eigvecs[:,sort_idcs]
-        ax = plt.gca()
         w = width * np.sqrt(eigvals[0])
         h = width * np.sqrt(eigvals[1])
         color = kwargs.pop('color', None)
@@ -1263,7 +1269,8 @@ class MarginalCollection:
                     # which this allows to exploit for the 2D histogram
                     xedges = marginals1D[parami.displayname].axes[0].edges.transformed_stops
                     yedges = marginals1D[paramj.displayname].axes[0].edges.transformed_stops
-                        # Transformed stops because he data are in the transformed space
+                        # Transformed stops because the data are in the
+                        # transformed space
                     # Get histogram
                     histogram_kwargs['bins'] = [xedges, yedges]
                     freq, edges = np.histogramdd(data[:,(i,j)], **histogram_kwargs)
@@ -1413,7 +1420,9 @@ class MarginalCollection:
             if format.apply is not None:
                 format.apply(axes, axis)
 
-    def plot_marginal1D(self, key):
+    def plot_marginal1D(self, key, ax=None):
+        if ax is None: ax = plt.gca()
+
         hm = self.marginals1D[key].density
         param = self.params[key]
         parami_markers = [marker.pos[param.modelname].flatten()[param.flatidx]
@@ -1428,7 +1437,6 @@ class MarginalCollection:
         if self.transformed[key]:
             axis = axis.transformed
 
-        ax = plt.gca()
         fig = ax.get_figure()
         stops = (axis.edges.transformed_stops[:-1] if self.transformed[key]
                  else axis.edges.stops[:-1])
@@ -1437,6 +1445,10 @@ class MarginalCollection:
             ax.axvline(x=mark, color=color, zorder=2)
         ax.set_yticks([])
 
+        tick_color = colorschemes.cmaps[hm.cmap].white
+        ax.xaxis.set_tick_params(direction='in', color=tick_color)
+
+
         ax.draw(fig.canvas.get_renderer())
             # Force drawing of ticks and ticklabels
 
@@ -1444,8 +1456,10 @@ class MarginalCollection:
         self._format_axis('all', ax, ax.xaxis)
         self._format_axis(key, ax, ax.xaxis)
 
+        return ax
+
     def plot_marginal2D(self, keyi, keyj, stddevs=None, marker_size=None,
-                        **kwargs):
+                        ax=None, **kwargs):
         """
         Parameters
         ----------
@@ -1467,6 +1481,8 @@ class MarginalCollection:
         **kwargs:
             Keyword arguments passed to `ScalarAxisData.histogram_plot()`.
         """
+        if ax is None: ax = plt.gca()
+
         hm = self.marginals2D[(keyj, keyi)].density
             # Invert keyi, keyj to put column parameter (j) on x axis
             # – it's easier to visually project the marginals this way
@@ -1492,9 +1508,11 @@ class MarginalCollection:
         if self.transformed[keyi] != self.transformed[keyj]:
             raise NotImplementedError("Only setting 'transformed' globally is currently supported.")
         hm.set_cmap(self.colorscheme.name)
-        ax, cb = hm.heatmap(transformed=self.transformed[keyi], **kwargs);
+        ax = hm.plot(transformed=self.transformed[keyi], ax=ax, **kwargs);
+        if isinstance(ax, tuple):
+            ax, cb = ax
         ax.set_facecolor(self.colorscheme.min)
-        cb.remove()
+        #cb.remove()
 
         fig = ax.get_figure()
 
@@ -1551,6 +1569,8 @@ class MarginalCollection:
         self._format_axis('all', ax, ax.yaxis)
         self._format_axis(keyj, ax, ax.xaxis)  # Remember, column j on x axis
         self._format_axis(keyi, ax, ax.yaxis)
+
+        return ax
 
     def plot_grid(self, names_to_display, kwargs1D=None, kwargs2D=None, **kwargs):
         """
@@ -1703,14 +1723,14 @@ class MarginalCollection:
                         # `plot_diagnonal` is a tuple (function, {keywords})
                         plot_diagonal[0](**plot_diagonal[1])
                     else:
-                        plot_diagonal(keyi)
+                        plot_diagonal(keyi, ax=ax)
                 else:
                     assert(not self.grid_layouts[layout]['blank'](i,j))
                     if isinstance(plot_offdiagonal, tuple):
                         # `plot_diagnonal` is a tuple (function, {keywords})
                         plot_offdiagonal[0](**plot_offdiagonal[1])
                     else:
-                        plot_offdiagonal(keyi, keyj)
+                        plot_offdiagonal(keyi, keyj, ax=ax)
 
                 if 'right' in layout:
                     ax.yaxis.tick_right()
