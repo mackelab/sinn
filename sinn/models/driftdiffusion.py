@@ -94,7 +94,7 @@ class DriftDiffusion(Model):
             if init.shape == self.x.shape:
                 # Add time dimension
                 init = init.reshape((1,) + self.x.shape)
-            elif not init.shape[1:] == shape:
+            elif not init.shape[1:] == self.x.shape:
                 raise ValueError("`init_cond` (shape: {}) doesn't match "
                                  "the expected shape ({})."
                                  .format(init.shape, self.x.shape))
