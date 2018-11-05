@@ -1155,6 +1155,25 @@ class History(HistoryBase):
 
         return hist
 
+    def align_to(self, hist):
+        """
+        Return a new history which has the same time stops as `hist`, truncated
+        to not go beyond this history's times.
+        """
+        ε = sinn.config.get_abs_tolerance(self.dt)
+        # Target interpolation times are taken from the target history
+        # We make them as wide as possible, from a half step before the
+        # beginning of `hist`, to a half step after the end
+        # TODO: Use np.searchsorted to find bounds instead of bool indexing
+        interp_times = hist.time[
+            np.logical_and(hist.time >= self.time[0] - self.dt/2 - ε,
+                           hist.time <= self.time[-1] + self.dt/2 + ε)]
+        return self.interpolate(interp_times)
+
+    def interpolate(self, interp_times):
+        raise NotImplementedError("`interpolate` not implemented for histories "
+                                  "of type '{}'.".format(type(self).__name__))
+
     def compute_up_to(self, tidx, start='symbolic'):
         """Compute the history up to `tidx` inclusive.
 
@@ -3643,6 +3662,24 @@ class Series(ConvolveMixin, History):
                                          symbolic=self.symbolic)
 
         return self
+
+    def interpolate(self, interp_times):
+        if self.symbolic:
+            raise NotImplementedError("Interpolation of symbolic histories "
+                                      "is not yet implemented.")
+        interp_hist = type(self)(self, name=self.name + '_interp',
+                                 time_array = interp_times)
+        data = interp_hist._data.get_value(borrow=True)
+        for idx in np.ndindex(self.shape):
+            data[(slice(None),)+idx] = \
+                np.interp(interp_times, self.time, self.trace[(slice(None),)+idx])
+        interp_hist._data.set_value(data, borrow=True)
+        #assert(interp_hist._original_data is interp_hist._data)
+
+        interp_hist._cur_tidx.set_value(len(interp_times))
+        #assert(interp_hist._original_tidx is interp_hist._cur_tidx)
+
+        return interp_hist
 
     def convolve(self, kernel, t=slice(None, None), kernel_slice=slice(None,None),
                  *args, **kwargs):
