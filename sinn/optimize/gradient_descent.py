@@ -412,25 +412,29 @@ class SGDBase:
             tracked variables.
         """
         def check_name(name):
-            if name not in self._trace and check_names:
-                raise ValueError(
-                    "`{}` is not a tracked variable. You can disable this "
-                    "check by passing `check_names=False`.".format(name))
+            if name not in self._trace:
+                if check_names:
+                    raise ValueError(
+                        "`{}` is not a tracked variable. You can disable this "
+                        "check by passing `check_names=False`.".format(name))
+                else:
+                    return False
+            return True
         for key, value in varstrings.items():
             if isinstance(key, tuple):
                 name, idx = key
-                check_name(name)
-                if not isinstance(varstrings, str):
-                    raise ValueError("There should be only a single string "
-                                     "associated to the variable `{}`."
-                                     ""
-                                     .format(key))
-                self.track_varstrings[(name, idx)] = value
+                if check_name(name):
+                    if not isinstance(varstrings, str):
+                        raise ValueError("There should be only a single string "
+                                         "associated to the variable `{}`."
+                                         ""
+                                         .format(key))
+                    self.track_varstrings[(name, idx)] = value
             else:
                 name = key
-                check_name(name)
-                for idx, s in enumerate(value):
-                    self.track_varstrings[name, idx] = s
+                if check_name(name):
+                    for idx, s in enumerate(value):
+                        self.track_varstrings[name, idx] = s
 
     def get_varstring(self, name, idx=None):
         """
