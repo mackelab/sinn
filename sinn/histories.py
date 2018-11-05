@@ -323,9 +323,9 @@ class History(HistoryBase):
                 t_dtype = time_array.dtype
             else:
                 t_dtype = np.dtype(shim.config.floatX)
+            t0 = time_array[0]   # Casting time_array after allows t0 and tn
+            tn = time_array[-1]  # to be a "larger" type than t_dtype
             time_array = time_array.astype(t_dtype)
-            t0 = time_array[0]
-            tn = time_array[-1]
             dt64 = sinn.upcast(tn.astype('float64') - t0.astype('float64'),
                                to_dtype=np.float64,
                                from_dtype=np.float32) / (len(time_array)-1)
@@ -353,11 +353,13 @@ class History(HistoryBase):
             #                        tn + dt64 - config.abs_tolerance,
             #                        dt64,
             #                        dtype=t_dtype)
-            time_array = (np.arange(0, n_steps+1) * dt64).astype(t_dtype)
+            time_array = t0 + (np.arange(0, n_steps+1) * dt64)
                 # 'self.tn+self.dt' ensures the upper bound is inclusive,
                 # -config.abs_tolerance avoids including an extra bin because of rounding errors
             t0 = time_array[0]    # Remove any risk of mismatch due to rounding
-            tn = time_array[-1]   # and ensure all dtypes match
+            tn = time_array[-1]
+            time_array = time_array.astype(t_dtype)
+                # Casting time_array after allows t0 and tn to be float64
 
         # Deprecated ?
         # Determine whether the series data will use Theano.
@@ -513,7 +515,7 @@ class History(HistoryBase):
         # We do it this way in case kwd substitutions are there to
         # avoid an error (such as _data not having a .get_value() method)
         raw = {}
-        raw['version'] = 2
+        raw['version'] = 2.1
         raw['type'] = sinn.common.find_registered_typename(type(self))
              # find_registered_typename returns the closest registered type name in the hierarchy
              # E.g. if we are saving a subclass of Series, this will return the name under which
@@ -1452,7 +1454,9 @@ class History(HistoryBase):
         -------
         Integer (of type self.tidx_dtype)
         """
-        if not shim.is_theano_object(Δt) and abs(Δt) < self.dt64 - config.abs_tolerance:
+        atol = config.get_abs_tolerance(Δt)
+        rtol = config.get_rel_tolerance(Δt)
+        if not shim.is_theano_object(Δt) and abs(Δt) < self.dt64 - atol:
             if Δt == 0:
                 return 0
             else:
@@ -1468,7 +1472,7 @@ class History(HistoryBase):
                 return Δt/self.dt64
 
             try:
-                shim.check( Δt * config.get_rel_tolerance(Δt) < self.dt64 )
+                shim.check( Δt * rtol < self.dt64 )
             except AssertionError:
                 raise ValueError("You've tried to convert a time (float) into an index "
                                  "(int), but the value is too large to ensure the absence "
@@ -1479,7 +1483,7 @@ class History(HistoryBase):
                 # try:
                 #     shim.check( shim.abs(quotient - rquotient) < config.get_abs_tolerance(Δt) / self.dt64 )
                 # except AssertionError:
-                if not sinn.isclose(quotient, rquotient):#, atol=abs(Δt)):
+                if not sinn.isclose(quotient, rquotient, rtol=rtol, atol=atol):
                     logger.error("Δt: {}, dt: {}".format(Δt, self.dt64) )
                     raise ValueError("Tried to convert t={} to an index interval "
                                      "but its not a multiple of dt={}."
@@ -1536,12 +1540,14 @@ class History(HistoryBase):
                     # Enforce that times be multiples of dt
 
                     try:
-                        shim.check( (t * config.get_rel_tolerance(t) < self.dt64).all() )
+                        shim.check( np.all(
+                            t * config.get_rel_tolerance(t) < self.dt64) )
                     except AssertionError:
-                        raise ValueError("You've tried to convert a time (float) "
-                                         "for history into an index "
-                                         "(int), but the value is too large to ensure the absence "
-                                         "of numerical errors. Try using a higher precision type.")
+                        raise ValueError(
+                            "You've tried to convert a time (float) for a "
+                            "history into an index (int), but the value is too "
+                            "large to ensure the absence of numerical errors. "
+                            "Try using a higher precision type.")
                     t_idx = (t - self._tarr[0]) / self.dt64
                     r_t_idx = shim.round(t_idx)
                     if (not shim.is_theano_object(r_t_idx)
@@ -1577,14 +1583,14 @@ class History(HistoryBase):
         Convert a time or time index into a time index for another history.
         """
         tidx = self.get_tidx(t)
-        if self.dt != target_hist.dt:
+        if not sinn.isclose(self.dt, target_hist.dt):
             raise NotImplementedError("`get_tidx_for()` is currently only "
                                       "implemented for histories with same "
                                       "timestep 'dt'.")
         if self.t0idx != target_hist.t0idx:
             # `if` avoids adding unneeded cruft to the computational graph
             tidx += target_hist.t0idx - self.t0idx
-        if self.t0 != target_hist.t0:
+        if not sinn.isclose(self.t0, target_hist.t0):
             Δt = self.index_interval(target_hist.t0 - self.t0,
                                      allow_fractional=allow_fractional)
             tidx -= Δt
@@ -3804,7 +3810,7 @@ class Series(ConvolveMixin, History):
 
     def _apply_op(self, op, b=None):
         if b is None:
-            new_series = Series(self)
+            new_series = type(self)(self)
             new_series.set_update_function(lambda t: op(self[t]))
             new_series.set_range_update_function(lambda tarr: op(self[self.time_array_to_slice(tarr)]))
             new_series.add_input(self)
@@ -3826,7 +3832,7 @@ class Series(ConvolveMixin, History):
                                      np.empty(b.shape)).shape
             else:
                 shape = self.shape
-            new_series = Series(self, shape=shape)
+            new_series = type(self)(self, shape=shape)
             new_series.set_update_function(lambda t: op(self[t], b))
             new_series.set_range_update_function(
                 lambda tarr: op(self[self.time_array_to_slice(tarr)], b))
