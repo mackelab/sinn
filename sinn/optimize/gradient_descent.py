@@ -385,6 +385,10 @@ class SGDBase:
     def MLE(self):  # For backwards compatibility
         return self.result
 
+    @property
+    def tracked(self):
+        return list(self._trace.keys())
+
     def set_varstrings(self, varstrings, check_names=True):
         """
         Set assign a string to each variable, which may be used in fancy
@@ -445,6 +449,8 @@ class SGDBase:
         For convenience the `varidx` can be given as either the to components
         or a tuple; i.e., the following calls will return the same string:
             `get_varstring('w', 0)`, `get_varstring(('w', 0))`.
+        If `name` is just a string and no `idx` is given, all strings
+        corresponding to that name are returned.
 
         Parameters
         ----------
@@ -453,9 +459,19 @@ class SGDBase:
         idx: int
             Index, when `varidx` is just a string.
         """
-        if idx is None:
+        if isinstance(name, tuple):
+            assert(idx is None)
             name, idx = name
-        return self.track_varstrings.get((name, idx), name + str(idx))
+        if idx is None:
+            return [self.get_varstring(varidx)
+                    for varidx in self.get_varidcs(name)]
+        else:
+            return self.track_varstrings.get((name, idx), name + str(idx))
+    get_varstrings = get_varstring
+
+    def get_varidcs(self, varname):
+        return [varidx for varidx in self.track_varstrings
+                       if varidx[0] == varname]
 
     def set_mode_params(self, mode_params):
         # `defaults` is a dictionary of default values for each parameter
@@ -1147,6 +1163,10 @@ class Fit:
     def result(self):
         return self.data.result
 
+    @property
+    def tracked(self):
+        return self.data.tracked
+
 class FitCollection:
     ParamID = namedtuple("ParamID", ['name', 'idx'])
     # Fit = namedtuple("Fit", ['parameters', 'data'])
@@ -1276,6 +1296,9 @@ class FitCollection:
         else:
             logger.warning("No fit files were found.")
 
+    @property
+    def tracked(self):
+        return self.reffit.tracked
     # Result access methods
     @property
     def result(self):
