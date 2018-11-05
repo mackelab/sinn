@@ -7,7 +7,7 @@ Created Tue Feb 21 2017
 author: Alexandre René
 """
 
-__all__ = ['mean', 'diff', 'smooth', 'subsample', 'decimate',
+__all__ = ['mean', 'diff', 'filter', 'smooth', 'subsample', 'decimate',
            'window_mean', 'window_variance',
            'cleanname', 'plot', 'get_axes', 'get_axis_labels']
 
@@ -339,10 +339,10 @@ def filter(series, function, window, name = None, **kwargs):
             else:
                 i = res.get_tidx_for(tidx, series, allow_fractional=True)
                 start = i-Δi
-                    # Both i and Δi may have .5 fractions, but they cancel
+                    # Both i and Δi may have .5 fractions, but they will cancel
                 assert(sinn.ismultiple(start, 1))  # Ensure `start` is an int
-                assert(start >= 0)
-                start = int(start)
+                assert(start >= 0 or sinn.isclose(start, 0))
+                start = np.rint(start).astype(int)
                 return function(series[start:start+window])
         res.set_update_function(f)
         res.set()
@@ -366,7 +366,7 @@ def smooth(series, amount, method='mean', name = None, **kwargs):
         name = series.name + "_smoothed"
     return filter(series, window=amount, function=method, name=name, **kwargs)
 
-def subsample(series, amount, aggregation='mean'):
+def subsample(series, amount=None, target_dt=None, aggregation='mean'):
     """
     Reduce the number of time bins by aggregating every `amount` bins into one.
     The aggregation function used is set by `aggregation`.
@@ -377,8 +377,14 @@ def subsample(series, amount, aggregation='mean'):
     history: Series instance
     amount: integer
         The factor by which the number of bins in `history` is reduced.
-    aggregation: str
-        One of 'mean', 'sum'.
+    target_dt: float
+        Instead of specifying an amount of steps, one can specify the target
+        time step. Will be rounded to the closest multiple of the history's
+        `dt`.
+    aggregation: str | callable
+        If a string, one of 'mean', 'sum'.
+        Otherwise it should be a callable which expects to receive a slice of
+        data of length `amount`.
         The function to use to aggregate bins.
     Returns
     -------
@@ -387,10 +393,28 @@ def subsample(series, amount, aggregation='mean'):
         of each new bin is the average over `amount` bins of the original
         series. Bins are identified by the time at which they begin.
     """
-    if aggregation not in ('mean', 'sum'):
+    series = histories.DataView(series)
+
+    if (not isinstance(aggregation, Callable)
+        and aggregation not in ('mean', 'sum')):
         raise ValueError("Aggregation function must be one of 'mean', 'sum', "
                          "specified as a string.")
-    series = histories.DataView(series)
+    if amount is None and target_dt is None:
+        raise ValueError("Must specify one of `amount`, `target_dt`.")
+    elif amount is not None and target_dt is not None:
+        logger.warning("Specified both an `amount` and an `target_dt`. "
+                       "Ignoriing `target_dt`.")
+    elif target_dt is not None:
+        if sinn.isclose(target_dt, series.dt):
+            logger.warning("subsample: Target `dt` is same as series'.")
+        elif target_dt < series.dt:
+            raise ValueError("`subsample` can only decrease sampling rate. "
+                            "history dt: {}\ntarget dt: {}"
+                            .format(hist.dt, target_dt))
+        else:
+            amount = series.index_interval(target_dt, allow_rounding=True)
+            amount = amount.astype(np.min_scalar_type(amount))
+
     # Get lowest precision dtype between hist and floatX
     if np.can_cast(series.dtype, shim.config.floatX):
         res_dtype = series.dtype
@@ -423,12 +447,20 @@ def subsample(series, amount, aggregation='mean'):
     data = series.trace[:nbins*amount]
         # Slicing removes bins which are not commensurate with the subsampling factor
     t0idx = series.t0idx
-    normalizer = (amount if aggregation is 'mean' else 1)
-    res.set(shim.cast(sum(data[i : (i+nbins)*amount : amount]
-                          for i in range(amount))/normalizer,
-                      res.dtype, same_kind=False))
-        # Can't use np.mean on a generator
-        # same_kind set to `False` is required e.g. when averaging integers
+    if aggregation in ('mean', 'sum'):
+        # About 10x faster than passing a callable which computes mean|sum
+        normalizer = (amount if aggregation is 'mean' else 1)
+        res.set(shim.cast(sum(data[i : (i+nbins)*amount : amount]
+                              for i in range(amount))/normalizer,
+                          res.dtype, same_kind=False))
+            # Can't use np.mean on a generator
+            # same_kind set to `False` is required e.g. when averaging integers
+    else:
+        resdata = res._data.get_value(borrow=True)
+        for i in range(nbins):
+            resdata[i] = aggregation(data[i*amount:(i+1)*amount])
+        res._data.set_value(resdata, borrow=True)
+        res._cur_tidx.set_value(res.t0idx + len(resdata))
     res.lock()
     return res
 
