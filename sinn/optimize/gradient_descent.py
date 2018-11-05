@@ -1520,32 +1520,32 @@ class FitCollection:
             # First check if target is a data structure; if so, it must
             # have the same keys|attributes as the fits
             if hasattr(target, var):
-                target = getattr(target, var)
+                _target = getattr(target, var)
             elif isinstance(target, dict) and var in target:
-                target = target[var]
+                _target = target[var]
             # Target may be a list or nested list; convert to array to
             # standardize checks
-            target = np.array(target)
+            _target = np.array(_target)
             ntargets = reftrace[0, idx].size  # HACK ? Not sure how safe this is
-            if target.ndim == 0:
+            if _target.ndim == 0:
                 # A single value was given; just draw a line there
-                targets = np.atleast_1d(target)
-            elif target.size == ntargets:
+                targets = np.atleast_1d(_target)
+            elif _target.size == ntargets:
                 # There are just enough targets for each trace:
                 # assume target corresponds to one
-                targets = target.flat
+                targets = _target.flat
             else:
                 # Since sizes don't match, assume that the target must be
                 # indexed the same way as the slices
                 if len(idx) > 1:
                     assert(len(idx) == target.ndim)
-                    targets = np.atleast_1d(target[idx].flat)
+                    targets = np.atleast_1d(_target[idx].flat)
                 else:
-                    targets = np.atleast_1d(target.flat[idx])
+                    targets = np.atleast_1d(_target.flat[idx])
                 if len(targets) != ntargets:
                     raise ValueError("Target dimensions (shape {}) don't match "
                                      "the number of traces ({})."
-                                     .format(target.shape, len(traces)))
+                                     .format(_target.shape, len(traces)))
             if targetkwargs is None: targetkwargs = {}
             zorder = targetkwargs.pop('zorder', -2)
             targetwidth = targetkwargs.pop('linewidth', targetwidth)
