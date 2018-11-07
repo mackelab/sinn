@@ -47,6 +47,10 @@ class SeriesFunction(Series):
                  **kwargs):
 
         shape = self.init_params(**kwargs)
+        if shape == ():
+            logger.warning("History function returned a 0 dimensional shape; "
+                           "it must be at least 1D. Resetting shape to `(1,)`.")
+            shape = (1,)
         if shape is None:
             raise ValueError("A history function's `init_params` method must return shape.")
         super().__init__(
@@ -122,9 +126,12 @@ class Step(SeriesFunction):
         #                      "parameters `baseline` or `height` must be "
         #                      "an array, to provide the expected shape. "
         #                      "This can be a size 1 array.")
-        return getattr(self.baseline_plus_height, 'shape', (1,))
+        shape = getattr(self.baseline_plus_height, 'shape', (1,))
             # `baseline + height` result is already broadcasted to the correct shape
             # If they are both scalars and have no shape, set shape to (1,)
+        if shape == (): shape = (1,)
+            # This can happen if some parameters are passed as 0-dim arrays
+        return shape
 
     def update_function(self, t):
         if not shim.isscalar(t):
