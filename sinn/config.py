@@ -17,6 +17,9 @@ debug_level = 2
    # 3 - Asserts are added to the Theano graph. This may prevent certain Theano optimizations
    # NOTE: The debug_level is new, and only a few functions yet use it.
 
+max_eval_cost = 20
+    # Provided as argument when calling `shim.eval()` to prevent locking
+
 disk_cache_file = ""
 
 # TODO: floatX, load_librairies should be removed;

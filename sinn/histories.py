@@ -810,8 +810,9 @@ class History(HistoryBase):
         key, key_filter, latest = self._parse_key(key)
 
         symbolic_return = True
-            # Indicates that we allow the return value to be symbolic. If false and return
-            # is a graph object, we will force a numerical value by calling 'get_value'
+            # Indicates that we allow the return value to be symbolic. If false
+            # and return value is a graph object, we will try to obtain a
+            # numerical value by calling 'shim.eval'
         if not shim.is_theano_object(key, key_filter, latest) and latest <= self._original_tidx.get_value():
             # No need to compute anything, even if _cur_tidx is a graph object
             symbolic_return = False
@@ -844,7 +845,12 @@ class History(HistoryBase):
 
         result = self.retrieve(key)
         if not symbolic_return and shim.is_theano_object(result):
-            result = shim.graph.eval(result, max_cost=10)
+            try:
+                result = shim.graph.eval(result,
+                                         max_cost=sinn.config.max_eval_cost)
+            except shim.graph.TooCostly:
+                # Too expensive; kept symbolic expression
+                pass
         if key_filter is None:
             return result
         else:
