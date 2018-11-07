@@ -40,14 +40,19 @@ class SeriesFunction(Series):
     """
     requires_rng = False
 
-    def __init__(self, ref_hist=sinn._NoValue, name=None, t0=sinn._NoValue,
-                 tn=sinn._NoValue, dt=sinn._NoValue, dtype=sinn._NoValue,
+    def __init__(self, ref_hist=sinn._NoValue, name=None,
+                 symbolic=sinn._NoValue, time_array=sinn._NoValue,
+                 t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
+                 dtype=sinn._NoValue,
                  **kwargs):
 
         shape = self.init_params(**kwargs)
         if shape is None:
             raise ValueError("A history function's `init_params` method must return shape.")
-        super().__init__(hist=ref_hist, name=name, t0=t0, tn=tn, dt=dt, shape=shape, iterative=False, dtype=dtype)
+        super().__init__(
+            hist=ref_hist, name=name, symbolic=symbolic,
+            t0=t0, tn=tn, dt=dt, time_array=time_array,
+            shape=shape, iterative=False, dtype=dtype)
         self.set_update_function(self.update_function)
 
 

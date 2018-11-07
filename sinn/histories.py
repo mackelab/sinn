@@ -684,6 +684,7 @@ class History(HistoryBase):
                 value = shim.broadcast_to(value, valueshape)
         elif shim.isscalar(key):
             key = self.get_t_idx(key)
+            value = shim.broadcast_to(value, self.shape)
         else:
             raise ValueError("Unrecognized time key: '{}'".format(key))
         self.update(key, value)
@@ -874,7 +875,8 @@ class History(HistoryBase):
     def clear(self):
         """
         Invalidate the history data, forcing it to be recomputed the next time its queried.
-        Functionally equivalent to clearing the data.
+        Functionally equivalent to clearing the data, keeping the padding.
+        Discards symbolic updates by calling `theano_reset`.
 
         *Note* If this history is part of a model, you should use that
         model's `clear_history` method instead.
@@ -884,6 +886,8 @@ class History(HistoryBase):
                                .format(self.name))
         self._original_tidx.set_value(self.t0idx - 1)
         self._cur_tidx = self._original_tidx
+
+        self.theano_reset()
 
         if self.symbolic and self.compiled_history is not None:
             self.compiled_history.clear()
