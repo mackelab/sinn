@@ -15,6 +15,7 @@ from collections import OrderedDict, Sequence, Iterable
 from inspect import isclass
 
 import theano_shim as shim
+import mackelab.utils as utils
 import sinn.config as config
 import sinn.common as com
 import sinn.histories
@@ -126,8 +127,8 @@ class Model(com.ParameterMixin):
             and attr in self.params._fields):
             return getattr(self.params, attr)
         else:
-            raise AttributeError("Model '{}' has no attribute `{}``."
-                                 .format(type(self), attr))
+            return self.__getattribute__(attr)
+                # Will reraise the original error, so we get a debuggable trace
 
     def set_reference_history(self, reference_history):
         if self._refhist is None:
@@ -136,7 +137,9 @@ class Model(com.ParameterMixin):
 
     @property
     def statehists(self):
-        return ( getattr(self, varname) for varname in self.State._fields )
+        return utils.FixedGenerator(
+            ( getattr(self, varname) for varname in self.State._fields ),
+            len(self.State._fields) )
 
     # TODO: Put the `if self._refhist is not None:` bit in a function decorator
     @property
@@ -693,7 +696,7 @@ class Model(com.ParameterMixin):
         if len(self.statehists) == 0:
             raise NotImplementedError
         elif len(self.statehists) == 1:
-            hist = self.statehists[0]
+            hist = next(iter(self.statehists))
             startidx = hist._original_tidx - hist.t0idx + self.t0idx
         else:
             startidx = shim.smallest( *( hist._original_tidx - hist.t0idx + self.t0idx
@@ -709,9 +712,10 @@ class Model(com.ParameterMixin):
         # symbolic updates from the history update functions
         def onestep(tidx, *args):
             state_outputs, updates = self.symbolic_update(tidx, *args)
-            for i in range(len(state_outputs)):
+            assert(len(state_outputs) == len(self.statehists))
+            for i, statehist in enumerate(self.statehists):
                 state_outputs[i] = shim.cast(state_outputs[i],
-                                             self.statehists[i].dtype)
+                                             statehist.dtype)
             return state_outputs, updates
             #return list(state_outputs.values()), updates
 
