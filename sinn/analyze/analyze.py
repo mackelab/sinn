@@ -407,6 +407,7 @@ def subsample(series, amount=None, target_dt=None, aggregation='mean'):
     elif target_dt is not None:
         if sinn.isclose(target_dt, series.dt):
             logger.warning("subsample: Target `dt` is same as series'.")
+            amount = 1
         elif target_dt < series.dt:
             raise ValueError("`subsample` can only decrease sampling rate. "
                             "history dt: {}\ntarget dt: {}"
