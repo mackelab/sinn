@@ -11,7 +11,7 @@ import scipy as sp
 #from collections import namedtuple
 import logging
 logger = logging.getLogger("sinn.models.common")
-from collections import OrderedDict, Sequence
+from collections import OrderedDict, Sequence, Iterable
 from inspect import isclass
 
 import theano_shim as shim
@@ -117,10 +117,26 @@ class Model(com.ParameterMixin):
         else:
             self._refhist = None
 
+    def __getattr__(self, attr):
+        """
+        Retrieve parameters if their name does not clash with an attribute.
+        """
+        if (attr != 'params' and hasattr(self, 'params')
+            and isinstance(self.params, Iterable)
+            and attr in self.params._fields):
+            return getattr(self.params, attr)
+        else:
+            raise AttributeError("Model '{}' has no attribute `{}``."
+                                 .format(type(self), attr))
+
     def set_reference_history(self, reference_history):
         if self._refhist is None:
             raise RuntimeError("Reference history for this model is already set.")
         self._refhist = reference_history
+
+    @property
+    def statehists(self):
+        return ( getattr(self, varname) for varname in self.State._fields )
 
     # TODO: Put the `if self._refhist is not None:` bit in a function decorator
     @property
