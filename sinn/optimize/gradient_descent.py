@@ -286,7 +286,7 @@ class SGDBase:
         self.cost_format = cost_format
         self.status = ConvergeStatus.NOTSTARTED
         self.result_choice = result_choice
-        self.track_varstrings = {}  # Used to store fancy variable strings
+        self.trackvar_strings = {}  # Used to store fancy variable strings
 
     @property
     def repr_np(self):
@@ -396,7 +396,7 @@ class SGDBase:
         by any string, so for example may contain '$' characters to indicate
         TeX formatting.
         Variable strings may be retrieved by `get_varstring`, and may be used
-        by more SGD functions in the future.
+        more by SGD functions in the future.
         The default string simply appends the index to the identifier.
 
         Note: It is not necessary to call this function to use the defaults.
@@ -433,12 +433,12 @@ class SGDBase:
                                          "associated to the variable `{}`."
                                          ""
                                          .format(key))
-                    self.track_varstrings[(name, idx)] = value
+                    self.trackvar_strings[(name, idx)] = value
             else:
                 name = key
                 if check_name(name):
                     for idx, s in enumerate(value):
-                        self.track_varstrings[name, idx] = s
+                        self.trackvar_strings[name, idx] = s
 
     def get_varstring(self, name, idx=None):
         """
@@ -466,12 +466,14 @@ class SGDBase:
             return [self.get_varstring(varidx)
                     for varidx in self.get_varidcs(name)]
         else:
-            return self.track_varstrings.get((name, idx), name + str(idx))
+            return self.trackvar_strings.get((name, idx), name + str(idx))
     get_varstrings = get_varstring
 
     def get_varidcs(self, varname):
-        return [varidx for varidx in self.track_varstrings
-                       if varidx[0] == varname]
+        if getattr(self, '_varidcs', None) is None:
+            self._varidcs = [(name, i) for name, r in self.result.items()
+                                       for i in range(len(r))]
+        return [varidx for varidx in self._varidcs if varidx[0] == varname]
 
     def set_mode_params(self, mode_params):
         # `defaults` is a dictionary of default values for each parameter
@@ -1343,6 +1345,7 @@ class FitCollection:
 
     def get_varstring(self, name, idx=None):
         return self.reffit.data.get_varstring(name, idx)
+    get_varstrings = get_varstring
 
     def plot_cost(self, only_finite=True, ax=None, **kwargs):
         """
