@@ -3820,7 +3820,7 @@ class Series(ConvolveMixin, History):
 
     def _apply_op(self, op, b=None):
         if b is None:
-            new_series = type(self)(self)
+            new_series = Series(self)
             new_series.set_update_function(lambda t: op(self[t]))
             new_series.set_range_update_function(lambda tarr: op(self[self.time_array_to_slice(tarr)]))
             new_series.add_input(self)
@@ -3842,7 +3842,7 @@ class Series(ConvolveMixin, History):
                                      np.empty(b.shape)).shape
             else:
                 shape = self.shape
-            new_series = type(self)(self, shape=shape)
+            new_series = Series(self, shape=shape)
             new_series.set_update_function(lambda t: op(self[t], b))
             new_series.set_range_update_function(
                 lambda tarr: op(self[self.time_array_to_slice(tarr)], b))
