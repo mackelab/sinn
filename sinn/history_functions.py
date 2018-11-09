@@ -31,7 +31,8 @@ import theano_shim as shim
 import sinn
 from sinn.histories import Series
 
-__all__ = ['Sin', 'GaussianWhiteNoise', 'Constant', 'Step']
+__all__ = ['Sin', 'GaussianWhiteNoise', 'Constant', 'Step', 'Steps',
+           'PiecewiseLinear']
 
 
 class SeriesFunction(Series):
@@ -143,6 +144,118 @@ class Step(SeriesFunction):
                                        self.baseline_plus_height, self.baseline ),
                           dtype=self.dtype, same_kind=False )
 
+class Steps(SeriesFunction):
+    def __init__(self, init_val=0, stops=None, values=None):
+        """
+        WARNING: UNTESTED
+
+        A series of constant functions changing at times `stops`.
+        I[t] = values[i] for stops[i] <= t < stops[i]
+
+        Parameters
+        ----------
+        init_val: float
+            Initial value
+        stops: float
+            t coordinates of the points we want to go through.
+            Always in time units, never in bin units.
+        values: float
+            x coordinates of the points we want to go through.
+        """
+
+        # ensure all required parameters were provided
+        for arg in ('stops', 'values'):
+            if vars()[arg] is None:
+                raise ValueError("'{}' is a required argument.".format(arg))
+        self.stops = stops
+        self.values = [init_val] + list(values)
+
+    def update_function(self, t):
+        if not shim.isscalar(t):
+            ndim = self.ndim
+            if ndim == 0:
+                ndim = 1
+            t = shim.add_axes(t, ndim, 'after')
+        return shim.cast(self.get_values(self.stops, self.values),
+                         dtype=self.dtype, same_kind=False)
+
+    def get_values(self, t, stops, values):
+        if len(stops) > 1:
+            return shim.switch( t <= stops[0],
+                                values[0],
+                                self.get_values(stops[1:], values[1:]) )
+        else:
+            assert(len(values) == 2)
+            return shim.switch( t <= stops[0],
+                                values[0], values[1])
+
+class PiecewiseLinear(SeriesFunction):
+    """
+    Linearly interpolate between the points `(stop, value)`.
+    Before the first stop and after the last, the function is constant.
+
+    Parameters
+    ----------
+    [History parameters]
+    stops: float
+        t coordinates of the points we want to go through.
+        Always in time units, never in bin units.
+    values: float
+        x coordinates of the points we want to go through.
+    """
+    def init_params(self, stops=None, values=None):
+        if stops is None or values is None:
+            # Equivalent to Constant
+            assert(stops is None and values is None)
+            self.stops = []
+            values = []
+
+        else:
+            # ensure all required parameters were provided
+            for arg in ('stops', 'values'):
+                if vars()[arg] is None:
+                    raise ValueError("'{}' is a required argument.".format(arg))
+            assert(len(stops) == len(values))
+
+        val0 = values[0]
+        stop0 = stops[0]
+        self.stops = stops
+        self.functions = [lambda t: val0]
+        for stop, val in zip(stops[1:], values[1:]):
+            α = (val-val0)/(stop-stop0)
+            def f(t, α=α, stop0=stop0, val0=val0):
+                # Use optional arguments to tie the current values
+                # of α and stop0 to the function
+                return α*(t-stop0) + val0
+            self.functions.append(f)
+            stop0 = stop
+            val0 = f(stop)
+        self.functions.append(lambda t: val0)
+
+        shape = np.broadcast(*values).shape
+        if shape == (): shape = (1,)
+            # np.atleast_1d doesn't seem to work with `broadcast`
+        return shape
+
+    def update_function(self, t):
+        t = self.get_time(t)
+        if not shim.isscalar(t):
+            ndim = self.ndim
+            if ndim == 0:
+                ndim = 1
+            t = shim.add_axes(t, ndim, 'after')
+        return shim.cast(self.apply_functions(t, self.stops, self.functions),
+                         dtype=self.dtype, same_kind=False)
+
+    def apply_functions(self, t, stops, functions):
+        if len(stops) > 1:
+            return shim.switch( t <= stops[0],
+                                functions[0](t),
+                                self.apply_functions(t, stops[1:], functions[1:]) )
+        else:
+            assert(len(functions) == 2)
+            return shim.switch( t <= stops[0],
+                                functions[0](t), functions[1](t) )
 class Sin(SeriesFunction):
     # TODO: Allow Theano parameters
 
