@@ -393,6 +393,26 @@ def subsample(series, amount=None, target_dt=None, aggregation='mean'):
         of each new bin is the average over `amount` bins of the original
         series. Bins are identified by the time at which they begin.
     """
+    if isinstance(series, np.ndarray):
+        if amount is None:
+            raise TypeError("Subsampling of arrays only supports `amount`, "
+                            "not `target_dt`.")
+        nbins = len(series) // amount
+        data = series[:nbins*amount]
+
+        if aggregation in ('mean', 'sum'):
+            # About 10x faster than passing a callable which computes mean|sum
+            normalizer = (amount if aggregation is 'mean' else 1)
+            return sum(data[i : (i+nbins)*amount : amount]
+                       for i in range(amount))/normalizer,
+                # Can't use np.mean on a generator
+        else:
+            resdata = np.zeros((nbins,) + data.shape[1:])
+            for i in range(nbins):
+                resdata[i] = aggregation(data[i*amount:(i+1)*amount])
+            return resdata
+
+    # else: Everyting below is the `else` branch
     series = histories.DataView(series)
 
     if (not isinstance(aggregation, Callable)
@@ -411,7 +431,7 @@ def subsample(series, amount=None, target_dt=None, aggregation='mean'):
         elif target_dt < series.dt:
             raise ValueError("`subsample` can only decrease sampling rate. "
                             "history dt: {}\ntarget dt: {}"
-                            .format(hist.dt, target_dt))
+                            .format(series.dt, target_dt))
         else:
             amount = series.index_interval(target_dt, allow_rounding=True)
             amount = amount.astype(np.min_scalar_type(amount))
@@ -448,6 +468,7 @@ def subsample(series, amount=None, target_dt=None, aggregation='mean'):
     data = series.trace[:nbins*amount]
         # Slicing removes bins which are not commensurate with the subsampling factor
     t0idx = series.t0idx
+    # TODO Use the pure numpy operations defined above
     if aggregation in ('mean', 'sum'):
         # About 10x faster than passing a callable which computes mean|sum
         normalizer = (amount if aggregation is 'mean' else 1)
