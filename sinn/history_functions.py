@@ -222,7 +222,14 @@ class PiecewiseLinear(SeriesFunction):
         self.stops = stops
         self.functions = [lambda t: val0]
         for stop, val in zip(stops[1:], values[1:]):
-            α = (val-val0)/(stop-stop0)
+            # We can get `stop==stop0` if a stop is repeated.
+            # In this case, we just set α to 0; it's value doesn't really
+            # matter, because the function will never be evaluated. We just
+            # don't want NaNs.
+            α = shim.switch( shim.or_(val == val0, stop == stop0),
+                             np.zeros(val0.shape),
+                             (val-val0)/(stop-stop0) )
+            assert np.all(shim.isfinite(α, where=True))
             def f(t, α=α, stop0=stop0, val0=val0):
                 # Use optional arguments to tie the current values
                 # of α and stop0 to the function
