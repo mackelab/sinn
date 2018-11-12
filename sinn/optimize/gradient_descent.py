@@ -1553,6 +1553,8 @@ class FitCollection:
                 _target = getattr(target, var)
             elif isinstance(target, dict) and var in target:
                 _target = target[var]
+            else:
+                _target = target
             # Target may be a list or nested list; convert to array to
             # standardize checks
             _target = np.array(_target)
