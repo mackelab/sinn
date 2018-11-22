@@ -26,6 +26,11 @@ _models = {}
 registered_models = _models.keys()
     # I don't really like this, but it works. Ideally it would be some kind
     # of read-only property of the module.
+    # Registering models allows us to save the model name within a parameter
+    # file, and write a function which can build the correct model
+    # automatically based on only on that parameter file.
+
+expensive_asserts = True
 
 def register_model(model, modelname=None):
     """
@@ -169,14 +174,18 @@ class Model(com.ParameterMixin):
         if self._refhist is not None:
             return self._refhist.dt
         else:
-            raise AttributeError("The reference history for this model was not set.")
+            raise AttributeError("Reference history for this model is not set.")
 
     @property
     def cur_tidx(self):
         if self._refhist is not None:
             return self._refhist._cur_tidx - self._refhist.t0idx + self.t0idx
         else:
-            raise AttributeError("The reference history for this model was not set.")
+            raise AttributeError("Reference history for this model is not set.")
+
+    @property
+    def unlocked_histories(self):
+        return (h for h in self.history_set if not h.locked)
 
     def get_tidx(self, t, allow_rounding=False):
         """
@@ -190,6 +199,14 @@ class Model(com.ParameterMixin):
         else:
             raise AttributeError("The reference history for this model was not set.")
     get_t_idx = get_tidx
+
+    def get_tidx_for(self, t, target_hist, allow_fractional=False):
+        if self._refhist is not None:
+            ref_tidx = self.get_tidx(t) - self.t0idx + self._refhist.t0idx
+            return self._refhist.get_tidx_for(
+                ref_tidx, target_hist, allow_fractional=allow_fractional)
+        else:
+            raise AttributeError("Reference history for this model is not set.")
 
     def index_interval(self, Δt, allow_rounding=False):
         if self._refhist is not None:
@@ -282,8 +299,9 @@ class Model(com.ParameterMixin):
         for kernel in self.kernel_list:
             kernel.theano_reset()
 
-        sinn.theano_reset() # theano_reset on histories will be called twice,
+        #sinn.theano_reset() # theano_reset on histories will be called twice,
                             # but there's not much harm
+        shim.reset_updates()
 
     def update_params(self, new_params):
         """
@@ -454,7 +472,28 @@ class Model(com.ParameterMixin):
                 history._data = update_dict[history._original_data]
 
         # Update the shim update dictionary
-        shim.config.theano_updates.update(update_dict)
+        shim.add_updates(update_dict)
+
+    def eval_updates(self, givens=None):
+        """
+        Compile and evaluate a function evaluating the `shim` update
+        dictionary. Histories' internal _data and _cur_tidx are reset
+        to be equal to _original_tidx and _original_data.
+        If the updates have symbolic inputs, provide values for them through
+        the `givens` argument.
+        If there are no updates, no function is compiled, so you can use this
+        as a safeguard at the top of a function to ensure there are no
+        unapplied updates, without worrying about the cost of repeated calls.
+        """
+        upds = shim.get_updates()
+        if len(upds) > 0:
+            f = shim.graph.compile([], [], updates=upds, givens=givens)
+            f()
+            for h in self.history_set:
+                if h._cur_tidx != h._original_tidx:
+                    h._cur_tidx = h._original_tidx
+                if h._data != h._original_data:
+                    h._data = h._original_data
 
     def get_loglikelihood(self, *args, **kwargs):
 
@@ -479,8 +518,7 @@ class Model(com.ParameterMixin):
             # TODO Precompile function
             def likelihood_f(model):
                 if 'loglikelihood' not in self.compiled:
-                    import theano
-                    self.theano_reset()
+                    self.theano()
                         # Make clean slate (in particular, clear the list of inputs)
                     logL = model.loglikelihood(*args, **kwargs)
                         # Calling logL sets the sinn.inputs, which we need
@@ -597,13 +635,29 @@ class Model(com.ParameterMixin):
     # - compile_advance_function(self): Function called by `_advance` the first
     #   time to do the compilation. Could conceivably also be used by a user.
     #   Returns a compiled function.
-    # - advance_updates(self, stopidx): Function used by
+    # - advance_updates(self, stoptidx): Function used by
     #   `compile_advance_function` to retrieve the set of symbolic updates.
     # ==============================================
+    def get_state(self, tidx=None):
+        """
+        Return a State object corresponding to the state at time `tidx`
+        If no tidx is given, uses `self.cur_tidx` to return the current state
+        TODO: Add support for >1 lags.
+        """
+        ti = self.cur_tidx
+        return self.State(*(h[ti-self.t0idx+h.t0idx] for h in self.statehists))
+
+    def get_state_placeholder(self):
+        """
+        Return a State object populated with symbolic placeholder variables.
+        TODO: Add support for >1 lags.
+        """
+        return self.State(*(shim.tensor(h.shape, h.name + ' placeholder',
+                                        h.dtype) for h in self.statehists))
+
     def advance(self, stop):
         """
-        Allows advancing (aka progagating forward, integrating) a symbolic
-        model.
+        Allows advancing (aka integrating) a symbolic model.
         For a non-symbolic model the usual recursion is used – it's the
         same as calling `hist[stop]` on each history in the model.
         For a symbolic model, the function constructs the symbolic update
@@ -618,99 +672,178 @@ class Model(com.ParameterMixin):
             Compute history up to this point (inclusive).
         """
 
-        # TODO: Rename stopidx -> endidx
+        # TODO: Rename stoptidx -> endidx
         if stop == 'end':
-            stopidx = self.tnidx
+            stoptidx = self.tnidx
         else:
-            stopidx = self.get_tidx(stop)
+            stoptidx = self.get_tidx(stop)
 
         # Make sure we don't go beyond given data
         for hist in self.history_set:
             if hist.locked:
                 tnidx = hist._original_tidx.get_value()
-                if tnidx < stopidx - self.t0idx + hist.t0idx:
+                if tnidx < stoptidx - self.t0idx + hist.t0idx:
                     logger.warning("Locked history '{}' is only provided "
                                    "up to t={}. Output will be truncated."
                                    .format(hist.name, hist.get_time(tnidx)))
-                    stopidx = tnidx - hist.t0idx + self.t0idx
+                    stoptidx = tnidx - hist.t0idx + self.t0idx
 
         if not shim.config.use_theano:
-            self._refhist[stopidx - self.t0idx + self._refhist.t0idx]
-            # We want to compute the whole model up to stopidx, not just what is required for refhist
+            self._refhist[stoptidx - self.t0idx + self._refhist.t0idx]
+            # We want to compute the whole model up to stoptidx, not just what is required for refhist
             for hist in self.statehists:
-                hist.compute_up_to(stopidx - self.t0idx + hist.t0idx)
+                hist.compute_up_to(stoptidx - self.t0idx + hist.t0idx)
 
         else:
-            curtidx = min( hist._original_tidx.get_value() - hist.t0idx + self.t0idx
+            if not shim.graph.is_computable([hist._cur_tidx
+                                       for hist in self.statehists]):
+                raise TypeError("Advancing models is only implemented for "
+                                "histories with a computable current time "
+                                "index (i.e. the value of `hist._cur_tidx` "
+                                "must only depend on symbolic constants and "
+                                "shared vars).")
+            # try:
+            #     self.eval_updates()
+            # except shim.graph.MissingInputError:
+            #     raise shim.graph.MissingInputError("There "
+            #         "are symbolic inputs to the already present updates:"
+            #         "\n{}.\nEither discard them with `theano_reset()` or "
+            #         "evaluate them with `eval_updates` (providing values "
+            #         "with the `givens` argument) before advancing the model."
+            #         .format(shim.graph.inputs(shim.get_updates().values())))
+            curtidx = min( shim.graph.eval(hist._cur_tidx, max_cost=50)
+                           - hist.t0idx + self.t0idx
                            for hist in self.statehists )
             assert(curtidx >= -1)
 
-            if curtidx < stopidx:
-                self._advance(stopidx+1)
-                for hist in self.statehists:
-                    hist.theano_reset()
+            if curtidx < stoptidx:
+                self._advance(curtidx, stoptidx+1)
+                # _advance applies the updates, so should get rid of them
+                self.theano_reset()
+    integrate = advance
+
+    @property
+    def no_updates(self):
+        """
+        Return `True` if none of the model's histories have unevaluated
+        symbolic updates.
+        """
+        no_updates = all(h._cur_tidx is h._original_tidx
+                         and h._data is h._original_data
+                         for h in self.history_set)
+        if no_updates and len(shim.get_updates()) > 0:
+            raise RuntimeError(
+                "Unconsistent state: there are symbolic theano updates "
+                " (`shim.get_updates()`) but none of the model's histories "
+                "has a symbolic update.")
+        return no_updates
+
 
     @property
     def _advance(self):
         """
         Attribute which caches the compilation of the advance function.
         """
-        if not hasattr(self, '_advance_fn'):
-            self._advance_fn = self.compile_advance_function()
-        return self._advance_fn
+        if not hasattr(self, '_advance_updates'):
+            self._advance_updates = self.get_advance_updates()
+        if self.no_updates:
+            if not hasattr(self, '_advance_fn'):
+                logger.info("Compiling the update function")
+                self._advance_fn = self.compile_advance_function(
+                    self._advance_updates)
+                logger.info("Done.")
+            _advance_fn = self._advance_fn
+        else:
+            # TODO: Find reasonable way of caching these compilations ?
+            # We would need to cache the compilation for each different
+            # set of symbolic updates.
+            advance_updates = OrderedDict(
+                (var, shim.graph.clone(upd, replace=shim.get_updates()))
+                for var, upd in self._advance_updates.items())
+            logger.info("Compiling the update function")
+            _advance_fn = self.compile_advance_function(advance_updates)
+            logger.info("Done.")
 
-    def compile_advance_function(self):
-        stopidx_var = shim.getT().scalar('stopidx (model)',
+        return _advance_fn
+
+    def get_advance_updates(self):
+        """
+        Returns a 'blank' update dictionary. Update graphs do not include
+        any dependencies from the current state, such as symbolic initial
+        conditions.
+        """
+        assert not hasattr(self, '_curtidx_var')
+        assert not hasattr(self, '_stopidx_var')
+        self._curtidx_var = shim.getT().scalar('curtidx (model)',
+                                          dtype=self.tidx_dtype)
+        self._curtidx_var.tag.test_value = 1
+        self._stoptidx_var = shim.getT().scalar('stoptidx (model)',
                                          dtype=self.tidx_dtype)
-        stopidx_var.tag.test_value = 2
+        self._stoptidx_var.tag.test_value = 2
             # Allow model to work with compute_test_value != 'ignore'
-        logger.info("Compiling advance function.")
-        updates = self.advance_updates(stopidx_var)
-        fn = shim.graph.compile([stopidx_var], [], updates = updates)
-        logger.info("Done.")
+        logger.info("Constructing the update graph.")
+        # Stash current symbolic updates
+        for h in self.statehists:
+            h.stash()  # Stash unfinished symbolic updates
+        updates_stash = shim.get_updates()
+        shim.reset_updates()
+
+        # Get advance updates
+        updates = self.advance_updates(self._curtidx_var, self._stoptidx_var)
+        # Reset symbolic updates to their previous state
         self.theano_reset()
+        for h in self.statehists:
+            h.stash.pop()
+        shim.config.theano_updates = updates_stash
+        logger.info("Done.")
+        return updates
+
+    def compile_advance_function(self, updates):
+        return shim.graph.compile([self._curtidx_var, self._stoptidx_var], [],
+                                   updates = updates)
         return fn
 
-    def advance_updates(self, stopidx):
+    def advance_updates(self, curtidx, stoptidx):
         """
+        Compute model updates from curtidx to stoptidx.
 
         Parameters
         ----------
-        stopidx: symbolic (int)
+        curtidx: symbolic (int):
+            We want to compute the model starting from this point.
+        stoptidx: symbolic (int)
             We want to compute the model up to this point.
 
         Returns
         -------
         Update dictionary:
             Compiling a function and providing this dictionary as 'updates' will return a function
-            which fills in the histories up to `stopidx`.
+            which fills in the histories up to `stoptidx`.
         """
         self.remove_other_histories()  # HACK
         # self.clear_unlocked_histories()
-        self.theano_reset()
-        if not all(np.can_cast(stopidx.dtype, hist.tidx_dtype)
+        # self.theano_reset()
+        if not all(np.can_cast(stoptidx.dtype, hist.tidx_dtype)
                    for hist in self.statehists):
-            raise TypeError("`stopidx` cannot be safely cast to a time index. "
+            raise TypeError("`stoptidx` cannot be safely cast to a time index. "
                             "This can happen if e.g. a history uses `int32` for "
-                            "its time indices while `stopidx` is `int64`.")
+                            "its time indices while `stoptidx` is `int64`.")
 
         if len(self.statehists) == 0:
             raise NotImplementedError
-        elif len(self.statehists) == 1:
-            hist = next(iter(self.statehists))
-            startidx = hist._original_tidx - hist.t0idx + self.t0idx
-        else:
-            startidx = shim.smallest( *( hist._original_tidx - hist.t0idx + self.t0idx
-                                        for hist in self.statehists ) )
+        # elif len(self.statehists) == 1:
+        #     hist = next(iter(self.statehists))
+        #     startidx = hist._original_tidx - hist.t0idx + self.t0idx
+        # else:
+        #     startidx = shim.smallest( *( hist._original_tidx - hist.t0idx + self.t0idx
+        #                                 for hist in self.statehists ) )
         try:
-            assert( shim.get_test_value(startidx) >= -1 )
+            assert( shim.get_test_value(curtidx) >= -1 )
                 # Iteration starts at startidx + 1, and will break for indices < 0
         except AttributeError:
             # Unable to find test value; just skip check
             pass
 
-        # TODO: Make `symbolic_update` a generic function that constructs
-        # symbolic updates from the history update functions
         def onestep(tidx, *args):
             state_outputs, updates = self.symbolic_update(tidx, *args)
             assert(len(state_outputs) == len(self.statehists))
@@ -730,7 +863,7 @@ class Model(com.ParameterMixin):
                 lags = [-maxlag, -1]
             else:
                 lags = [-1]
-            tidx = startidx - self.t0idx + hist.t0idx
+            tidx = curtidx - self.t0idx + hist.t0idx
             assert(maxlag <= hist.t0idx)
                 # FIXME Maybe not necessary if built into lag history
             if len(lags) == 1:
@@ -749,7 +882,7 @@ class Model(com.ParameterMixin):
 
 
         outputs, upds = shim.gettheano().scan(onestep,
-                                              sequences = shim.arange(startidx+1, stopidx),
+                                              sequences = shim.arange(curtidx+1, stoptidx),
                                               outputs_info = outputs_info)
         # Ensure that all updates are of the right type
         # Theano can add updates for variables that don't have a dtype, e.g.
@@ -768,8 +901,8 @@ class Model(com.ParameterMixin):
             # Scan does not wrap `outputs` in a list if it is a single variable
             outputs = [outputs]
         for hist, output in zip(self.statehists, outputs):
-            valslice = slice(startidx - self.t0idx + hist.t0idx + 1,
-                             stopidx  - self.t0idx + hist.t0idx)
+            valslice = slice(curtidx - self.t0idx + hist.t0idx + 1,
+                             stoptidx  - self.t0idx + hist.t0idx)
             hist.update(valslice, output)
 
         hist_upds = shim.get_updates()
@@ -783,6 +916,193 @@ class Model(com.ParameterMixin):
                                  for orig_var, upd in hist_upds.items()])
         return hist_upds
 
+    def symbolic_update(self, tidx, *statevars):
+        """
+        Attempts to build a symbolic update automatically. This is work in
+        progress, so for the time being will only work on simpler models.
+        An error is thrown if the function suspects the output to be wrong.
+        For more complicated models you can define the `symbolic_update`
+        method yourself in the model's class.
+        Creating the graph is quite slow, but the result is cached, so
+        subsequent calls don't need to recreate it.
+        """
+        # This function is actually a wrapper which caches the result of
+        # `_get_symbolic_update`, to avoid constructing the graph twice.
+        # However, this is the function the function that is part of the API
+        # and which should be overloaded by a derived class, so this is the
+        # one we document.
+        if not hasattr(self, '_symbolic_update_graph'):
+            stateph = self.get_state_placeholder()
+            symbupd = self._get_symbolic_update(tidx, *stateph)
+            self._symbolic_update_graph = (stateph, symbupd)
+        else:
+            stateph, symbupd = self._symbolic_update_graph
+        # symbupd: ([state xt vars], odict(shared var updates))
+        subs = OrderedDict((xph, x) for xph, x in zip(stateph, statevars))
+        outputs = [shim.graph.clone(xt, replace=subs) for xt in symbupd[0]]
+        updates = OrderedDict((var, shim.graph.clone(upd, replace=subs))
+                              for var, upd in symbupd[1].items())
+        return outputs, updates
+
+    def _get_symbolic_update(self, tidx, *statevars):
+        theano = shim.gettheano()
+        failed_build_msg = (
+                "Failed to build the symbolic update. Make sure that the "
+                "model's definition of State is correct: it should include "
+                "enough histories to fully define the model's state and "
+                "allow forward integration. If you are sure the problem is "
+                "not your model, you may need to workaround the issue by "
+                "defining a `symbolic_update` in your model class. "
+                "Automatic construction of symbolic updates is still work in "
+                " progress and not always possible.")
+        # Stash current symbolic updates
+        for h in self.statehists:
+            h.stash()  # Stash unfinished symbolic updates
+        updates_stash = shim.get_updates()
+        self.theano_reset()
+
+        # It doesn't really matter which time point we use, we just want the
+        # t -> t+1 update. But a graph update will be created for every time
+        # point between _original_tidx and the chosen _tidx, so making it
+        # large can be really costly.
+        ref_tidx = self._refhist._original_tidx
+        tidcs = [ref_tidx - self._refhist.t0idx + h.t0idx
+                 for h in self.statehists]
+        tidxvals = [shim.graph.eval(ti) for ti in tidcs]
+        # Get the placeholder current state
+        # Get the placeholder new state
+        #St = [h[ti+1] for h, ti in zip(self.statehists, tidcs)]
+        St = [h._update_function(ti+1) for h, ti in zip(self.statehists, tidcs)]
+        # FIXME: Assumes no dependencies beyond a lag 1 for every one
+        # Get S0 after St: don't need to update _data the second time, so it
+        # will be the same _data which is indexed for both.
+        #S0 = [h[ti] for h, ti in zip(self.statehists, tidcs)]
+        # assert(len(S0) == len(St))
+        assert(len(St) == len(statevars))
+        odatas = [h._original_data for h in self.statehists]
+        # Find all nod  es in the graph corresponding to the current state
+        # We identify the placeholder var x0 and replace with the corresponding
+        # symbolic history variable from statevars
+        replace_dicts = None
+        for recursion_count in range(5):  # 5: max recursion
+            inputs = shim.graph.inputs(St)
+            variables = shim.graph.variables(St)
+            # ---------------------------
+            # Debugging code
+            # Update variables which still have symbolic inputs
+            # xvars = [(h.name, xt) for h, xt in zip(self.statehists, St)
+            #          if any(y in shim.graph.variables([xt])
+            #                 for y in odatas + [ref_tidx])]
+            # # The unsubstituted symbolic inputs to the above update variables
+            # ivars = [[(h.name, h._original_data) for h in self.statehists
+            #             if h._original_data in shim.graph.variables([xt])]
+            #          for _, xt in xvars]
+            # if len(xvars) > 0:
+            #     # Locating the first unsubstituted symbolic input in the graph
+            #     upd = xvars[0][1]
+            #     xin = ivars[0][0][1]
+            #     child1 = [v for v in shim.graph.variables([upd])
+            #                 if v.owner is not None and xin in v.owner.inputs]
+            #     child2 = [v for v in shim.graph.variables([upd])
+            #                 if v.owner is not None
+            #                 and v.owner.inputs[0].owner is not None
+            #                 and xin in v.owner.inputs[0].owner.inputs]
+            # import pdb; pdb.set_trace()
+            # ---------------------------
+            if (not any(odata in inputs for odata in odatas)
+                and ref_tidx not in inputs):
+                # We replaced all placeholder variables with virtual ones
+                break
+            elif (replace_dicts is not None
+                  and sum(len(rd) for rd in replace_dicts) == 0):
+                # We didn't actually change the graph on the last iteration
+                # No point in continuing to try
+                raise RuntimeError(failed_build_msg)
+            logger.info("Constructing symbolic update, pass {}"
+                        .format(recursion_count+1))
+            replace_dicts = []
+            for xt in St:
+                replace = {}
+                # Loop over graph nodes, replacing any instance where we index
+                # into _original_data by the appropriate virtual state variable
+                for y in shim.graph.variables([xt]):
+                    if shim.graph.is_same_graph(y, ref_tidx):
+                        replace[y] = shim.cast(tidx - 1, y.dtype)
+                    elif y.owner is None:
+                        continue
+                    elif isinstance(y.owner.op, theano.tensor.Subtensor):
+                        if (y.owner.inputs[0].owner is not None
+                            and isinstance(y.owner.inputs[0].owner.op,
+                                           theano.tensor.IncSubtensor)):
+                            for xt2, odata, tival in zip(St, odatas, tidxvals):
+                                if y.owner.inputs[0].owner.inputs[0] is odata:
+                                    if tival == 0 and expensive_asserts:
+                                        iy = shim.graph.eval(y.owner.inputs[1],
+                                                            max_cost=50)
+                                        assert(iy == tival+1)
+                                        #replace[y] = xt2
+                                        assert(shim.graph.eval(
+                                          y.owner.inputs[0].owner.inputs[1]-xt2,
+                                          max_cost = 1000) == 0)
+                                    replace[y] = xt2
+                                    break
+                        else:
+                            for xs, xt2, odata, tival in zip(statevars, St,
+                                                             odatas, tidxvals):
+                                if y.owner.inputs[0] is odata:
+                                    # args: data, index
+                                    i = shim.eval(y.owner.inputs[1])
+                                    if i == tival:
+                                        replace[y] = xs
+                                    elif i == tival+1:
+                                        # We can land here if the histories'
+                                        # original tindices aren't synchronized
+                                        assert(xt2 != xt)
+                                        replace[y] = xt2
+                                    break
+                            else:
+                                # We can land here e.g. when indexing a hist
+                                # which is not a state variable (like input),
+                                # but is there another way ? Should we throw
+                                # a warning ?
+                                pass
+                        # Any situation with different `i` is unsupported
+                        # and will be caught in the asserts below
+                        # FIXME: This is where to add support for multiple lags
+
+                    # if shim.graph.is_same_graph(y, x0):
+                    #     replace[y] = xs
+                    # elif shim.graph.is_same_graph(y, ref_tidx+1):
+                    #     replace[y] = tidx
+                replace_dicts.append(replace)
+            # Recreate the new state with the substitutions from the current state
+            St = [shim.graph.clone(xt, subs)
+                  for xt, subs in zip(St, replace_dicts)]
+        # Replace the place-in current state S0 with the symbolic
+
+        # Sanity checks
+        try:
+            assert(shim.graph.is_computable(St, with_inputs=statevars+(tidx,)))
+                # If we have >1 time lags, this should catch it
+            inputs = shim.graph.inputs(St)
+            # vs = [v for v in shim.graph.variables(inputs, St) if hasattr(v.owner, 'inputs') and any(i.name is not None and 'data' in i.name for i in v.owner.inputs)]  # DEBuG
+            assert(ref_tidx not in inputs)
+                # Still test this: if ref_tidx is shared, it's computable
+            # assert(not any(x0 in inputs for x0 in S0))
+            assert(not any(h._original_data in inputs for h in self.statehists))
+                # Symbolic update should only depend on `statevars` and `tidx`
+        except AssertionError as e:
+            raise (AssertionError(failed_build_msg)
+                    .with_traceback(e.__traceback__))
+
+        updates = shim.get_updates()
+        # Reset symbolic updates to their previous state
+        for h in self.statehists:
+            h.stash.pop()
+        shim.config.theano_updates = updates_stash
+
+        # Return the new state
+        return St, updates
 
 def Surrogate(model):
     """

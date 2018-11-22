@@ -18,6 +18,7 @@ logger = logging.getLogger("sinn.history")
 
 import theano_shim as shim
 import theano_shim.sparse
+from mackelab.utils import Stash
 import sinn
 from sinn.common import HistoryBase, PopulationHistoryBase, KernelBase
 import sinn.config as config
@@ -430,6 +431,10 @@ class History(HistoryBase):
         self.tn = tn
         self._unpadded_length = len(self._tarr)     # Save this, because _tarr might change with padding
 
+        # Following allows to stash Theano updates
+        self.stash = Stash(self, ('_cur_tidx', '_original_tidx'),
+                                 ('_data', '_original_data'))
+
     def __len__(self):
         return self._unpadded_length
 
@@ -465,11 +470,20 @@ class History(HistoryBase):
 
     @property
     def cur_tidx(self):
-        """Returns the time index up to which the history has been computed.
+        """
+        Returns the time index up to which the history has been computed.
         Returned index is not corrected for padding; to get the number of bins
         computed beyond t0, do `hist.cur_tidx - hist.t0idx`.
         """
         return self._original_tidx.get_value()
+
+    @property
+    def data(self):
+        """
+        Returns the data which has been computed. This does include
+        in-progress symbolic updates.
+        """
+        return self._original_data.get_value()
 
     @classmethod
     def from_repr_np(cls, repr_np):
@@ -809,14 +823,14 @@ class History(HistoryBase):
 
         key, key_filter, latest = self._parse_key(key)
 
-        symbolic_return = True
-            # Indicates that we allow the return value to be symbolic. If false
-            # and return value is a graph object, we will try to obtain a
-            # numerical value by calling 'shim.eval'
-        if not shim.is_theano_object(key, key_filter, latest) and latest <= self._original_tidx.get_value():
-            # No need to compute anything, even if _cur_tidx is a graph object
-            symbolic_return = False
-        elif shim.is_theano_object(latest, self._cur_tidx):
+        # symbolic_return = True
+        #     # Indicates that we allow the return value to be symbolic. If false
+        #     # and return value is a graph object, we will try to obtain a
+        #     # numerical value by calling 'shim.eval'
+        # if not shim.is_theano_object(key, key_filter, latest) and latest <= self._original_tidx.get_value():
+        #     # No need to compute anything, even if _cur_tidx is a graph object
+        #     symbolic_return = False
+        if shim.is_theano_object(latest, self._cur_tidx):
             # For theano variables, we can't know in advance if we need to compute
             # or not.
             # TODO: always compute, and let compute_up_to decide ?
@@ -844,13 +858,13 @@ class History(HistoryBase):
         #     sinn.inputs[self] = set()
 
         result = self.retrieve(key)
-        if not symbolic_return and shim.is_theano_object(result):
-            try:
-                result = shim.graph.eval(result,
-                                         max_cost=sinn.config.max_eval_cost)
-            except shim.graph.TooCostly:
-                # Too expensive; kept symbolic expression
-                pass
+        # if not symbolic_return and shim.is_theano_object(result):
+        #     try:
+        #         result = shim.graph.eval(result,
+        #                                  max_cost=sinn.config.max_eval_cost)
+        #     except shim.graph.TooCostly:
+        #         # Too expensive; kept symbolic expression
+        #         pass
         if key_filter is None:
             return result
         else:
@@ -1206,19 +1220,33 @@ class History(HistoryBase):
         start: str
             Computation runs from one past the currently computed index up to `tidx`.
             The currently computed index may be either
-              - 'symbolic': (default) Updating the starting point later will change
-                the computation. (Current index is part of the computational graph.)
+              - 'symbolic': (default) Updating the starting point later will
+                change the computation. (Current index is part of the
+                computational graph.)
               - 'numeric': The current value of the current index attribute is
-                retrieved and saved. Resulting function will always start from the same
-                index.
+                retrieved and saved. Resulting function will always start from
+                the same index.
         """
 
-        if start == 'numeric':
-            original_tidx = self._original_tidx.get_value()
+        cur_tidx = self._cur_tidx
+        if start == 'numeric' and shim.graph.is_computable([cur_tidx]):
+            cur_tidx = shim.graph.eval(cur_idx, if_too_costly='ignore')
         else:
-            original_tidx = self._original_tidx
+            assert(start == 'symbolic')
+            if not shim.graph.is_computable([tidx, cur_tidx],
+                                            with_inputs=[self._original_tidx]):
+                raise TypeError(
+                    "We cannot construct the computational graph for updates "
+                    "up to arbitrary symbolic times. Use expressions such as "
+                    "`hist.compute_up_to(hist._cur_tidx + 1)`. The only " "allowed symbolic dependency is `self._original_tidx`."
+                    "For constructing the graph filling a history up to some "
+                    "arbitrary time, see `models.Model.advance`.")
+        # if start == 'numeric':
+        #     original_tidx = self._original_tidx.get_value()
+        # else:
+        #     original_tidx = self._original_tidx
         if tidx == 'end':
-            start = original_tidx + 1
+            start = cur_tidx + 1
             end = self.tnidx
             replace = False
         elif tidx == 'all':
@@ -1226,11 +1254,12 @@ class History(HistoryBase):
             end = len(self._tarr) - 1
             replace = True
         else:
-            shim.check(shim.istype(tidx, 'int'))
-            start = original_tidx + 1
+            assert(shim.istype(tidx, 'int'))
+            start = cur_tidx + 1
             end = tidx
             replace = False
 
+        symbolic_tarr = shim.is_theano_object(start, end)
 
         #end = shim.ifelse(tidx >= 0,
         #                  tidx,
@@ -1244,51 +1273,53 @@ class History(HistoryBase):
                                              .format(self.name))
             return
 
-        #if shim.is_theano_object(tidx):
-        if self.symbolic and (self._compiling
-                                or any(hist._compiling for hist in sinn.inputs)):
-            # Don't actually compute: just store the current_idx we would need
-            # HACK The 'or' line prevents any chaining of Theano graphs
-            # FIXME Allow chaining of Theano graphs when possible/specified
-            self._cur_tidx = shim.largest(end, self._cur_tidx)
-            return
+        # #if shim.is_theano_object(tidx):
+        # if self.symbolic and (self._compiling
+        #                         or any(hist._compiling for hist in sinn.inputs)):
+        #     # Don't actually compute: just store the current_idx we would need
+        #     # HACK The 'or' line prevents any chaining of Theano graphs
+        #     # FIXME Allow chaining of Theano graphs when possible/specified
+        #     self._cur_tidx = shim.largest(end, self._cur_tidx)
+        #     return
 
 
-        # Theano HACK
-        if hasattr(self, '_computing'):
-            # We are already computing this history (with Theano). Assuming we are
-            # correctly only updating up to _original_tidx + 1, there is no need to
-            # recursively compute.
-            return
-        # Theano HACK
-        if self._cur_tidx != self._original_tidx:
-            # We have already changed the current index once - don't change it again.
-            # Again, this assumes that we are only updating up to _original_tidx + 1
-            return
+        # # Theano HACK
+        # if hasattr(self, '_computing'):
+        #     # We are already computing this history (with Theano). Assuming we are
+        #     # correctly only updating up to _original_tidx + 1, there is no need to
+        #     # recursively compute.
+        #     return
+        # # Theano HACK
+        # if self._cur_tidx != self._original_tidx:
+        #     # We have already changed the current index once - don't change it again.
+        #     # Again, this assumes that we are only updating up to _original_tidx + 1
+        #     return
 
-        if (not shim.is_theano_object(end, self._cur_tidx)
-            and end <= self._cur_tidx):
+        # if (not shim.is_theano_object(end, self._cur_tidx)
+        #     and end <= self._cur_tidx):
+        if not symbolic_tarr and end <= self.cur_tidx:
             # Nothing to compute
-            # We exclude Theano objects because in this case we don't
+            # We exclude symbolic time arrays because in those cases we don't
             # know what value `end` has
+            # Theano computations over fixed time intervals can also land here.
             # TODO? Remove this and rely on update ? So that NumPy runs
             # go through the same code as Theano ?
             return
 
-        if (not shim.is_theano_object(end)
-            #and hasattr(self, '_theano_cur_tidx')
-            and not shim.is_theano_variable(self._cur_tidx)
-            and end <= self._cur_tidx.get_value()):
-            # Theano computations over fixed time intervals can land here.
-            # In these cases we can also safely abort the computation
-            return
+        # if (not shim.is_theano_object(end)
+        #     #and hasattr(self, '_theano_cur_tidx')
+        #     and not shim.is_theano_variable(self._cur_tidx)
+        #     and end <= self._cur_tidx.get_value()):
+        #     # Theano computations over fixed time intervals can land here.
+        #     # In these cases we can also safely abort the computation
+        #     return
 
-        if (not shim.is_theano_object(end)
-            and self.symbolic
-            and self.compiled_history is not None
-            and end <= self.compiled_history._cur_tidx):
-            # A computed value already exists and has been computed to this point
-            return
+        # if (not shim.is_theano_object(end)
+        #     and self.symbolic
+        #     and self.compiled_history is not None
+        #     and end <= self.compiled_history._cur_tidx):
+        #     # A computed value already exists and has been computed to this point
+        #     return
 
         #########
         # Did not abort the computation => now let's do the computation
@@ -1296,14 +1327,18 @@ class History(HistoryBase):
         stop = end + 1    # exclusive upper bound
         # Construct a time array that will work even for Theano tidx
         # TODO: Remove tarr
-        if shim.is_theano_object(start) or shim.is_theano_object(end):
-            tarr = shim.gettheano().shared(self._tarr, borrow=True)
+        #if shim.is_theano_object(start) or shim.is_theano_object(end):
+        if symbolic_tarr:
+            # tarr = shim.gettheano().shared(self._tarr, borrow=True)
+            tarr = shim.shared(self._tarr, borrow=True)
             printlogs = False
         else:
             tarr = self._tarr
             printlogs = True
 
-        if not self._iterative:
+        if symbolic_tarr:
+            batch_computable = False
+        elif not self._iterative:
             batch_computable = True
         #elif (self.symbolic and self._is_batch_computable()):
         elif self._is_batch_computable(up_to=end):
@@ -1320,10 +1355,12 @@ class History(HistoryBase):
             self.update(slice(start, stop),
                         # self._compute_range(tarr[slice(start, stop)]))
                         self._compute_range(np.arange(start, stop)))
+                 # FIXME: Should use a slice rather than np.arange
 
         elif batch_computable:
-            # Computation doesn't depend on history – just compute the whole thing in
-            # one go
+            # Computation doesn't depend on history – just compute the whole
+            # thing in one go
+            # This is never triggered for symbolic updates
             if printlogs:
                 logger.monitor("Computing {} from {} to {}. Computing all times simultaneously."
                                .format(self.name, tarr[start], tarr[end]))
@@ -1341,17 +1378,83 @@ class History(HistoryBase):
                     # later times first. This ensures that if dependent computations
                     # are triggered, they will also batch update.
 
-        elif shim.is_theano_object(tarr):
-            # For non-batch Theano evaluations, we only allow evaluating one time step ahead;
-            # here, we simply assume that that is the case.
-            # TODO: Throw error if stop is incorrectly higher than start
+        elif symbolic_tarr:
+            # The tricky thing with Theano updates is dealing with the
+            # possibility of recursive dependencies bringing us back inside
+            # this function
+            # We deal with this by referencing all times to _original_tidx:
+            # the deltas (Δ) are plain Python integers which can be compared
+            # and looped over.
+            # A bunch of internal variables then keep track of the loop counter
+            # and bounds, and a `outer_loop` bool so that only
+            # the outer loop does the final cleanup.
+
             logger.monitor("Creating the Theano graph for {}.".format(self.name))
 
-            self._computing = True
+            if not hasattr(self, '_computing'):
+                # This is the outer loop
+                self._computing = True
+                outer_loop = True
+                self._tot_Δi = None   # Total Δ from base index to go
+                self._cur_Δi = None   # Current Δ from base index
+                    # _cur_Δi is always the next, *uncomputed* time Δ
+            else:
+                outer_loop = False
                 # Temporary flag to prevent infinite recursions
-            # self.update(end, self._update_function(tarr[end]))
-            self.update(end, self._update_function(end))
-            del self._computing
+            # Get the Δ with the base tidx (_original_tidx)
+            tot_Δi = shim.graph.eval(end, givens={self._original_tidx: 0},
+                                     max_cost=50, if_too_costly='raise')
+                # We are more tolerant to costly evals when building a graph
+                # Returns 0-dim np.array, which is why we need copies below
+            if tot_Δi <= 0:
+                # Actually nothing to compute
+                return
+            elif tot_Δi > 100:
+                logger.warning(
+                    "Theano history updates are not meant for filling them "
+                    "recursively, but rather for generating an update graph "
+                    "(which can be fed into a scan). You are asking to create "
+                    "an update graph with {} steps; be advised that this may "
+                    "require large amounts of memory and extremely long "
+                    "compilation times.".format(tot_Δi))
+            # Get the Δ of the start (current+1) with base index
+            cur_Δi = shim.graph.eval(start,
+                                     givens={self._original_tidx: 0},
+                                     max_cost=50, if_too_costly='raise')
+                # We are more tolerant to costly evals when building a graph
+                # Returns 0-dim np.array, which is why we need copies below
+            if tot_Δi < cur_Δi:
+                return
+            # Update the internal counters for number of steps to take
+            # If there are nested calls to `compute_up_to`, this ensures that
+            # recurrent dependencies are met and that every time point computed
+            # exactly once, thanks to all counters being shared between nested
+            # levels.
+            if self._tot_Δi is None or tot_Δi > self._tot_Δi:
+                self._tot_Δi = tot_Δi.copy()
+                    # If we don't copy, incrementing one increments the other
+            if self._cur_Δi is None or self._cur_Δi < cur_Δi:
+                self._cur_Δi = cur_Δi.copy()
+            while self._cur_Δi <= self._tot_Δi:
+                # self._cur_Δi and self._tot_Δi may change within the loop
+                # as we unroll recurrent dependencies
+                cur_Δi = self._cur_Δi.copy()
+                tidx = self._original_tidx + cur_Δi
+                self.update(tidx, self._update_function(tidx))
+                # self._cur_Δi may have changed inside the update
+                if cur_Δi == self._cur_Δi:
+                    # self._cur_Δi was not changed; update it because now that
+                    # time Δ is computed
+                    self._cur_Δi += 1
+                else:
+                    assert(cur_Δi < self._cur_Δi)
+
+            if outer_loop:
+                # self.update(end, self._update_function(tarr[end]))
+                #self.update(end, self._update_function(end))
+                del self._tot_Δi
+                del self._cur_Δi
+                del self._computing
 
         else:
             assert(not shim.is_theano_object(tarr))
@@ -3313,38 +3416,67 @@ class Series(ConvolveMixin, History):
             #                          shim.set_subtensor(tmpdata[tidx], value),
             #                          self._data)
 
+
             # self._cur_tidx = shim.largest(self._cur_tidx, end)
-            if shim.is_theano_object(end):
-                assert(shim.is_theano_object(self._original_tidx))
-                self._cur_tidx = end
-                shim.add_update(self._original_tidx, self._cur_tidx)
-            else:
-                self._original_tidx.set_value(shim.cast(end, self.tidx_dtype))
-                self._cur_tidx = self._original_tidx
+            # if shim.is_theano_object(end):
+            #     assert(shim.is_theano_object(self._original_tidx))
+            #     self._cur_tidx = end
+            #     shim.add_update(self._original_tidx, self._cur_tidx)
+            # else:
+            #     self._original_tidx.set_value(shim.cast(end, self.tidx_dtype))
+            #     self._cur_tidx = self._original_tidx
+
+            # There are two possibilities:
+            # 1. Neither the new value nor time indices are symbolic, AND
+            #    the internal running _data and _cur_tidx have not been
+            #    symbolically updated. In this case we update the underlying
+            #    shared variables and it behaves much like a normal Numpy
+            #    update. This typically happens when intializing the history.
+            # 2. At least one of the conditions of 1. is not met. In this case
+            #    the running _data and _cur_tidx are disconnected from the base
+            #    variables _original_data and _original_tidx, and we perform
+            #    a symbolic update.
+
+            # Not clear how to resolve an update following one where _cur_tidx
+            # was made non-computable, since then we can't how the two time
+            # points compare.
+            # assert(shim.graph.is_computable([self._cur_tidx]))
 
             if (not shim.is_theano_object(end, value)
                 and (end == tidx or not shim.is_theano_object(tidx.start))
                 and self._cur_tidx == self._original_tidx
                 and self._data == self._original_data):
-                # There are no symbolic dependencies – update data directly
+                # 1 : There are no symbolic dependencies – update data directly
                 tmpdata = self._original_data.get_value(borrow=True)
                 tmpdata[tidx] = value
                 self._original_data.set_value(tmpdata, borrow=True)
+                # Update both the running/symbolic and base time indices
+                self._original_tidx.set_value(shim.cast(end, self.tidx_dtype))
+                self._cur_tidx = self._original_tidx
             else:
+                # 2 : There are symbolic dependencies => update just the running
+                # vars (_cur_tidx & _data) and add to the update dictionary
+                # Update the data
                 tmpdata = self._data
                 self._data = shim.set_subtensor(tmpdata[tidx], value)
                 if updates is not None:
                     shim.add_updates(updates)
-                if shim.is_theano_object(self._original_data):
-                    shim.add_update(self._original_data, self._data)
-                else:
-                    self._original_data = self._data
+                shim.add_update(self._original_data, self._data)
+                # Update the time index
+                assert(shim.is_theano_object(self._original_tidx))
+                self._cur_tidx = end
+                shim.add_update(self._original_tidx, self._cur_tidx)
+                # if shim.is_theano_object(self._original_data):
+                #     shim.add_update(self._original_data, self._data)
+                # else:
+                #     self._original_data = self._data
 
             # Should only have Theano updates with Theano original data
-            assert(shim.is_theano_object(self._original_data)
-                   and shim.is_theano_object(self._data))
-            assert(shim.is_theano_object(self._original_tidx)
-                   and shim.is_theano_object(self._cur_tidx))
+            # (But running variables might be normal vars, right ?)
+            assert(shim.isshared(self._original_data))
+                   #and shim.is_theano_object(self._data))
+            assert(shim.isshared(self._original_tidx))
+                   #and shim.is_theano_object(self._cur_tidx))
         else:
             if shim.is_theano_object(value):
                 if not shim.graph.is_computable([value]):
