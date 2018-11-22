@@ -118,17 +118,18 @@ class Model(com.ParameterMixin):
         else:
             self._refhist = None
 
-    def __getattr__(self, attr):
+    def __getattribute__(self, attr):
         """
         Retrieve parameters if their name does not clash with an attribute.
         """
+        # Use __getattribute__ to maintain current stack trace on exceptions
+        # https://stackoverflow.com/q/36575068
         if (attr != 'params' and hasattr(self, 'params')
             and isinstance(self.params, Iterable)
             and attr in self.params._fields):
             return getattr(self.params, attr)
         else:
-            return self.__getattribute__(attr)
-                # Will reraise the original error, so we get a debuggable trace
+            return super().__getattribute__(attr)
 
     def set_reference_history(self, reference_history):
         if self._refhist is None:
