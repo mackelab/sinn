@@ -1249,7 +1249,7 @@ class FitCollection:
                                            #record.output_data[0].path)
 
             if isinstance(fit, SGDBase):
-                data = fit
+                data = [fit]
 
             else:
                 if isinstance(fit, str):
@@ -1280,21 +1280,45 @@ class FitCollection:
                 #         # Get format from file extension
                 #         input_format = None
 
-                data = ml.iotools.load(fitpath, input_format=input_format,
-                                       **kwargs)
-                if load is not None:
-                    data = load(data)
-                elif isinstance(data, np.lib.npyio.NpzFile):
-                    data = SGDView.from_repr_np(data)
+                def load_from_file(fitpath):
+                    data = ml.iotools.load(fitpath, input_format=input_format,
+                                           **kwargs)
+                    if load is not None:
+                        data = load(data)
+                    elif isinstance(data, np.lib.npyio.NpzFile):
+                        data = SGDView.from_repr_np(data)
+                    return data
+
+                if isinstance(fitpath, str):
+                    data = [load_from_file(fitpath)]
+                else:
+                    # Record returns a list of output paths
+                    data = [load_from_file(fp) for fp in fitpath]
+
             # TODO: Check if sgd is already loaded ?
             # TODO: Check that all fits correspond to the same posterior/model
-            self.fits.append( FitCollection.Fit(params, data) )
+            for d in data:
+                self.fits.append( FitCollection.Fit(params, d) )
             #self.sgds[-1].verify_transforms(trust_automatically=True)
             #self.sgds[-1].set_params_to_evols()
             #sgd.record = record
 
+        logger.info("Done.")
         if len(self.fits) > 0:
             self.reffit = self.fits[0]
+            # Construct a common denominator parameter set
+            # We loop over all fits and remove all parameter names which differ
+            # to the reffit in at least one fit. What remains must be equal
+            # equal across all fits.
+            self.parameters = copy.deepcopy(self.reffit.parameters)
+            excluded_keys = set()
+            for fit in self.fits[1:]:
+                diff = ml.parameters._dict_diff(self.parameters,
+                                                fit.parameters)
+                excluded_keys.update(ParameterSet(diff[0]).flatten().keys())
+                excluded_keys.update(ParameterSet(diff[1]).flatten().keys())
+            for key in excluded_keys:
+                del self.parameters[key]
         else:
             logger.warning("No fit files were found.")
 
