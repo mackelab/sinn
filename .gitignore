@@ -19,3 +19,5 @@ tmp*
 *.cprof
 _build
 *.html
+*.cache
+*.compilecache
