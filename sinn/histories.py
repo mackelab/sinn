@@ -252,6 +252,8 @@ class History(HistoryBase):
             loaded, values in this history are treated as data. Only updates
             which do not have any symbolic inputs are permitted, and they are
             immediately calculated using `shim.graph.eval()`.
+            A value of `None` will use the value from
+            `theano_shim.config.use_theano`.
             IMPORTANT NOTE: This means that any symbolic dependency (e.g. on
             shared parameters) is lost.
 
@@ -366,7 +368,7 @@ class History(HistoryBase):
         # Determine whether the series data will use Theano.
         # The default depends on whether Theano is loaded. If it is not loaded
         # and we try to use it for this history, an error is raised.
-        if symbolic is sinn._NoValue:
+        if symbolic is sinn._NoValue or symbolic is None:
             self.symbolic = shim.config.use_theano
         else:
             self.symbolic = symbolic
@@ -822,6 +824,9 @@ class History(HistoryBase):
         cases, like empty keys."""
 
         key, key_filter, latest = self._parse_key(key)
+        if hasattr(key, 'ndim') and key.ndim == 0:
+            # Turn 0d arrays into non-iterable scalars
+            key = shim.asscalar(key)
 
         # symbolic_return = True
         #     # Indicates that we allow the return value to be symbolic. If false
@@ -1402,14 +1407,15 @@ class History(HistoryBase):
                 outer_loop = False
                 # Temporary flag to prevent infinite recursions
             # Get the Δ with the base tidx (_original_tidx)
-            tot_Δi = shim.graph.eval(end, givens={self._original_tidx: 0},
+            #tot_Δi = shim.graph.eval(end, givens={self._original_tidx: 0},
+            tot_Δi = shim.graph.eval(end - self._original_tidx,
                                      max_cost=50, if_too_costly='raise')
                 # We are more tolerant to costly evals when building a graph
                 # Returns 0-dim np.array, which is why we need copies below
             if tot_Δi <= 0:
                 # Actually nothing to compute
                 return
-            elif tot_Δi > 100:
+            elif tot_Δi > 100:  # Value of 100 is arbitrary
                 logger.warning(
                     "Theano history updates are not meant for filling them "
                     "recursively, but rather for generating an update graph "
@@ -1418,8 +1424,8 @@ class History(HistoryBase):
                     "require large amounts of memory and extremely long "
                     "compilation times.".format(tot_Δi))
             # Get the Δ of the start (current+1) with base index
-            cur_Δi = shim.graph.eval(start,
-                                     givens={self._original_tidx: 0},
+            cur_Δi = shim.graph.eval(start - self._original_tidx,
+                                     # givens={self._original_tidx: 0},
                                      max_cost=50, if_too_costly='raise')
                 # We are more tolerant to costly evals when building a graph
                 # Returns 0-dim np.array, which is why we need copies below
@@ -3378,6 +3384,10 @@ class Series(ConvolveMixin, History):
         if isinstance(value, (int, float)):
             value = np.asarray(value)
 
+        # Convert constants to TensorConstant if history is symbolic
+        if self.symbolic and not isinstance(value, shim.cf.GraphType):
+            value = shim.asvariable(value)
+
         # Adaptations depending on whether tidx is a single bin or a slice
         if shim.istype(tidx, 'int'):
             end = tidx
@@ -3385,8 +3395,9 @@ class Series(ConvolveMixin, History):
                 assert(tidx <= self._original_tidx.get_value() + 1)
                 # Ensure that we update at most one step in the future
         else:
-            assert(isinstance(tidx, slice))
-            assert(shim.istype(tidx.start, 'int') and shim.istype(tidx.stop, 'int'))
+            assert isinstance(tidx, slice)
+            assert (shim.istype(tidx.start, 'int')
+                    and shim.istype(tidx.stop, 'int'))
             shim.check(tidx.stop > tidx.start)
             end = tidx.stop - 1
             if not shim.is_theano_object(tidx):
@@ -3464,6 +3475,10 @@ class Series(ConvolveMixin, History):
                 shim.add_update(self._original_data, self._data)
                 # Update the time index
                 assert(shim.is_theano_object(self._original_tidx))
+                if not isinstance(end, shim.cf.GraphType):
+                    name = (self._original_tidx.name
+                            + '[update to {}]'.format(end))
+                    end = shim.asvariable(end, name=name)
                 self._cur_tidx = end
                 shim.add_update(self._original_tidx, self._cur_tidx)
                 # if shim.is_theano_object(self._original_data):

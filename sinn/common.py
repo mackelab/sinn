@@ -335,6 +335,7 @@ inputs = DependencyGraph('sinn.inputs')
 
 class HistoryBase:
 
+    # TODO: Move setting of `name` attribute here
     def __init__(self, t0, tn):
         self.t0 = t0
         self.tn = tn
@@ -345,6 +346,19 @@ class HistoryBase:
 
     def get_t_idx(self, t):
         raise NotImplementedError
+
+    def __str__(self):
+        if hasattr(self, 'name'):
+            return self.name
+        else:
+            return super().__str__()
+
+    def __repr__(self):
+        if hasattr(self, 'name'):
+            return "{} (t0: {}, tn: {})".format(self.name, self.t0, self.tn)
+        else:
+            return super().__repr__()
+
 
 class PopulationHistoryBase(HistoryBase):
     pass
@@ -733,6 +747,8 @@ class ParameterMixin:
             if shim.isshared(val) or shim.is_theano_object(val):
                 # HACK We just assume that val has already been properly casted. We do this
                 #      to keep the reference to the original variable
+                if not hasattr(val, 'name') or val.name is None:
+                    val.name = key
                 param_dict[key] = val
             else:
                 if not isinstance(val, np.ndarray):

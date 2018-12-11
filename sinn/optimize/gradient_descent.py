@@ -808,7 +808,7 @@ class SeriesSGD(SGDBase):
             advance_updates[var] = shim.cast(upd, var.dtype, same_kind=True)
 
         # Compile the advance function
-        assert(self.tidx_var in shim.graph.symbolic_inputs(advance_updates.values()))
+        assert(self.tidx_var in shim.graph.pure_symbolic_inputs(advance_updates.values()))
             # theano.function raises a error if inputs are not used to compute outputs
             # Since tidx_var appears in the graphs on the updates, we need to
             # silence this error with `on_unused_input`. The assert above
@@ -850,7 +850,7 @@ class SeriesSGD(SGDBase):
         logger.info("Compiling the optimization step function.")
         step_inputs = [self.tidx_var, self.batch_size_var]
         step_inputs = [i for i in step_inputs
-                       if i in shim.graph.symbolic_inputs(
+                       if i in shim.graph.pure_symbolic_inputs(
                            optimizer_updates.values())]
             # This line mostly for debugging: allows to have no optimization
             # variables at all, which then have no inputs either
