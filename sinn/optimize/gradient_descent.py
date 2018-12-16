@@ -20,6 +20,7 @@ import mackelab as ml
 import mackelab.iotools
 import mackelab.optimizers as optimizers
 from mackelab.utils import OrderedEnum
+from mackelab.theano import CompiledGraphCache
 #from mackelab.optimizers import Adam, NPAdam
 import theano_shim as shim
 
@@ -283,6 +284,8 @@ class SGDBase:
                 cost, e.g. if it is evaluated on the whole trace rather than a
                 batch.
         """
+        self.compile_cache = CompiledGraphCache('compilecache.' + __name__)
+
         self.cost_format = cost_format
         self.status = ConvergeStatus.NOTSTARTED
         self.result_choice = result_choice
@@ -556,7 +559,7 @@ class SeriesSGD(SGDBase):
             parameters.
             FIXME: there is a current hard-coded requirement for 'lr' to be in
             optimizer_kwargs.
-            TODO: Parameters (e.g. learning rate) which depend on on iteration
+            TODO: Parameters (e.g. learning rate) which depend on iteration
             index or convergence status.
         optimize_vars: List of symbolic variables
             Symbolic variable/graph for the cost function we want to optimize.
@@ -574,11 +577,11 @@ class SeriesSGD(SGDBase):
         datalen: int
             Amount of data on which to evaluate the cost, in the model's time units.
             Cost will be evaluated up to the time point 'start + datalen'.
-            burnin: float, int
+        burnin: float, int
             Amount of data discarded at the beginning of every batch. In the model's time units (float)
             or in number of bins (int).
         batch_size: int
-        advance: function (tidx) -> update dictionary
+        advance: function (start_tidx, stop_tidx) -> Symbolic update dictionary
             NOTE: Will be changed to function relying on side-effects.
             Function returning a set of updates which advance the time series
             with the current parameters.
@@ -653,16 +656,22 @@ class SeriesSGD(SGDBase):
         # self.batch_size
         # self.mode
 
+        # Get time index dtype
+        assert(all(np.issubdtype(np.dtype(np.asarray(i).dtype), np.integer)
+                   for i in (start, burnin, datalen, batch_size)))
+        # TODO: Upcast to most common type instad of forcing all to have same ?
+        assert start_var.dtype == batch_size_var.dtype
+        tidx_dtype = start_var.dtype
+        #tidx_dtype = np.result_type(start, burnin, datalen, batch_size)
+
         super().__init__(cost_format)
-        start = shim.cast(start, start_var.dtype)
-        batch_size = shim.cast(batch_size, batch_size_var.dtype)
         self.cost_track_freq = cost_track_freq
         self.var_track_freq = var_track_freq
         self.optimizer = optimizer
-        self.start = start
-        self.datalen = datalen
-        self.burnin = burnin
-        self.batch_size = batch_size
+        self.start = shim.cast(start, tidx_dtype)
+        self.datalen = shim.cast(datalen, tidx_dtype)
+        self.burnin = shim.cast(burnin, tidx_dtype)
+        self.batch_size = shim.cast(batch_size, tidx_dtype)
         self.mode = mode
         if not isinstance(track_vars, OrderedDict):
             self.track_vars = OrderedDict(track_vars)
@@ -686,15 +695,10 @@ class SeriesSGD(SGDBase):
             optimizer_kwargs = copy.deepcopy(optimizer_kwargs)
 
         # Make fit parameters array-like
-        start = shim.asarray(start)
-        burnin = shim.asarray(burnin)
-        datalen = shim.asarray(datalen)
-        batch_size = shim.asarray(batch_size)
-
-        # Get time index dtype
-        assert(all(np.issubdtype(np.dtype(i.dtype), np.integer)
-                   for i in (start, burnin, datalen, batch_size)))
-        # tidx_dtype = np.result_type(start, burnin, datalen, batch_size)
+        # start = shim.asarray(start)
+        # burnin = shim.asarray(burnin)
+        # datalen = shim.asarray(datalen)
+        # batch_size = shim.asarray(batch_size)
 
         # # Check fit parameters
         # def check_fit_arg(arg, name):
@@ -786,9 +790,15 @@ class SeriesSGD(SGDBase):
         #                                    givens=[(self.tidx_var, self.sstart),
         #                                            (self.batch_size_var, np.int32(1))])
         if 'nanguard' not in optimizers.debug_flags:
-            self.cost = shim.graph.compile([], cost_graph,
-                                           givens=[(self.tidx_var, start),
-                                                   (self.batch_size_var, datalen)])
+            fn = self.compile_cache.get(cost_graph,
+                                        other_inputs=(self.start, self.datalen))
+            if fn is None:
+                self.cost = shim.graph.compile(
+                    [], cost_graph,
+                    givens=[(self.tidx_var, self.start),
+                            (self.batch_size_var, self.datalen)])
+            else:
+                logger.info("Cost function loaded from cache.")
         else:
             if optimizers.debug_flags['nanguard'] is True:
                 nanguard = {'nan_is_error': True, 'inf_is_error': True, 'big_is_error': False}
@@ -797,25 +807,34 @@ class SeriesSGD(SGDBase):
                 assert('nan_is_error' in nanguard and 'inf_is_error' in nanguard) # Required arguments to NanGuardMode
             from theano.compile.nanguardmode import NanGuardMode
             self.cost = shim.graph.compile([], cost_graph,
-                                           givens=[(self.tidx_var, start), (self.batch_size_var, datalen)],
+                                           givens=[(self.tidx_var, self.start), (self.batch_size_var, self.datalen)],
                                            mode=NanGuardMode(**nanguard))
         logger.info("Done compilation.")
 
         # Get advance updates
-        advance_updates = advance(self.tidx_var)
+        _start = shim.symbolic.scalar('start (advance compilation)',
+                                      dtype=tidx_dtype)
+        _stop  = shim.symbolic.scalar('stop (advance compilation)',
+                                      dtype=tidx_dtype)
+        advance_updates = advance(_start, _stop)
         for var, upd in advance_updates.items():
             upd = shim.graph.clone(upd, replace=self.var_subs)
             advance_updates[var] = shim.cast(upd, var.dtype, same_kind=True)
 
         # Compile the advance function
-        assert(self.tidx_var in shim.graph.pure_symbolic_inputs(advance_updates.values()))
-            # theano.function raises a error if inputs are not used to compute outputs
-            # Since tidx_var appears in the graphs on the updates, we need to
-            # silence this error with `on_unused_input`. The assert above
-            # replaces the test.
-        self.advance = shim.graph.compile([self.tidx_var], [],
-                                          updates=advance_updates)
-                                          #on_unused_inputs='ignore')
+        # assert(self.tidx_var in shim.graph.pure_symbolic_inputs(advance_updates.values()))
+        #     # theano.function raises a error if inputs are not used to compute outputs
+        #     # Since tidx_var appears in the graphs on the updates, we need to
+        #     # silence this error with `on_unused_input`. The assert above
+        #     # replaces the test.
+        self.advance = self.compile_cache.get([], advance_updates)
+        if self.advance is None:
+            self.advance = shim.graph.compile([_start, _stop], [],
+                                              updates=advance_updates)
+                                              #on_unused_inputs='ignore')
+            self.compile_cache.set([], advance_updates, self.advance)
+        else:
+            logger.info("Compiled advance function loaded from cache.")
 
         # Compile optimizer updates
         # FIXME: changed names in `optimize_vars`
@@ -857,8 +876,13 @@ class SeriesSGD(SGDBase):
         # TODO: Might not be the best test: updates might still be possible
         if len(step_inputs) > 0:
             if 'nanguard' not in optimizers.debug_flags:
-                self._step = shim.graph.compile(step_inputs, [],
-                                                updates=optimizer_updates)
+                self._step = self.compile_cache.get([], optimizer_updates)
+                if self._step is None:
+                    self._step = shim.graph.compile(step_inputs, [],
+                                                    updates=optimizer_updates)
+                    self.compile_cache.set([], optimizer_updates, self._step)
+                else:
+                    logger.info("Compiled step function loaded from cache.")
             else:
                 # TODO: Remove duplicate with above
                 if optimizers.debug_flags['nanguard'] is True:
@@ -874,10 +898,16 @@ class SeriesSGD(SGDBase):
 
             # Compile a function to extract tracking variables
             logger.info("Compiling parameter tracking function.")
-            self._get_tracked = shim.graph.compile([],
-                                                 list(self.track_vars.values()),
-                                                   on_unused_input = 'ignore',
-                                                   givens = self.var_subs.items())
+            tracked_vars = list(self.track_vars.values())
+            self._get_tracked = self.compile_cache.get(tracked_vars)
+            if self._get_tracked is None:
+                self._get_tracked = shim.graph.compile(
+                    [], tracked_vars, on_unused_input='ignore',
+                    givens = self.var_subs.items())
+                self.compile_cache.set(tracked_vars, self._get_tracked)
+            else:
+                logger.info("Compiled tracking function loaded from cache.")
+            logger.info("Done compilation.")
         else:
             self._step = lambda: None
             self._get_tracked = lambda: []
@@ -919,14 +949,13 @@ class SeriesSGD(SGDBase):
     @property
     def trace(self):
         # Convert deque to ndarray
-        return OrderedDict( ( (varname,
-                               np.fromiter(
-                                   chain.from_iterable(val.flat for val in trace),
-                                   dtype=np.float32,
-                                   count=len(trace)*np.prod(trace[0].shape)
-                                   ).reshape((len(trace),)+trace[0].shape)
-                              )
-                              for varname, trace in self._traces.items() ) )
+        return OrderedDict(
+            ( (varname,
+               np.fromiter(chain.from_iterable(val.flat for val in trace),
+                           dtype=np.float32,
+                           count=len(trace)*int(np.prod(trace[0].shape))
+                           ).reshape((len(trace),)+trace[0].shape))
+              for varname, trace in self._traces.items() ) )
 
     def initialize_vars(self, init_vals=None):
         """
@@ -952,6 +981,7 @@ class SeriesSGD(SGDBase):
 
         self.step_i = 0
         self.curtidx = 0
+        self.old_curtidx = 0
 
         # Since we repeatedly append new values to the traces while fitting,
         # we store them in a 'deque'.
@@ -993,7 +1023,11 @@ class SeriesSGD(SGDBase):
         if cost:
             # Record the current cost
             if last or self.step_i % self.cost_track_freq == 0:
-                self._cost_trace.append(self.cost())
+                cost = self.cost()
+                if not np.isfinite(cost):
+                    import pdb; pdb.set_trace()
+                    logger.error("Non-finite cost: {}.".format(cost))
+                self._cost_trace.append(cost)
                 self._tracked_cost_iterations.append(self.step_i)
 
     def step(self):
@@ -1005,6 +1039,7 @@ class SeriesSGD(SGDBase):
                                   - (1+self.mode_params.burnin_factor)*self.burnin):
                 # We either haven't started or run through the dataset
                 # Reset time index to beginning
+                self.old_curtidx = 0
                 if self.mode_params.start_factor == 0:
                     self.curtidx = self.start
                 else:
@@ -1031,7 +1066,8 @@ class SeriesSGD(SGDBase):
         else:
             burnin = np.random.randint(self.burnin, (1+self.mode_params.burnin_factor)*self.burnin)
         self.curtidx += burnin
-        self.advance(self.curtidx)
+        self.advance(self.old_curtidx, self.curtidx)
+        self.old_curtidx = self.curtidx
         self._step(self.curtidx, self.batch_size)
 
         self.record()
