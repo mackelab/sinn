@@ -3385,7 +3385,7 @@ class Series(ConvolveMixin, History):
             value = np.asarray(value)
 
         # Convert constants to TensorConstant if history is symbolic
-        if self.symbolic and not isinstance(value, shim.cf.GraphType):
+        if self.symbolic and not isinstance(value, shim.cf.GraphTypes):
             value = shim.asvariable(value)
 
         # Adaptations depending on whether tidx is a single bin or a slice
@@ -3475,7 +3475,7 @@ class Series(ConvolveMixin, History):
                 shim.add_update(self._original_data, self._data)
                 # Update the time index
                 assert(shim.is_theano_object(self._original_tidx))
-                if not isinstance(end, shim.cf.GraphType):
+                if not isinstance(end, shim.cf.GraphTypes):
                     name = (self._original_tidx.name
                             + '[update to {}]'.format(end))
                     end = shim.asvariable(end, name=name)
