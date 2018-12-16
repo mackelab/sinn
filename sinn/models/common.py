@@ -17,6 +17,7 @@ from itertools import chain
 
 import theano_shim as shim
 import mackelab.utils as utils
+import mackelab.theano
 from mackelab.theano import GraphCache, CompiledGraphCache
 import sinn.config as config
 import sinn.common as com
@@ -288,9 +289,8 @@ class Model(com.ParameterMixin):
             is used.
         """
         self.graph_cache = GraphCache('sinn.models.cache', type(self),
-                                      modules=sinn.models.common)
-        self.compile_cache = CompiledGraphCache('sinn.models.compilecache',
-                                                modules=sinn.models.common)
+                                      modules=(sinn.models.common,))
+        self.compile_cache = CompiledGraphCache('sinn.models.compilecache')
             # TODO: Add other dependencies within `sinn.models` ?
 
         # Format checks
@@ -497,6 +497,53 @@ class Model(com.ParameterMixin):
         if kernel not in self.kernel_list:
             self.kernel_list.append(kernel)
 
+    def eval(self):
+        """
+        Remove all symbolic dependencies by evaluating all ongoing updates.
+        If the update is present in `shim`'s update dictionary, it's removed
+        from there.
+        """
+        # Get the updates applied to the histories
+        tidx_updates = {h._original_tidx: (h, h._cur_tidx)
+                        for h in self.history_set
+                        if h._original_tidx is not h._cur_tidx}
+        data_updates = {h._original_data: (h, h._data)
+                        for h in self.history_set
+                        if h._original_data is not h._data}
+        updates = OrderedDict( (k, v[1])
+                               for k, v in chain(tidx_updates.items(),
+                                                 data_updates.items()) )
+        # Check that there are no dependencies
+        if not shim.graph.is_computable(updates.values()):
+            non_comp = [str(var) for var, upd in updates.items()
+                                 if not shim.graph.is_computable(upd)]
+            raise ValueError("A model can only be `eval`ed when all updates "
+                             "applied to its histories are computable.\n"
+                             "The updates to the following variables have "
+                             "symbolic dependencies: {}.".format(non_compu))
+        # Get the comp graph update dictionary
+        shimupdates = shim.get_updates()
+        for var, upd in updates.items():
+            logger.debug("Evaluating update applied to {}.".format(var))
+            if var in shimupdates:
+                if shimupdates[var] == upd:
+                    logger.debug("Removing update from CG update dictionary.")
+                    del shimupdates[var]
+                else:
+                    logger.debug("Update differs from the one in CG update "
+                                 "dictionary: leaving the latter untouched.")
+            var.set_value(shim.eval(shim.cast(upd, var.dtype)))
+        # Update the histories
+        for orig in tidx_updates.values():
+            h = orig[0]
+            h._cur_tidx = h._original_tidx
+        for orig in data_updates.values():
+            h = orig[0]
+            h._data = h._original_data
+
+        # Ensure that we actually removed updates from the update dictionary
+        assert len(shimupdates) == len(shim.get_updates())
+
     def theano_reset(self):
         """Put model back into a clean state, to allow building a new Theano graph."""
         for hist in self.history_inputs:
@@ -505,6 +552,12 @@ class Model(com.ParameterMixin):
         for kernel in self.kernel_list:
             kernel.theano_reset()
 
+        if self.rng is not None and len(self.rng.state_updates) > 0:
+            logger.warning("Erasing random number generator updates. Any "
+                           "other graphs using this generator are likely "
+                           "invalidated.\n"
+                           "RNG: {}".format(self.rng))
+            self.rng.state_updates = []
         #sinn.theano_reset() # theano_reset on histories will be called twice,
                             # but there's not much harm
         shim.reset_updates()
@@ -942,8 +995,15 @@ class Model(com.ParameterMixin):
                 "Unconsistent state: there are symbolic theano updates "
                 " (`shim.get_updates()`) but none of the model's histories "
                 "has a symbolic update.")
+        elif not no_updates and len(shim.get_updates()) == 0:
+            hlist = {h.name: (h._cur_tidx, h._data) for h in self.history_set
+                     if h._cur_tidx is not h._original_tidx
+                        and h._data is not h._original_data}
+            raise RuntimeError(
+                "Unconsistent state: some histories have a symbolic update "
+                "({}), but there are none in the update dictionary "
+                "(`shim.get_updates()`)".forma(hlist))
         return no_updates
-
 
     @property
     def _advance(self):
@@ -1021,7 +1081,7 @@ class Model(com.ParameterMixin):
                                     updates = updates)
             self.compile_cache.set([], updates, fn, self.rng)
         else:
-            logger.info("Compiled advance function loaded from cache")
+            logger.info("Compiled advance function loaded from cache.")
         return fn
 
     def advance_updates(self, curtidx, stoptidx):
@@ -1050,7 +1110,7 @@ class Model(com.ParameterMixin):
                             "This can happen if e.g. a history uses `int32` for "
                             "its time indices while `stoptidx` is `int64`.")
 
-        if len(self.statehists) == 0:
+        if len(list(self.unlocked_statehists)) == 0:
             raise NotImplementedError
         # elif len(self.statehists) == 1:
         #     hist = next(iter(self.statehists))
@@ -1068,16 +1128,19 @@ class Model(com.ParameterMixin):
         def onestep(tidx, *args):
             # To help with debugging, assign a name to the symbolic variables
             # created by `scan`
+            unlocked_statevar_names = [s + ' (scan)'
+                                       for s, h in zip(self.State._fields,
+                                                       self.statehists)
+                                       if not h.locked]
             for x, name in zip(
                 utils.flatten(tidx, *args, terminate=shim.cf._TerminatingTypes),
-                utils.flatten('tidx (scan)',
-                              (s + ' (scan)' for s in self.State._fields),
+                utils.flatten('tidx (scan)', unlocked_statevar_names,
                               terminate=shim.cf._TerminatingTypes)):
                 if getattr(x, 'name', None) is None:
                     x.name = name
             state_outputs, updates = self.symbolic_update(tidx, *args)
-            assert(len(state_outputs) == len(self.statehists))
-            for i, statehist in enumerate(self.statehists):
+            assert(len(state_outputs) == len(list(self.unlocked_statehists)))
+            for i, statehist in enumerate(self.unlocked_statehists):
                 state_outputs[i] = shim.cast(state_outputs[i],
                                              statehist.dtype)
             return state_outputs, updates
@@ -1199,7 +1262,7 @@ class Model(com.ParameterMixin):
         # one we document.
         l = len(list(self.unlocked_statehists))
         if (len(statevars) > 0
-            and not isinstance(statevars[0], shim.cf.GraphType)):
+            and not isinstance(statevars[0], shim.cf.GraphTypes)):
             raise TypeError("state variables must be passed separately to "
                             "`symbolic_update`, not as a tuple or list.")
         elif len(statevars) < l:
@@ -1239,8 +1302,14 @@ class Model(com.ParameterMixin):
         # t -> t+1 update. But a graph update will be created for every time
         # point between _original_tidx and the chosen _tidx, so making it
         # large can be really costly.
-        ref_tidx = self._refhist._original_tidx
-        tidcs = [ref_tidx - self._refhist.t0idx + h.t0idx
+        # Can't just use self._refhist because it could filled while
+        # others are empty (e.g. if it is filled with data)
+        ush = list(self.unlocked_statehists)
+        refhist_idx =  np.argmax([h.cur_tidx - h.t0idx + self._refhist.t0idx
+                                  for h in ush])
+        refhist = ush[refhist_idx]
+        ref_tidx = refhist._original_tidx
+        tidcs = [ref_tidx - refhist.t0idx + h.t0idx
                  for h in self.unlocked_statehists]
         # tidxvals = [shim.graph.eval(ti) for ti in tidcs]
         # Get the placeholder current state
@@ -1305,7 +1374,7 @@ class Model(com.ParameterMixin):
                     _St = [xt[0] for xt in St]
                     St[i] = self.sub_states_into_graph(
                         St[i][0], self.unlocked_statehists,
-                        statevars, _St, tidx)
+                        statevars, _St, tidx, ref_tidx, refhist)
 
             assert all(xt[1] for xt in St)
                 # All update graphs report as successfully substituted
@@ -1325,7 +1394,7 @@ class Model(com.ParameterMixin):
                         del updates[h._original_tidx]
                 subbed_updates = [self.sub_states_into_graph(
                                     upd, self.unlocked_statehists,
-                                    statevars, _St, tidx)
+                                    statevars, _St, tidx, ref_tidx, refhist)
                                   for upd in updates.values()]
                 updvals, updsuccess = zip(*subbed_updates)
                     # Transpose `subbed_updates`
@@ -1379,8 +1448,13 @@ class Model(com.ParameterMixin):
         updates_stash = shim.get_updates()
         self.theano_reset()
 
-        ref_tidx = self._refhist._original_tidx
-        tidcs = [ref_tidx - self._refhist.t0idx + h.t0idx
+        # Can't just use self._refhist because it could filled while
+        # others are empty (e.g. if it is filled with data)
+        refhist_idx =  np.argmax([h.cur_tidx - h.t0idx + self._refhist.t0idx
+                                  for h in hists])
+        refhist = hists[refhist_idx]
+        ref_tidx = refhist._original_tidx
+        tidcs = [ref_tidx - refhist.t0idx + h.t0idx
                   for h in hists]
         # statetidcs = [ref_tidx - self._refhist.t0idx + h.t0idx
         #               for h in self.statehists]
@@ -1401,7 +1475,8 @@ class Model(com.ParameterMixin):
         assert len(curstatevars) == len(newstatevars) == len(statehists)
 
         ht = [self.sub_states_into_graph(
-                xt[0], statehists, curstatevars, newstatevars, tidx)
+                xt[0], statehists, curstatevars, newstatevars,
+                tidx, ref_tidx, refhist)
               for xt in ht]
         assert all(xt[1] for xt in ht)
             # All update graphs report as successfully substituted
@@ -1455,7 +1530,7 @@ class Model(com.ParameterMixin):
         return graphs, updates
 
     def sub_states_into_graph(self, graph, hists, cur_histvars, new_histvars,
-                              new_tidx):
+                              new_tidx, ref_tidx, refhist):
         """
         Substitute nodes in `graph` where a state variable is indexed
         by the corresponding variable in `statevars`.
@@ -1497,10 +1572,15 @@ class Model(com.ParameterMixin):
             new_histvars = list(new_histvars)
         assert len(hists) == len(cur_histvars) == len(new_histvars)
 
-        ref_tidx = self._refhist._original_tidx
-        new_tidx = new_tidx - self.t0idx + self._refhist.t0idx
+        # # Can't just use self._refhist because it could filled while
+        # # others are empty (e.g. if it is filled with data)
+        # refhist_idx =  np.argmax([h.cur_tidx - h.t0idx + self._refhist.t0idx
+        #                           for h in hists])
+        # refhist = hists[refhist_idx]
+        # ref_tidx = refhist._original_tidx
+        new_tidx = new_tidx - self.t0idx + refhist.t0idx
             # Convert time index to be relative to reference history
-        _tidcs = [ref_tidx - self._refhist.t0idx + h.t0idx
+        _tidcs = [ref_tidx - refhist.t0idx + h.t0idx
                   for h in hists]
         ref_tidxvals = [shim.graph.eval(ti) for ti in _tidcs]
         inputs = shim.graph.inputs([graph])
