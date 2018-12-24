@@ -71,8 +71,7 @@ class History(HistoryBase):
         + compiled_history : (Theano histories only) Another History instance of same
                              type, where the update function graph has been compiled.
                              Create with `compile` method.
-                             NOTE: The compilation mechanism is expected to change
-                             in the future.
+                             DEPRECATED
     The following methods are also guaranteed to be defined:
         + compile          : If the update function is a Theano graph, compile it
                              and attach the new history as `compiled_history`.
@@ -404,8 +403,8 @@ class History(HistoryBase):
             raise ValueError("You are attempting to construct a series with Theano "
                              "but it is not loaded. Run `shim.config.load_theano()` "
                              "before constructing this history.")
-        elif self.symbolic:
-            self.compiled_history = None
+        # elif self.symbolic:
+        #     self.compiled_history = None
         self._cur_tidx = shim.shared(np.array(-1, dtype=self.tidx_dtype),
                                      name = 't idx (' + name + ')',
                                      symbolic = self.symbolic)
@@ -495,9 +494,10 @@ class History(HistoryBase):
         # The raw format is meant for data longevity, and so should
         # seldom, be changed
         # Versions:
-        #   1 original
-        #   2 (31 mai 2018)
-        #     + dt64
+        #   1   original
+        #   2   (31 mai 2018)
+        #   2.1  + dt64
+        #   2.2  + idx_dtype, tidx_dtype, symbolic
         """
 
         Parameters
@@ -579,7 +579,7 @@ class History(HistoryBase):
             (Deprecated) If True, a second Theano history will be constructed, and the loaded
             one attached as its `compiled_history` attribute.
             If unspecified, the behaviour is the same as for the History initializer.
-        **kwds:
+        **kwargs:
             Will be passed along to the class constructor
             Exists to allow specialization in derived classes.
         """
@@ -852,17 +852,17 @@ class History(HistoryBase):
             self.compute_up_to(latest)
         elif latest > self._cur_tidx:#.get_value():
             # No get_value() here because after updates, _cur_tidx is no longer a shared var
-            if (self.symbolic
-                and self.compiled_history is not None
-                and self.compiled_history._cur_tidx >= latest):
-                # ***** RETURN FORK ******
-                # If the history has already been computed to this point,
-                # just return that.
-                result = self.compiled_history[key]
-                if key_filter is None:
-                    return result
-                else:
-                    return result[key_filter]
+            # if (self.symbolic
+            #     and self.compiled_history is not None
+            #     and self.compiled_history._cur_tidx >= latest):
+            #     # ***** RETURN FORK ******
+            #     # If the history has already been computed to this point,
+            #     # just return that.
+            #     result = self.compiled_history[key]
+            #     if key_filter is None:
+            #         return result
+            #     else:
+            #         return result[key_filter]
 
             self.compute_up_to(latest)
 
@@ -924,9 +924,6 @@ class History(HistoryBase):
 
         self.theano_reset()
 
-        if self.symbolic and self.compiled_history is not None:
-            self.compiled_history.clear()
-
         try:
             super().clear()
         except AttributeError:
@@ -944,22 +941,17 @@ class History(HistoryBase):
                                "in the midst of building a Theano graph. Reset "
                                "it first".format(self.name))
         if warn and (self._original_tidx.get_value() < self.t0idx + len(self) - 1
-                     and (not self.symbolic
-                          or self.compiled_history is None)):
+                     and not self.symbolic):
             # Only trigger for Theano histories if their compiled histories are unset
             # (If they are set, they will do their own check)
             logger.warning("You are locking the unfilled history {}. Trying to "
                            "evaluate it beyond {} will trigger an error."
                            .format(self.name, self._tarr[self._original_tidx.get_value()]))
         self.locked = True
-        if self.symbolic and self.compiled_history is not None:
-            self.compiled_history.lock()
 
     def unlock(self):
         """Remove the history lock."""
         self.locked = False
-        if self.symbolic and self.compiled_history is not None:
-            self.compiled_history.unlock()
 
     def set_update_function(self, func, cast=True, _return_dtype=None):
         """
@@ -1248,7 +1240,9 @@ class History(HistoryBase):
             cur_tidx = shim.graph.eval(cur_idx, if_too_costly='ignore')
         else:
             assert(start == 'symbolic')
-            if not shim.graph.is_computable([tidx, cur_tidx],
+            if self.locked:
+                return
+            elif not shim.graph.is_computable([tidx, cur_tidx],
                                             with_inputs=[self._original_tidx]):
                 raise TypeError(
                     "We cannot construct the computational graph for updates "
@@ -2165,20 +2159,19 @@ class History(HistoryBase):
             self._batch_loop_flag = True
 
         # Augment the list of inputs with their compiled forms, if they exist
-        all_inputs = set(sinn.inputs.keys()).union(
-            set([hist.compiled_history for hist in sinn.inputs
-                 if hist.symbolic and hist.compiled_history is not None]) )
+        all_inputs = set(sinn.inputs.keys())
 
-        # Get the list of inputs. A compiled history may not be in the input list,
+        # Get the list of inputs.
+        # Deprecated: A compiled history may not be in the input list,
         # so if `self` is not found, we try to find its parent
         input_list = None
         if self in sinn.inputs:
             input_list = sinn.inputs[self]
-        else:
-            for hist in sinn.inputs:
-                if (hist.symbolic and hist.compiled_history is self):
-                    input_list = sinn.inputs[hist]
-                    break
+        # else:
+        #     for hist in sinn.inputs:
+        #         if (hist.symbolic and hist.compiled_history is self):
+        #             input_list = sinn.inputs[hist]
+        #             break
         assert(input_list is not None)
 
         # If this history is iterative, it should have at least one input
