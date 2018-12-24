@@ -527,11 +527,11 @@ class History(HistoryBase):
                 and self._cur_tidx != self._original_tidx)):
             logger.warning("Saving symbolic history '{}'; only the data "
                            "(i.e. what has already been computed) is saved. "
-                           "Symbolic state will be discarded.")
+                           "Symbolic state will be discarded.".format(self))
         # We do it this way in case kwd substitutions are there to
         # avoid an error (such as _data not having a .get_value() method)
         raw = {}
-        raw['version'] = 2.1
+        raw['version'] = 2.2
         raw['type'] = sinn.common.find_registered_typename(type(self))
              # find_registered_typename returns the closest registered type name in the hierarchy
              # E.g. if we are saving a subclass of Series, this will return the name under which
@@ -544,6 +544,8 @@ class History(HistoryBase):
         raw['dt'] = kwargs.pop('dt') if 'dt' in kwargs else self.dt
         raw['dt64'] = kwargs.pop('dt') if 'dt' in kwargs else self.dt
         raw['t0idx'] = kwargs.pop('t0idx') if 't0idx' in kwargs else self.t0idx
+        raw['idx_dtype'] = kwargs.pop('idx_dtype') if 'idx_dtype' in kwargs else self.idx_dtype
+        raw['tidx_dtype'] = kwargs.pop('tidx_dtype') if 'tidx_dtype' in kwargs else self.tidx_dtype
         raw['_unpadded_length'] = kwargs.pop('_unpadded_length') if '_unpadded_length' in kwargs else self._unpadded_length
         raw['_cur_tidx'] = (kwargs.pop('_cur_tidx') if '_cur_tidx' in kwargs
                             else kwargs.pop('_original_tidx') if '_original_tidx' in kwargs
@@ -559,6 +561,7 @@ class History(HistoryBase):
             # Pure NumPy histories don't need '_original_data'
         raw['_iterative'] = kwargs.pop('_iterative') if '_iterative' in kwargs else self._iterative
         raw['locked'] = kwargs.pop('locked') if 'locked' in kwargs else self.locked
+        raw['symbolic'] = kwargs.pop('symbolic') if 'symbolic' in kwargs else self.symbolic
 
         raw.update(kwargs)
         # If we write to NpzFile, all entries are converted to arrays;
@@ -567,7 +570,7 @@ class History(HistoryBase):
         return {key: np.array(value) for key, value in raw.items()}
 
     @classmethod
-    def from_raw(cls, raw, update_function=sinn._NoValue, symbolic=False, lock=True, **kwds):
+    def from_raw(cls, raw, update_function=sinn._NoValue, symbolic=False, lock=True, **kwars):
         """
 
         Parameters
@@ -587,42 +590,49 @@ class History(HistoryBase):
         dt64 = raw['dt64'] if version >= 2 else raw['dt']
         t0 = raw['t0'].astype(dt.dtype)
         tn = raw['tn'].astype(dt.dtype)
-        hist =  cls(name = str(raw['name']),
-                    t0 = t0, tn = tn, dt = dt64,
-                    shape = tuple(raw['shape']),
-                    f = update_function,
-                    iterative = bool(raw['_iterative']),
-                    symbolic = False,
-                    **kwds)
+        # Skip __init__: we are restoring attributes directly
+        hist = cls.__new__(cls)
+        # super(History, hist).__init__(
+        #     name = str(raw['name']),
+        #     t0 = t0, tn = tn, dt = dt64,
+        #     shape = tuple(raw['shape']),
+        #     f = update_function,
+        #     iterative = bool(raw['_iterative']),
+        #     symbolic = False,
+        #     **kwargs)
         # Change dtypes because History.__init__ always initializes to floatX
         # TODO: Initialize hist w/ _tarr instead of t0, tn, dt
-        hist.dt = hist.dt.astype(dt.dtype)
-        hist.t0 = hist.t0.astype(dt.dtype)
-        hist.tn = hist.tn.astype(dt.dtype)
+        hist.name = raw['name']
+        hist.shape = tuple(raw['shape'])
+        hist.dt64 = dt64
+        hist.dt = dt64.astype(dt.dtype)
+        hist.t0 = t0.astype(dt.dtype)
+        hist.tn = tn.astype(dt.dtype)
         hist._tarr = raw['_tarr'].astype(dt.dtype)
+        if version >= 2.2:
+            hist.idx_dtype = raw['idx_dtype'][()]
+            hist.tidx_dtype = raw['tidx_dtype'][()]
+        else:
+            hist.idx_dtype = np.min_scalar_type(max(hist.shape))
+            hist.tidx_dtype = np.min_scalar_type(-2*len(hist._tarr))
         hist.t0idx = raw['t0idx'].astype(hist.tidx_dtype)
         hist._unpadded_length = raw['_unpadded_length'].astype(hist.tidx_dtype)
         hist.locked = bool(raw['locked'])
             # Could probably be removed, since we set a lock status later, but
             # ensures the history is first loaded in the same state
 
-        # Decide whether to wrap the history in another Theano history (Deprecated)
-        if symbolic is sinn._NoValue:
-            symbolic = shim.config.use_theano
-        if symbolic:
-            hist.name = str(raw['name']) + " (compiled)"
-            theano_hist = cls(hist, name=str(raw['name']), symbolic=True)
-            theano_hist.compiled_history = hist
-            rethist = theano_hist
-        else:
-            hist.name = str(raw['name'])
-            rethist = hist
+        hist.name = str(raw['name'])
+        rethist = hist
+
+        rethist.symbolic = raw['symbolic'][()]
         rethist._original_tidx = shim.shared( raw['_cur_tidx'].astype(hist.tidx_dtype),
                                               name = 't idx (' + rethist.name + ')' ,
                                               symbolic=symbolic)
         rethist._cur_tidx = rethist._original_tidx
         rethist._original_data = shim.shared(raw['_data'], name = rethist.name + " data")
         rethist._data = rethist._original_data
+        rethist.stash = Stash(rethist, ('_cur_tidx', '_original_tidx'),
+                                       ('_data', '_original_data'))
         if lock:
             rethist.lock()
         else:

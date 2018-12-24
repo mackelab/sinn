@@ -24,6 +24,7 @@ argument to the initializer, which can then be stored for use by `update_functio
 # TODO: Move casting into base type so it's not repeated in every derived class
 
 import numpy as np
+import inspect
 import logging
 logger = logging.getLogger("sinn.models.inputs")
 
@@ -47,7 +48,12 @@ class SeriesFunction(Series):
                  dtype=sinn._NoValue,
                  **kwargs):
 
-        shape = self.init_params(**kwargs)
+        sig_params = inspect.signature(self.init_params).parameters.keys()
+        init_params_kwargs = {key: value for key, value in kwargs.items()
+                                         if key in sig_params}
+        other_kwargs = {key: value for key, value in kwargs.items()
+                                   if key not in sig_params}
+        shape = self.init_params(**init_params_kwargs)
         if shape == ():
             logger.warning("History function returned a 0 dimensional shape; "
                            "it must be at least 1D. Resetting shape to `(1,)`.")
@@ -57,11 +63,25 @@ class SeriesFunction(Series):
         super().__init__(
             hist=ref_hist, name=name, symbolic=symbolic,
             t0=t0, tn=tn, dt=dt, time_array=time_array,
-            shape=shape, iterative=False, dtype=dtype)
+            shape=shape, iterative=False, dtype=dtype,
+            **other_kwargs)
         self.set_update_function(self.update_function)
 
+    @property
+    def repr_np(self):
+        repr = super().repr_np
+        repr.update({name: getattr(self, name) for name in self.Parameters})
+        return repr
+
+    @classmethod
+    def from_repr_np(cls, raw, *args, **kwargs):
+        hist = super().from_repr_np(raw, *args, **kwargs)
+        for name in cls.Parameters:
+            setattr(hist, name, raw[name])
+        return hist
 
 class Constant(SeriesFunction):
+    Parameters = ['value']
 
     def init_params(self, value):
         self.value = value  # Can't cast here – self.dtype isn't set yet
@@ -77,6 +97,8 @@ class Constant(SeriesFunction):
 
 
 class Step(SeriesFunction):
+    Parameters = ['baseline', 'baseline_plus_height', 'start', 'stop',
+                  'interval']
 
     def init_params(self, baseline=0, height=None, start=None, stop=None, interval='half-open'):
         """
@@ -110,17 +132,9 @@ class Step(SeriesFunction):
 
         self.baseline = baseline
         self.baseline_plus_height = baseline + height
-        #self.start = start
-        #self.stop = stop
-
-        if interval in ('closed', 'half-open'):
-            self.left_cmp = lambda t: self.get_time(t) >= start
-        else:
-            self.left_cmp = lambda t: self.get_time(t) > start
-        if interval in ('closed', 'half-open-inverted'):
-            self.right_cmp = lambda t: self.get_time(t) <= stop
-        else:
-            self.right_cmp = lambda t: self.get_time(t) < stop
+        self.interval = interval
+        self.start = start
+        self.stop = stop
 
         # if not hasattr(self.baseline_plus_height, 'shape'):
         #     raise ValueError("[sinn.history_function.Step] At least one of the "
@@ -134,6 +148,17 @@ class Step(SeriesFunction):
             # This can happen if some parameters are passed as 0-dim arrays
         return shape
 
+    def left_cmp(self, t):
+        if self.interval in ('closed', 'half-open'):
+            return self.get_time(t) >= self.start
+        else:
+            return self.get_time(t) > self.start
+    def right_cmp(self, t):
+        if self.interval in ('closed', 'half-open-inverted'):
+            return self.get_time(t) <= self.stop
+        else:
+            return self.get_time(t) < self.stop
+
     def update_function(self, t):
         if not shim.isscalar(t):
             ndim = self.ndim
@@ -145,7 +170,8 @@ class Step(SeriesFunction):
                           dtype=self.dtype, same_kind=False )
 
 class Steps(SeriesFunction):
-    def __init__(self, init_val=0, stops=None, values=None):
+    Parameters = ['init_vals', 'stops', 'values']
+    def init_params(self, init_val=0, stops=None, values=None):
         """
         WARNING: UNTESTED
 
@@ -169,6 +195,7 @@ class Steps(SeriesFunction):
                 raise ValueError("'{}' is a required argument.".format(arg))
         self.stops = stops
         self.values = [init_val] + list(values)
+        raise NotImplementedError("Must return `shape`")
 
     def update_function(self, t):
         if not shim.isscalar(t):
@@ -190,6 +217,8 @@ class Steps(SeriesFunction):
                                 values[0], values[1])
 
 class PiecewiseLinear(SeriesFunction):
+    Parameters = ['stops', 'values']
+
     """
     Linearly interpolate between the points `(stop, value)`.
     Before the first stop and after the last, the function is constant.
@@ -220,6 +249,7 @@ class PiecewiseLinear(SeriesFunction):
         val0 = values[0]
         stop0 = stops[0]
         self.stops = stops
+        self.values = values  # Only used in `self.repr_np`
         self.functions = [lambda t: val0]
         for stop, val in zip(stops[1:], values[1:]):
             # We can get `stop==stop0` if a stop is repeated.
@@ -244,6 +274,11 @@ class PiecewiseLinear(SeriesFunction):
             # np.atleast_1d doesn't seem to work with `broadcast`
         return shape
 
+    @classmethod
+    def from_repr_np(cls, raw, *args, **kwargs):
+        hist = super().from_repr_np(raw, *args, **kwargs)
+        hist.init_params(hist.stops, hist.values)
+
     def update_function(self, t):
         t = self.get_time(t)
         if not shim.isscalar(t):
@@ -265,6 +300,7 @@ class PiecewiseLinear(SeriesFunction):
                                 functions[0](t), functions[1](t) )
 class Sin(SeriesFunction):
     # TODO: Allow Theano parameters
+    Parameters = ['amplitude', 'phase', 'frequency']
 
     def init_params(self, baseline=0, amplitude=None, frequency=None, period=None, phase=0, unit='Hz'):
         """
@@ -328,6 +364,7 @@ class GaussianWhiteNoise(SeriesFunction):
     Values will limited to the range ±clip_limit;
     """
     requires_rng = True
+    Parameters = ['rndstream', 'std', 'clip_limit']
 
     def init_params(self, random_stream, shape, std=1.0, clip_limit=87):
         # exp(88) is the largest value scipy can store in a 32-bit float
