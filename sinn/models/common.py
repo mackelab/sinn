@@ -302,6 +302,7 @@ class Model(com.ParameterMixin):
         self.history_set = set()
         self.history_inputs = sinn.DependencyGraph('model.history_inputs')
         self.compiled = {}  # DEPRECATED
+        self._pymc = None  # Initialized with `self.pymc` property
 
         if not isinstance(public_histories, (Sequence, OrderedDict)):
             raise TypeError("`public_histories` (type: {}) must be an ordered "
@@ -320,6 +321,19 @@ class Model(com.ParameterMixin):
         # Ensure rng attribute exists
         if not hasattr(self, 'rng'):
             self.rng = None
+
+        # Create symbolic variables for batches
+        # Any symbolic function on batches should use these, that way
+        # other functions can retrieve the symbolic input variables.
+        self.batch_start_var = shim.symbolic.scalar('batch_start',
+                                                    dtype=self.tidx_dtype)
+        self.batch_start_var.tag.test_value = 1
+            # Must be large enough so that test_value slices are not empty
+        self.batch_size_var = shim.symbolic.scalar('batch_size',
+                                                   dtype=self.tidx_dtype)
+            # Must be large enough so that test_value slices are not empty
+        self.batch_size_var.tag.test_value = 2
+
 
     def __getattribute__(self, attr):
         """
@@ -392,6 +406,20 @@ class Model(com.ParameterMixin):
     @property
     def unlocked_histories(self):
         return (h for h in self.history_set if not h.locked)
+
+    @property
+    def pymc(self):
+        """
+        The first access should be done as `model.pymc()` to instantiate the
+        model. Subsequent access, which retrieves the already instantiated
+        model, should use `model.pymc`.
+        """
+        if getattr(self, '_pymc', None) is None:
+            import sinn.models.pymc3
+                # Don't require that PyMC3 be installed unless we need it
+            return sinn.models.pymc3.PyMC3ModelWrapper(self)
+                # PyMC3ModelWrapper assigns the PyMC3 model to `self._pymc`
+        return self._pymc
 
     def get_tidx(self, t, allow_rounding=False):
         """
@@ -1051,11 +1079,13 @@ class Model(com.ParameterMixin):
             self._curtidx_var = shim.getT().scalar('curtidx (model)',
                                               dtype=self.tidx_dtype)
             self._curtidx_var.tag.test_value = 1
-        if not hasattr(self, '_stopidx_var'):
+        if not hasattr(self, '_stoptidx_var'):
             self._stoptidx_var = shim.getT().scalar('stoptidx (model)',
                                              dtype=self.tidx_dtype)
-            self._stoptidx_var.tag.test_value = 2
+            self._stoptidx_var.tag.test_value = 3
                 # Allow model to work with compute_test_value != 'ignore'
+                # Should be at least 2 more than _curtidx, because scan runs
+                # from `_curtidx + 1` to `stoptidx`.
         logger.info("Constructing the update graph.")
         # Stash current symbolic updates
         for h in self.statehists:
@@ -1600,7 +1630,9 @@ class Model(com.ParameterMixin):
         # Loop over graph nodes, replacing any instance where we index
         # into _original_data by the appropriate virtual state variable
         for y in variables:
-            if shim.graph.is_same_graph(y, ref_tidx):
+            if (shim.graph.symbolic_inputs(y) == [ref_tidx]
+                and shim.graph.is_same_graph(y, ref_tidx)):
+                # `is_same_graph` is expensive: avoid computing it when possible
                 replace[y] = shim.cast(new_tidx - 1, y.dtype)
             elif y.owner is None:
                 continue
@@ -1661,10 +1693,6 @@ class Model(com.ParameterMixin):
             fully_substituted = False
 
         return new_graph, fully_substituted
-
-    # ================================================
-    # Used by the batch function decorator
-    # ================================================
 
 # DEPRECATED ?
 # Surrogate models date from a time where I needed to initialize models
