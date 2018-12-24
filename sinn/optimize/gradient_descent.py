@@ -6,7 +6,7 @@ import time
 import logging
 import copy
 
-logger = logging.getLogger('sinn.optimize.gradient_descent')
+logger = logging.getLogger(__file__)
 
 import numpy as np
 import scipy as sp
@@ -532,8 +532,9 @@ class SeriesSGD(SGDBase):
         start_var, batch_size_var: symbolic variable
             Variables appearing in the graph of the cost
         cost_format: str
-            Indicates how the cost function should be interpreted. This will affect e.g.
-            whether the algorithm attempts to minimize or maximize the value. One of:
+            Indicates how the cost function should be interpreted. This will
+            affect e.g. whether the algorithm attempts to minimize or maximize
+            the value. One of:
               + 'logL' : log-likelihood
               + 'negLogL' or '-logL': negative log-likelihood
               + 'L' : likelihood
@@ -728,7 +729,7 @@ class SeriesSGD(SGDBase):
         self.optimize_vars = []
         self.optimize_vars_access = OrderedDict()  # TODO: Combine w/ optimize_vars
             # Uses the source variable names as keys (before conversion to shared),
-            # so that users know them can use them.
+            # so that users know they can use them.
         for var in optimize_vars:
             if shim.isshared(var):
                 # This variable is already a shared variable; just use it
@@ -748,13 +749,16 @@ class SeriesSGD(SGDBase):
                 self.optimize_vars_access[var.name] = shared_var
 
         # Ensure all optimization variables have unique names
+        optimize_vars = list(optimize_vars)
         if len(self.optimize_vars_access) != len(optimize_vars):
             raise ValueError("The optimization variables must have unique names.\n"
                              "Optimization variables: {}"
                             .format([v.name for v in optimize_vars]))
 
         # Substitute the new shared variables in the computational graphs
-        self.var_subs = {orig: new for orig, new in zip(optimize_vars, self.optimize_vars)}
+        self.var_subs = {orig: new
+                        for orig, new in zip(optimize_vars, self.optimize_vars)
+                        if orig is not new}
         # self.cost_graph1 = cost_graph # DEBUG
         cost_graph = shim.graph.clone(cost_graph, replace=self.var_subs)
         # self.cost_graph2 = cost_graph # DEBUG
@@ -814,14 +818,22 @@ class SeriesSGD(SGDBase):
         # Get advance updates
         _start = shim.symbolic.scalar('start (advance compilation)',
                                       dtype=tidx_dtype)
+        _start.tag.test_value = 1
         _stop  = shim.symbolic.scalar('stop (advance compilation)',
                                       dtype=tidx_dtype)
+        _stop.tag.test_value = 3
+            # Should be at least 2 more than _start, because `advance`'s scan
+            # runs from `_start+1` to `_stop`.
+
         advance_updates = advance(_start, _stop)
         for var, upd in advance_updates.items():
             upd = shim.graph.clone(upd, replace=self.var_subs)
             advance_updates[var] = shim.cast(upd, var.dtype, same_kind=True)
 
         # Compile the advance function
+        # TODO: Find a way to use a precompiled function that already has
+        #       the right side-effects (i.e. updates). This would allow using
+        #       a model's `advance()` method directly.
         # assert(self.tidx_var in shim.graph.pure_symbolic_inputs(advance_updates.values()))
         #     # theano.function raises a error if inputs are not used to compute outputs
         #     # Since tidx_var appears in the graphs on the updates, we need to
@@ -964,6 +976,8 @@ class SeriesSGD(SGDBase):
         init_vals: dict
             Dictionary of 'variable: value' pairs. Key variables must be the
             same as those that were passed as `optimize_vars` to `__init__()`.
+            (As a convenience, they may be specified the string of the
+            corresponding key in `self.track_vars`.)
             Not all variables need to be initialized: those unspecified keep
             their current value.
         """
@@ -993,12 +1007,22 @@ class SeriesSGD(SGDBase):
 
         # Set initial values
         for var, value in init_vals.items():
+            # FIXME: Should use `optimize_vars`, not `track_vars`
+            # if isinstance(var, str):
+            #     if not var in self.track_vars:
+            #         raise ValueError("The keys of `init_vals` must refer to "
+            #                          "variables in `self.track_vars`")
+            #     var = self.track_vars[var]
+            # elif not var in self.track_vars.values():
+            #     raise ValueError("The keys of `init_vals` must refer to "
+            #                      "variables in `self.track_vars`")
             if var in self.var_subs:
                 var = self.var_subs[var]
             if not np.can_cast(value.dtype, var.dtype, 'same_kind'):
-                raise TypeError("Trying to initialize variable '{}' (type '{}') "
-                                " with value '{}' (type '{}')."
-                                .format(var.name, var.dtype, value, value.dtype))
+                raise TypeError(
+                    "Trying to initialize variable '{}' (type '{}')  with "
+                    "value '{}' (type '{}')."
+                    .format(var.name, var.dtype, value, value.dtype))
             value = np.asarray(value, dtype=var.dtype)
             var.set_value(value)
 
@@ -1061,12 +1085,14 @@ class SeriesSGD(SGDBase):
         else:
             raise ValueError("Unrecognized fit mode '{}'".format(self.mode))
 
-        if self.mode_params.burnin_factor == 0:
+        if self.mode_params.burnin_factor == 0 or self.burnin == 0:
             burnin = self.burnin
         else:
             burnin = np.random.randint(self.burnin, (1+self.mode_params.burnin_factor)*self.burnin)
         self.curtidx += burnin
-        self.advance(self.old_curtidx, self.curtidx)
+        assert self.old_curtidx <= self.curtidx
+        if self.old_curtidx < self.curtidx:
+            self.advance(self.old_curtidx, self.curtidx)
         self.old_curtidx = self.curtidx
         self._step(self.curtidx, self.batch_size)
 
@@ -1105,7 +1131,8 @@ class SeriesSGD(SGDBase):
             # Catch errors, so we can save fit data before terminating.
             # We may need this data to know why the error occured.
             self.status = ConvergeStatus.ERROR
-            logger.error(e)
+            logger.exception(
+                "Fit terminated abnormally with the following error:")
 
         if self.status != ConvergeStatus.CONVERGED:
             print("Did not converge.")
@@ -1551,15 +1578,18 @@ class FitCollection:
             if len(traces) == 0:
                 raise RuntimeError("The list of fits is empty")
 
+        reftrace = traces[0]
 
         # Standardize the `idx` argument
-        if idx is None:
+        if reftrace.ndim == 1:
+            assert idx == () or idx is None
+            idx = ()
+        elif idx is None:
             idx = (slice(None),)
         elif isinstance(idx, (int, slice)):
             idx = (idx,)
 
         # Match the shape of the `idx` and the trace
-        reftrace = traces[0]
         traceshape = reftrace.shape
         assert(trace.shape == traceshape for trace in traces)
             # All traces should have the same shape
@@ -1618,7 +1648,11 @@ class FitCollection:
             # Target may be a list or nested list; convert to array to
             # standardize checks
             _target = np.array(_target)
-            ntargets = reftrace[0, idx].size  # HACK ? Not sure how safe this is
+            if reftrace.ndim == 1:
+                ntargets = 1
+            else:
+                ntargets = reftrace[0, idx].size
+                    # HACK ? Not sure how safe this is
             if _target.ndim == 0:
                 # A single value was given; just draw a line there
                 targets = np.atleast_1d(_target)
@@ -1754,7 +1788,7 @@ class FitCollection:
                 # Make sure to include first values
                 trace_idcs[i] = [0] + trace_idcs[i]
             trace_idcs[i] = np.array(trace_idcs[i])
-            trace_stops[i] = trace_stops[i][trace_idcs[i]]
+            trace_stops[i] = np.array(trace_stops[i])[trace_idcs[i]]
         plot_traces = [trace[idcs] for trace, idcs in zip(traces, trace_idcs)]
 
         # Loop over the traces
