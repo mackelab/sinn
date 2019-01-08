@@ -10,15 +10,20 @@ import numpy as np
 import scipy as sp
 import collections
 from collections import deque, Iterable
+from odictliteral import odict
 from copy import deepcopy
 import itertools
 import operator
 import logging
 logger = logging.getLogger("sinn.history")
+import hashlib
+import jsonpickle
+import jsonpickle.ext.numpy as jsonpickle_numpy
+jsonpickle_numpy.register_handlers()
 
 import theano_shim as shim
 import theano_shim.sparse
-from mackelab.utils import Stash
+from mackelab.utils import Stash, fully_qualified_name
 import sinn
 from sinn.common import HistoryBase, PopulationHistoryBase, KernelBase
 import sinn.config as config
@@ -35,7 +40,57 @@ import sinn.popterm as popterm
 # Exceptions
 class LockedHistoryError(RuntimeError):
     pass
+class AxisMismatchError(TypeError):
+    pass
 ########################
+
+# TODO: Merge with analyze.axis.py
+# TOOD: Make history's time attributes (t0, tn…) into properties accessing axis
+# TODO: Define x0, xn… in Axis, and TimeAxis as properties accessing them
+# TODO: Include cur_tidx, original_tidx variables
+class Axis:
+    pass
+class TimeAxis(Axis):
+    def __init__(self, t0, tn, stops, t0idx, _unpadded_length):
+        self.t0 = t0
+        self.tn = tn
+        self.stops = stops
+        self.t0idx = t0idx
+        self._unpadded_length = _unpadded_length
+
+    def __len__(self):
+        return self._unpadded_length
+
+    def __eq__(self, o):
+        if not isinstance(o, TimeAxis):
+            raise TypeError("TimeAxis comparisons are only implemented with "
+                            "other instances of TimeAxis.")
+        return np.all(
+            (getattr(self, attr) == getattr(o, attr)
+             for attr in ['t0', 'tn', 'stops', 't0idx', '_unpadded_length']))
+
+    def __str__(self):
+        return "TimeAxis(t0: {}, tn: {}, length: {}, t0idx: {})" \
+               .format(self.t0, self.tn, len(self), self.t0idx)
+
+    @property
+    def tnidx(self):
+        return self.t0idx + len(self) - 1
+
+    @property
+    def padding(self):
+        """Returns a tuple with the left and right padding."""
+        return (self.t0idx, len(self.stops) - self.tnidx - 1)
+
+    # TOOD: Replace History.set with this
+    def set(axis):
+        assert isinstance(axis, Axis)
+        self.t0 = axis.t0
+        self.tn = axis.tn
+        self.stops = axis.stops
+        self.t0idx = axis.t0idx
+        self._unpadded_length
+
 # TODO: Remove everything related to compilation – this is better done with Model
 #       A lot of compilation logic can be found by search 'self.symbolic', '_compiling'
 # TODO: Replace tn attribute by a @property.
@@ -49,7 +104,7 @@ class History(HistoryBase):
     data at a certain time point.
 
     Ensures that if the history at time t is known, than the history at all times
-    previous to t is also known (by forcing a computation if neces#sary).
+    previous to t is also known (by forcing a computation if necessary).
 
     Derived classes can safely expect the following attributes to be defined:
         + name             : str. Unique identifying string
@@ -413,16 +468,21 @@ class History(HistoryBase):
         self._original_tidx = self._cur_tidx
 
         if f is sinn._NoValue:
-            # TODO Find way to assign useful error message to a missing f, that
-            #      works for histories derived from others (i.e. is recognized as the
-            #      "missing function" function. Maybe a global function or class,
-            #      with which we use isinstance ?
-            #      => If we deprecate this, can just use a flag
-            # Set a default function that will raise an error when called
-            def nofunc(*arg):
-                raise RuntimeError("The update function for history {} is not set."
-                                   .format(self.name))
-            self._update_function = nofunc
+            # # TODO Find way to assign useful error message to a missing f, that
+            # #      works for histories derived from others (i.e. is recognized as the
+            # #      "missing function" function. Maybe a global function or class,
+            # #      with which we use isinstance ?
+            # #      => If we deprecate this, can just use a flag
+            # # Set a default function that will raise an error when called
+            # def nofunc(*arg):
+            #     raise RuntimeError("The update function for history {} is not set."
+            #                        .format(self.name))
+            # # self._update_function = nofunc
+            # self._update_function_dict = odict['func': nofunc,
+            #                                    'cast': True,
+            #                                    '_return_dtype': None]
+            # self.input_list = None
+            self.set_update_function(None)
         else:
             self.set_update_function(f)
         self._compute_range = None
@@ -447,9 +507,43 @@ class History(HistoryBase):
             raise TypeError("'Lesser than' comparison is not supported between objects of type History and {}."
                             .format(type(other)))
 
-    def __reduce__(self):
-        # Allows pickling
-        return (self.from_repr_np, (self.repr_np,))
+    # Pickling infrastructure
+    def __getstate__(self):
+        return odict['repr': self.repr_np,
+                     'locked': self.locked,
+                     'input_list': self.input_list,
+                     '_compute_range': self._compute_range,
+                     '_update_function_dict': self._update_function_dict.copy()]
+
+    def __setstate__(self, state):
+        self.set_state_from_repr_np(state['repr'], lock=state['locked'])
+        self.input_list = state['input_list']
+        self._compute_range = state['_compute_range']
+        self._update_function_dict = state['_update_function_dict']
+
+    @property
+    def md5(self):
+        # Using jsonpickle instead of json provides support for arbitrary types
+        # `unpicklable=False` makes string UNpicklable, but more compact
+        state = self.__getstate__()
+        if state['input_list'] is not None:
+            state['input_list'] = sorted([h.name for h in state['input_list']])
+                # input_list may include reference to self, which triggers a
+                # RecursionError with `unpicklable=False`.
+        upd_func = state['_update_function_dict']['func']
+        if upd_func is not None:
+            assert isinstance(upd_func, collections.abc.Callable)
+            state['_update_function_dict']['func'] = \
+                fully_qualified_name(upd_func)
+        return hashlib.md5(
+            jsonpickle.encode(state, unpicklable=False)
+            .encode('utf-8'))
+    @property
+    def digest(self):
+        return self.md5.digest()
+    @property
+    def hexdigest(self):
+        return self.md5.hexdigest()
 
     @property
     def dtype(self):
@@ -461,13 +555,15 @@ class History(HistoryBase):
         return self.t0idx + len(self) - 1
 
     @property
-    def repr_np(self):
-        return self.raw()
-
-    @property
     def padding(self):
         """Returns a tuple with the left and right padding."""
         return (self.t0idx, len(self._tarr) - self.tnidx - 1)
+
+    # TODO: Make timeaxis the attribute, and t0, tn… properties accessing it
+    @property
+    def timeaxis(self):
+        return TimeAxis(
+            self.t0, self.tn, self._tarr, self.t0idx, self._unpadded_length)
 
     @property
     def cur_tidx(self):
@@ -486,6 +582,10 @@ class History(HistoryBase):
         """
         return self._original_data.get_value()
 
+    @property
+    def repr_np(self):
+        return self.raw()
+
     @classmethod
     def from_repr_np(cls, repr_np):
         return cls.from_raw(repr_np)
@@ -498,6 +598,7 @@ class History(HistoryBase):
         #   2   (31 mai 2018)
         #   2.1  + dt64
         #   2.2  + idx_dtype, tidx_dtype, symbolic
+        #   3.0  Only save data up to tn
         """
 
         Parameters
@@ -530,8 +631,8 @@ class History(HistoryBase):
                            "Symbolic state will be discarded.".format(self))
         # We do it this way in case kwd substitutions are there to
         # avoid an error (such as _data not having a .get_value() method)
-        raw = {}
-        raw['version'] = 2.2
+        raw = odict()
+        raw['version'] = 3.0
         raw['type'] = sinn.common.find_registered_typename(type(self))
              # find_registered_typename returns the closest registered type name in the hierarchy
              # E.g. if we are saving a subclass of Series, this will return the name under which
@@ -547,17 +648,25 @@ class History(HistoryBase):
         raw['idx_dtype'] = kwargs.pop('idx_dtype') if 'idx_dtype' in kwargs else self.idx_dtype
         raw['tidx_dtype'] = kwargs.pop('tidx_dtype') if 'tidx_dtype' in kwargs else self.tidx_dtype
         raw['_unpadded_length'] = kwargs.pop('_unpadded_length') if '_unpadded_length' in kwargs else self._unpadded_length
-        raw['_cur_tidx'] = (kwargs.pop('_cur_tidx') if '_cur_tidx' in kwargs
-                            else kwargs.pop('_original_tidx') if '_original_tidx' in kwargs
-                            else self._original_tidx.get_value())
         raw['shape'] = kwargs.pop('shape') if 'shape' in kwargs else self.shape
         raw['ndim'] = kwargs.pop('ndim') if 'ndim' in kwargs else self.ndim
         raw['_tarr'] = kwargs.pop('_tarr') if '_tarr' in kwargs else self._tarr
-        raw['_data'] = (kwargs.pop('_data') if '_data' in kwargs
-                        else kwargs.pop('_original_data') if '_original_data' in kwargs
-                        else self._original_data.get_value() if hasattr(self, '_original_data')
-                        else self._data.get_value() if hasattr(self._data, 'get_value')
-                        else self._data)
+        # Save the data. Only store up to `cur_tidx` to save space
+        cur_tidx = \
+            (kwargs.pop('_cur_tidx') if '_cur_tidx' in kwargs
+             else kwargs.pop('_original_tidx') if '_original_tidx' in kwargs
+             else self._original_tidx.get_value())
+        raw['_cur_tidx'] = cur_tidx
+        data = \
+            (kwargs.pop('_data') if '_data' in kwargs
+             else kwargs.pop('_original_data') if '_original_data' in kwargs
+             else self._original_data.get_value() if hasattr(self, '_original_data')
+             else self._data.get_value() if hasattr(self._data, 'get_value')
+             else self._data)
+        if len(data) <= cur_tidx:
+            logger.warning("History {} being saved in inconsistent state: "
+                           "data is shorter than `cur_tidx`.")
+        raw['_data'] = data[:cur_tidx+1]
             # Pure NumPy histories don't need '_original_data'
         raw['_iterative'] = kwargs.pop('_iterative') if '_iterative' in kwargs else self._iterative
         raw['locked'] = kwargs.pop('locked') if 'locked' in kwargs else self.locked
@@ -567,10 +676,10 @@ class History(HistoryBase):
         # If we write to NpzFile, all entries are converted to arrays;
         # we just do it preemptively, which ensures consistent unpacking whether
         # we saved to NpzFile or not.
-        return {key: np.array(value) for key, value in raw.items()}
+        return odict( (key, np.array(value))  for key, value in raw.items() )
 
     @classmethod
-    def from_raw(cls, raw, update_function=sinn._NoValue, symbolic=False, lock=True, **kwars):
+    def from_raw(cls, raw, update_function=sinn._NoValue, symbolic=False, lock=True, **kwargs):
         """
 
         Parameters
@@ -580,18 +689,35 @@ class History(HistoryBase):
             one attached as its `compiled_history` attribute.
             If unspecified, the behaviour is the same as for the History initializer.
         **kwargs:
+            DEPRECATED
             Will be passed along to the class constructor
             Exists to allow specialization in derived classes.
         """
         if not isinstance(raw, (dict, np.lib.npyio.NpzFile)):
             raise TypeError("'raw' data must be either a dict or a Numpy archive.")
-        version = raw['version'] if 'version' in raw else 1
-        dt = raw['dt']
-        dt64 = raw['dt64'] if version >= 2 else raw['dt']
-        t0 = raw['t0'].astype(dt.dtype)
-        tn = raw['tn'].astype(dt.dtype)
+        if len(kwargs) > 0:
+            logger.warning("Keyword arguments are deprecated for `from_raw`.")
+        assert symbolic is False  # Deprecated arg
+        assert update_function is sinn._NoValue  # Deprecated arg
         # Skip __init__: we are restoring attributes directly
         hist = cls.__new__(cls)
+        hist.set_state_from_repr_np(raw, lock=lock)
+        return hist
+
+    def set_state_from_repr_np(self, repr, lock=True):
+        """
+
+        Parameters
+        ----------
+        repr: array-like
+            Numpy representation of a history, as returned by `self.repr_np`.
+        """
+        hist = self
+        version = repr['version'] if 'version' in repr else 1
+        dt = repr['dt']
+        dt64 = repr['dt64'] if version >= 2 else repr['dt']
+        t0 = repr['t0'].astype(dt.dtype)
+        tn = repr['tn'].astype(dt.dtype)
         # super(History, hist).__init__(
         #     name = str(raw['name']),
         #     t0 = t0, tn = tn, dt = dt64,
@@ -602,43 +728,53 @@ class History(HistoryBase):
         #     **kwargs)
         # Change dtypes because History.__init__ always initializes to floatX
         # TODO: Initialize hist w/ _tarr instead of t0, tn, dt
-        hist.name = raw['name']
-        hist.shape = tuple(raw['shape'])
+        hist.name = repr['name']
+        hist.shape = tuple(repr['shape'])
         hist.dt64 = dt64
         hist.dt = dt64.astype(dt.dtype)
         hist.t0 = t0.astype(dt.dtype)
         hist.tn = tn.astype(dt.dtype)
-        hist._tarr = raw['_tarr'].astype(dt.dtype)
+        hist._tarr = repr['_tarr'].astype(dt.dtype)
         if version >= 2.2:
-            hist.idx_dtype = raw['idx_dtype'][()]
-            hist.tidx_dtype = raw['tidx_dtype'][()]
+            hist.idx_dtype = repr['idx_dtype'][()]
+            hist.tidx_dtype = repr['tidx_dtype'][()]
         else:
             hist.idx_dtype = np.min_scalar_type(max(hist.shape))
             hist.tidx_dtype = np.min_scalar_type(-2*len(hist._tarr))
-        hist.t0idx = raw['t0idx'].astype(hist.tidx_dtype)
-        hist._unpadded_length = raw['_unpadded_length'].astype(hist.tidx_dtype)
-        hist.locked = bool(raw['locked'])
+        hist.t0idx = repr['t0idx'].astype(hist.tidx_dtype)
+        hist._unpadded_length = repr['_unpadded_length'].astype(hist.tidx_dtype)
+        hist.locked = bool(repr['locked'])
             # Could probably be removed, since we set a lock status later, but
             # ensures the history is first loaded in the same state
 
-        hist.name = str(raw['name'])
-        rethist = hist
+        hist.name = str(repr['name'])
 
-        rethist.symbolic = raw['symbolic'][()]
-        rethist._original_tidx = shim.shared( raw['_cur_tidx'].astype(hist.tidx_dtype),
-                                              name = 't idx (' + rethist.name + ')' ,
-                                              symbolic=symbolic)
-        rethist._cur_tidx = rethist._original_tidx
-        rethist._original_data = shim.shared(raw['_data'], name = rethist.name + " data")
-        rethist._data = rethist._original_data
-        rethist.stash = Stash(rethist, ('_cur_tidx', '_original_tidx'),
+        hist.symbolic = repr['symbolic'][()]
+        hist._iterative = repr['_iterative']
+
+        cur_tidx = repr['_cur_tidx'].astype(hist.tidx_dtype)
+        hist._original_tidx = shim.shared(
+            cur_tidx,
+            name = 't idx (' + hist.name + ')' ,
+            symbolic=hist.symbolic)
+        hist._cur_tidx = hist._original_tidx
+        data = repr['_data']
+        # Starting with v3, data is only saved up to cur_tidx
+        if version >= 3:
+            padshape = [(0, len(hist._tarr)-cur_tidx-1)]
+            padshape += [(0,0)] * (data.ndim-1)
+            data = np.pad(repr['_data'], padshape,
+                          'constant', constant_values=0)
+            assert data.shape == hist._tarr.shape + hist.shape
+        hist._original_data = shim.shared(data, name = hist.name + " data")
+        hist._data = hist._original_data
+        hist.stash = Stash(hist, ('_cur_tidx', '_original_tidx'),
                                        ('_data', '_original_data'))
         if lock:
-            rethist.lock()
+            hist.lock()
         else:
-            rethist.unlock()
+            hist.unlock()
 
-        return rethist
 
     def __getitem__(self, key):
         """
@@ -940,10 +1076,13 @@ class History(HistoryBase):
             raise RuntimeError("You are trying to lock the history {}, which "
                                "in the midst of building a Theano graph. Reset "
                                "it first".format(self.name))
-        if warn and (self._original_tidx.get_value() < self.t0idx + len(self) - 1
-                     and not self.symbolic):
-            # Only trigger for Theano histories if their compiled histories are unset
-            # (If they are set, they will do their own check)
+
+        if warn and self.cur_tidx < 0:
+            logger.warning("You are locking the empty history {}. Trying to "
+                           "evaluate it at any point will trigger an error."
+                           .format(self.name))
+        elif warn and (self.cur_tidx < self.t0idx + len(self) - 1
+                       and not self.symbolic):
             logger.warning("You are locking the unfilled history {}. Trying to "
                            "evaluate it beyond {} will trigger an error."
                            .format(self.name, self._tarr[self._original_tidx.get_value()]))
@@ -953,14 +1092,20 @@ class History(HistoryBase):
         """Remove the history lock."""
         self.locked = False
 
-    def set_update_function(self, func, cast=True, _return_dtype=None):
+    def set_update_function(self, func, inputs=None, cast=True, _return_dtype=None):
         """
 
         Parameters
         ----------
-        func: callable
+        func: callable | None
             The update function. Its signature should be
-            `func(t)`
+            `func(t)`.
+            `None` erases the update function, if it was set.
+        inputs: list of histories
+            List of histories on which the update function depends.
+            Use an empty list to indicate no dependencies.
+            Not optional; defaults to an empty list only for backwards
+            compatibility.
         cast: bool
             (Default: True) True indicates to cast the result of a the update
             function to the expected type. Only 'same_kind' casts are permitted.
@@ -974,33 +1119,71 @@ class History(HistoryBase):
             expects indices in its update function.
             In normal usage this should never be set by a user.
         """
-        def f(t):
-            # TODO: If setting update function in __init__ is deprecated,
-            # we can move the assignment to _return_dtype outside of f().
-            # NOTE: Don't reassign to _return_dtype: it would put it local
-            # scope, and then be undefined when f(t) is called.
-            if _return_dtype is None:
-                return_dtype = self.dtype
-            else:
-                return_dtype = _return_dtype
-            logger.debug("Compute " + self.name)
-            res = func(t)
-            logger.debug("Done computing " + self.name)
-            if cast:
-                res = shim.cast(res, return_dtype, same_kind=True)
-                # shim.cast does its own type checking
-            else:
-                if res.dtype != return_dtype:
-                    raise TypeError("Update function for history '{}' returned a "
-                                    "value of dtype '{}', but history update "
-                                    " expects dtype '{}'."
-                                    .format(self.name, res.dtype, return_dtype))
-            if shim.isscalar(res):
-                # update functions need to output an object with a shape
-                return shim.add_axes(res, 1)
-            else:
-                return res
-        self._update_function = f
+        # def f(t):
+        #     # TODO: If setting update function in __init__ is deprecated,
+        #     # we can move the assignment to _return_dtype outside of f().
+        #     # NOTE: Don't reassign to _return_dtype: it would put it local
+        #     # scope, and then be undefined when f(t) is called.
+        #     if _return_dtype is None:
+        #         return_dtype = self.dtype
+        #     else:
+        #         return_dtype = _return_dtype
+        #     logger.debug("Compute " + self.name)
+        #     res = func(t)
+        #     logger.debug("Done computing " + self.name)
+        #     if cast:
+        #         res = shim.cast(res, return_dtype, same_kind=True)
+        #         # shim.cast does its own type checking
+        #     else:
+        #         if res.dtype != return_dtype:
+        #             raise TypeError("Update function for history '{}' returned a "
+        #                             "value of dtype '{}', but history update "
+        #                             " expects dtype '{}'."
+        #                             .format(self.name, res.dtype, return_dtype))
+        #     if shim.isscalar(res):
+        #         # update functions need to output an object with a shape
+        #         return shim.add_axes(res, 1)
+        #     else:
+        #         return res
+        # self._update_function = f
+        self._update_function_dict = odict['func': func,
+                                           'cast': cast,
+                                           '_return_dtype': _return_dtype]
+        if inputs is None and func is not None:
+            logger.warning(
+                "You should specify the list of inputs with the function.")
+        self.input_list = inputs
+
+    def _update_function(self, t):
+        # TODO: If setting update function in __init__ is deprecated,
+        # we can move the assignment to _return_dtype outside of f().
+        # NOTE: Don't reassign to _return_dtype: it would put it local
+        # scope, and then be undefined when f(t) is called.
+        func = self._update_function_dict['func']
+        cast = self._update_function_dict['cast']
+        _return_dtype = self._update_function_dict['_return_dtype']
+        if _return_dtype is None:
+            return_dtype = self.dtype
+        else:
+            return_dtype = _return_dtype
+        logger.debug("Compute " + self.name)
+        res = func(t)
+        logger.debug("Done computing " + self.name)
+        if cast:
+            res = shim.cast(res, return_dtype, same_kind=True)
+            # shim.cast does its own type checking
+        else:
+            if res.dtype != return_dtype:
+                raise TypeError("Update function for history '{}' returned a "
+                                "value of dtype '{}', but history update "
+                                " expects dtype '{}'."
+                                .format(self.name, res.dtype, return_dtype))
+        if shim.isscalar(res):
+            # update functions need to output an object with a shape
+            return shim.add_axes(res, 1)
+        else:
+            return res
+
 
     def set_range_update_function(self, func):
         """
@@ -2151,6 +2334,9 @@ class History(HistoryBase):
         """
         if not self._iterative:
             return True
+        elif self.input_list is None:
+            raise RuntimeError("The update function for history {} is not set."
+                               .format(self.name))
 
         # Prevent infinite recursion with a temporary property
         if hasattr(self, '_batch_loop_flag'):
@@ -2164,9 +2350,10 @@ class History(HistoryBase):
         # Get the list of inputs.
         # Deprecated: A compiled history may not be in the input list,
         # so if `self` is not found, we try to find its parent
-        input_list = None
+        input_list = list(self.input_list)
+        # TODO: Remove dependency on sinn.inputs
         if self in sinn.inputs:
-            input_list = sinn.inputs[self]
+            input_list = input_list + list(sinn.inputs[self])
         # else:
         #     for hist in sinn.inputs:
         #         if (hist.symbolic and hist.compiled_history is self):
@@ -3766,8 +3953,13 @@ class Series(ConvolveMixin, History):
             self.compute_up_to('end')
 
         elif isinstance(source, History):
-            raise NotImplementedError
-            # See fsGIF.core.get_meso_model for a first attempt at this
+            # Use `align_to` and a flag to allow mismatching time axes
+            if source.timeaxis != self.timeaxis:
+                raise AxisMismatchError(
+                    "Source history has a different time axis.\n"
+                    "This history: {}\n Source history:{}"
+                    .format(self.timeaxis, source.timeaxis))
+            data = source.data
 
         elif (not hasattr(source, 'shape')
               and (shim.istype(source, 'float')
@@ -3803,19 +3995,19 @@ class Series(ConvolveMixin, History):
                     raise Exception("\nExternal input should be specified as either a NumPy array or a function"
                                   ) from e  #.with_traceback(e.__traceback__)
 
-            shim.check(data is not None)
-            if not shim.is_theano_object(data.shape):
-                shim.check(data.shape == self._data.get_value(borrow=True).shape)
-                shim.check(data.shape[0] == len(tarr))
-                self._data.set_value(data, borrow=True)
-            elif shim.isshared(data):
-                shim.check(data.get_value(borrow=True).shape == self._data.get_value(borrow=True).shape)
-                shim.check(data.get_value(borrow=True).shape[0] == len(tarr))
-                self._data = data
-            else:
-                # We can't check that source shape matches (it's a Theano variable),
-                # so we have to trust it
-                self._data = data
+        assert data is not None
+        if not shim.is_theano_object(data.shape):
+            shim.check(data.shape == self._data.get_value(borrow=True).shape)
+            shim.check(data.shape[0] == len(tarr))
+            self._data.set_value(data, borrow=True)
+        elif shim.isshared(data):
+            shim.check(data.get_value(borrow=True).shape == self._data.get_value(borrow=True).shape)
+            shim.check(data.get_value(borrow=True).shape[0] == len(tarr))
+            self._data = data
+        else:
+            # We can't check that source shape matches (it's a Theano variable),
+            # so we have to trust it
+            self._data = data
 
         if not shim.is_theano_variable(self._data):
             self._original_tidx.set_value(len(tarr) - 1)

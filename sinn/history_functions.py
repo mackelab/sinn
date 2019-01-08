@@ -65,7 +65,7 @@ class SeriesFunction(Series):
             t0=t0, tn=tn, dt=dt, time_array=time_array,
             shape=shape, iterative=False, dtype=dtype,
             **other_kwargs)
-        self.set_update_function(self.update_function)
+        self.set_update_function(self.update_function, inputs=[])
 
     @property
     def repr_np(self):
