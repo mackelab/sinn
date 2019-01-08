@@ -266,7 +266,8 @@ class Model(com.ParameterMixin):
     grad method to `likelihood`. (TODO)
     As class methods, these don't require an instance – they can be called on the class directly.
     """
-    def __init__(self, params, public_histories, reference_history=None):
+    def __init__(self, params, t0, tn, dt=None,
+                 public_histories=None, reference_history=None):
         # History is optional because more complex models have multiple histories.
         # They should keep track of them themselves.
         # ParameterMixin requires params as a keyword parameter
@@ -298,25 +299,34 @@ class Model(com.ParameterMixin):
             raise SyntaxError("Models require a `requires_rng` bool attribute.")
 
         super().__init__(params=params)
+        # Set time axis attributes
+        self._t0 = t0
+        self._tn = tn
+        self._dt = dt
         self.kernel_list = []
         self.history_set = set()
         self.history_inputs = sinn.DependencyGraph('model.history_inputs')
         self.compiled = {}  # DEPRECATED
         self._pymc = None  # Initialized with `self.pymc` property
 
-        if not isinstance(public_histories, (Sequence, OrderedDict)):
+        if public_histories is None: self.public_histories = []
+        else: self.public_histories = public_histories
+        if not isinstance(self.public_histories, (Sequence, OrderedDict)):
             raise TypeError("`public_histories` (type: {}) must be an ordered "
                             "container type. Recognized types: Sequence, "
                             "OrderedDict.".format(type(public_histories)))
-        self.public_histories = public_histories
 
         if reference_history is not None:
-            self._refhist = reference_history
+            self.set_reference_history(reference_history)
             #self.add_history(reference_history)  # TODO: Possible to remove ?
-        elif len(public_histories) > 0:
-            self._refhist = self.public_histories[0]
+        elif len(self.public_histories) > 0:
+            self.set_reference_history(self.public_histories[0])
         else:
-            self._refhist = None
+            self.set_reference_history(None)
+        # Consistency check
+        assert self._t0 == self.t0  # Reads from _refhist if not None
+        assert self._tn == self.tn
+        assert self._dt == self.dt
 
         # Ensure rng attribute exists
         if not hasattr(self, 'rng'):
@@ -349,15 +359,40 @@ class Model(com.ParameterMixin):
             return super().__getattribute__(attr)
 
     def set_reference_history(self, reference_history):
-        if self._refhist is None:
+        if (reference_history is not None
+            and getattr(self, '_refhist', None) is not None):
             raise RuntimeError("Reference history for this model is already set.")
         self._refhist = reference_history
+
+    # Pickling infrastructure
+    # Reference: https://docs.python.org/3/library/pickle.html#pickle-state
+    def __getstate__(self):
+        # Clear the nonstate histories: by definition these aren't necessary
+        # to recover the state, but they could store huge intermediate date.
+        # Pickling only stores history data up to their `cur_tidx`, so by
+        # clearing them we store no data at all.
+        state = self.__dict__.copy()
+        for attr, val in state.items():
+            if val in self.nonstatehists:
+                # TODO: Find way to store an empty history without clearing
+                #       the one in memory. The following would work if it
+                #       didn't break all references in update functions.
+                # state[attr] = val.copy_empty()
+                val.clear()
+        return state
 
     @property
     def statehists(self):
         return utils.FixedGenerator(
-            ( getattr(self, varname) for varname in self.State._fields ),
+            (getattr(self, varname) for varname in self.State._fields),
             len(self.State._fields) )
+
+    @property
+    def nonstatehists(self):
+        statehists = list(self.statehists)
+        return utils.FixedGenerator(
+            (h for h in self.history_set if h not in statehists),
+            len(self.history_set) - len(self.statehists) )
 
     @property
     def unlocked_statehists(self):
@@ -367,14 +402,13 @@ class Model(com.ParameterMixin):
     def locked_statehists(self):
         return (h for h in self.statehists if h.locked)
 
-    # TODO: Put the `if self._refhist is not None:` bit in a function decorator
     @property
     def t0(self):
-        return self._refhist.t0
+        return getattr(self._refhist, 't0', self._t0)
 
     @property
     def tn(self):
-        return self._refhist.tn
+        return getattr(self._refhist, 'tn', self._tn)
 
     @property
     def t0idx(self):
@@ -387,14 +421,18 @@ class Model(com.ParameterMixin):
 
     @property
     def tidx_dtype(self):
-        return self._refhist.tidx_dtype
+        if self._refhist is not None:
+            return self._refhist.tidx_dtype
+        else:
+            tarr_len = int((self.tn - self.t0) / self.dt)
+            return np.min_scalar_type(-2*tarr_len)
+                # Leave enough space in time indices to double the time array
+                # Using a negative value forces the type to be 'int' and not
+                # 'uint', which we need to store -1
 
     @property
     def dt(self):
-        if self._refhist is not None:
-            return self._refhist.dt
-        else:
-            raise AttributeError("Reference history for this model is not set.")
+        return getattr(self._refhist, 'dt', self._dt)
 
     @property
     def cur_tidx(self):
