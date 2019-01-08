@@ -1281,6 +1281,8 @@ class FitCollection:
         **kwargs:
             Keyword arguments are passed on to mackelab.iotools.load()
         """
+        # TODO: If reffit.parameters is None, and a loaded has parameters,
+        #       use those ?
 
         # Invalidate internal caches
         self._nffits = None
@@ -1376,6 +1378,8 @@ class FitCollection:
             self.parameters = copy.deepcopy(self.reffit.parameters)
             excluded_keys = set()
             for fit in self.fits[1:]:
+                if fit.parameters is None or self.parameters is None:
+                    continue
                 diff = ml.parameters._dict_diff(self.parameters,
                                                 fit.parameters)
                 excluded_keys.update(ParameterSet(diff[0]).flatten().keys())

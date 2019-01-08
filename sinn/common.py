@@ -355,7 +355,10 @@ class HistoryBase:
 
     def __repr__(self):
         if hasattr(self, 'name'):
-            return "{} (t0: {}, tn: {})".format(self.name, self.t0, self.tn)
+            info = "t0: {}, tn: {}".format(self.t0, self.tn)
+            if hasattr(self, 'cur_tidx'):
+                info += ", cur_tidx: {}".format(self.cur_tidx)
+            return "{} ({})".format(self.name, info)
         else:
             return super().__repr__()
 
