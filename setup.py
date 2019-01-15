@@ -25,7 +25,8 @@ setup(
                         'scipy',
                         #'dill', # Histories are picklable now
                         'tqdm',
-                        'packaging']
+                        'packaging',
+                        'jsonpickle']
       # Add mackelab, theano as optional dependency
       # luigi is not included, since nothing imports luigi.py
       # A user importing sinn.models.luigi should expect to install luigi
