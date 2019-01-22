@@ -340,16 +340,17 @@ class Model(com.ParameterMixin):
             self.rng = None
 
         # Create symbolic variables for batches
-        # Any symbolic function on batches should use these, that way
-        # other functions can retrieve the symbolic input variables.
-        self.batch_start_var = shim.symbolic.scalar('batch_start',
-                                                    dtype=self.tidx_dtype)
-        self.batch_start_var.tag.test_value = 1
-            # Must be large enough so that test_value slices are not empty
-        self.batch_size_var = shim.symbolic.scalar('batch_size',
-                                                   dtype=self.tidx_dtype)
-            # Must be large enough so that test_value slices are not empty
-        self.batch_size_var.tag.test_value = 2
+        if shim.cf.use_theano:
+            # Any symbolic function on batches should use these, that way
+            # other functions can retrieve the symbolic input variables.
+            self.batch_start_var = shim.symbolic.scalar('batch_start',
+                                                        dtype=self.tidx_dtype)
+            self.batch_start_var.tag.test_value = 1
+                # Must be large enough so that test_value slices are not empty
+            self.batch_size_var = shim.symbolic.scalar('batch_size',
+                                                       dtype=self.tidx_dtype)
+                # Must be large enough so that test_value slices are not empty
+            self.batch_size_var.tag.test_value = 2
 
 
     def __getattribute__(self, attr):
@@ -1071,7 +1072,7 @@ class Model(com.ParameterMixin):
 
     def advance(self, stop):
         """
-        Allows advancing (aka integrating) a symbolic model.
+        Advance (aka integrate) a model.
         For a non-symbolic model the usual recursion is used – it's the
         same as calling `hist[stop]` on each history in the model.
         For a symbolic model, the function constructs the symbolic update
