@@ -5,13 +5,19 @@ Created on Thu Jan 17 2017
 Author: Alexandre René
 """
 
+# TODO
+#   - Remove any use of '_refhist'. Package the (t0, tn, dt) -> time_array
+#     code (which is in histories.History) into an Axis class, and then give
+#     a proper axis to Model.
+
 import numpy as np
 import scipy as sp
 #from scipy.integrate import quad
 #from collections import namedtuple
 import logging
 logger = logging.getLogger(__name__)
-from collections import OrderedDict, Sequence, Iterable
+from collections import OrderedDict, Sequence, Iterable, Callable
+import inspect
 from inspect import isclass
 from itertools import chain
 
@@ -19,6 +25,7 @@ import theano_shim as shim
 import mackelab.utils as utils
 import mackelab.theano
 from mackelab.theano import GraphCache, CompiledGraphCache
+from mackelab.utils import class_or_instance_method
 import sinn.config as config
 import sinn.common as com
 import sinn.histories
@@ -458,6 +465,88 @@ class Model(com.ParameterMixin):
             return sinn.models.pymc3.PyMC3ModelWrapper(self)
                 # PyMC3ModelWrapper assigns the PyMC3 model to `self._pymc`
         return self._pymc
+
+    @class_or_instance_method
+    def summarize(self, hists=None):
+        if isinstance(self, type):
+            nameline = "Model '{}'".format(self.__name__)
+            paramline = "Parameters: " + ', '.join(self.Parameters._fields)
+        else:
+            assert isinstance(self, Model)
+            name = getattr(self, '__name__', type(self).__name__)
+            nameline = "Model '{}' (t0: {}, tn: {}, dt: {})" \
+                .format(name, self.t0, self.tn, self.dt)
+            paramline = str(self.params)
+        nameline += '\n' + '-'*len(nameline)  # Add separating line under name
+        stateline = "State variables: " + ', '.join(self.State._fields)
+        return (nameline + '\n' + stateline + '\n' + paramline + '\n\n'
+                + self.update_summary(hists))
+
+    @class_or_instance_method
+    def update_summary(self, hists=None):
+        """
+        Return a string summarizes the update function. By default, returns those of `self.state`.
+        May be called on the class itself, or an instance.
+        When called on the class without arguments or with history names, relies on the following
+        naming convention to find update functions: `[hist name]_fn`.
+
+        Parameters
+        ----------
+        hists: list|tuple of histories|functions|str
+            List of histories for which to print the update.
+            For each history given, retrieves its update function.
+            Alternatively, a history's name can be given as a string,
+            its update functions can be passed directly.
+        """
+        # Default for when `hists=None`
+        if hists is None:
+            if isinstance(self, Model):
+                # Just grab the histories from self.statehists
+                # Converted to functions below
+                hists = self.statehists
+            else:
+                # Rely on naming convention to find update function
+                hists = self.State._fields
+
+        # Create list of update functions and their corresponding names
+        hists = list(hists)
+        funcs = []
+        names = []
+        for i, hist in enumerate(hists):
+            if isinstance(hist, sinn.histories.History):
+                funcs.append(hist._update_function_dict['func'])
+                names.append(hist.name)
+            elif isinstance(hist, str):
+                try:
+                    fn = getattr(self, hist + '_fn')
+                except AttributeError:
+                    raise AttributeError("Unable to find update function for `{}`. "
+                                         "Naming convention expects it to be `{}`."
+                                         .format(hist, hist + '_fn'))
+                funcs.append(fn)
+                names.append(hist)
+            else:
+                assert isintance(hist, Callable)
+                funcs.append(hist)
+                names.append(None)
+
+        # For each function, retrieve its source
+        srcs = []
+        for name, fn in zip(names, funcs):
+            src = inspect.getsource(fn)
+            if src.strip()[:3] != 'def':
+                raise RuntimeError(
+                    "Something went wrong when retrieve an update function's source. "
+                    "Make sure the source file is saved and try reloading the Jupyter "
+                    "notebook. Source should start with `def`, but we got:\n" + src)
+            # TODO: Remove indentation common to all lines
+            if name is not None:
+                # Replace the `def` line by a more explicit string
+                src = "Update function for {}:".format(name) + '\n' + src.split('\n', 1)[1]
+            srcs.append(src)
+
+        # Join everything together and return
+        return '\n\n'.join(srcs)
 
     def get_tidx(self, t, allow_rounding=False):
         """
