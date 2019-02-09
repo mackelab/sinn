@@ -780,6 +780,10 @@ class History(HistoryBase):
         else:
             hist.unlock()
 
+    def __call__(self, t):
+        # Uncached call to update function
+        # TODO: Add flag so that recursive calls are also uncached ?
+        return self._update_function(t)
 
     def __getitem__(self, key):
         """
