@@ -955,7 +955,7 @@ class History(HistoryBase):
                                # Compared to taking key[1] - key[0], this has
                                # the advantage of being valid even when `key`
                                # is length 1 and thus not requiring LazyEval.
-                               self.index_interval(key[-1] - key[0]) // shim.cast(key.shape[0], self.tidx_dtype) )
+                               (self.index_interval(key[-1] - key[0]) + 1) // shim.cast(key.shape[0], self.tidx_dtype) )
                                # shim.LazyEval(lambda key: self.index_interval(key[1] - key[0]), (key,) ))
 	                           # # `LazyEval` prevents Python from greedily executing key[1]
                                #     # even when key has length 1
@@ -1641,8 +1641,8 @@ class History(HistoryBase):
                 # self._cur_Δi and self._tot_Δi may change within the loop
                 # as we unroll recurrent dependencies
                 cur_Δi = self._cur_Δi.copy()
-                tidx = self._original_tidx + cur_Δi
-                self.update(tidx, self._update_function(tidx))
+                _tidx = self._original_tidx + cur_Δi
+                self.update(_tidx, self._update_function(_tidx))
                 # self._cur_Δi may have changed inside the update
                 if cur_Δi == self._cur_Δi:
                     # self._cur_Δi was not changed; update it because now that
@@ -3967,7 +3967,7 @@ class Series(ConvolveMixin, History):
                     "Source history has a different time axis.\n"
                     "This history: {}\n Source history:{}"
                     .format(self.timeaxis, source.timeaxis))
-            data = source.data
+            data = source._data.get_value()
 
         elif (not hasattr(source, 'shape')
               and (shim.istype(source, 'float')

@@ -1,3 +1,4 @@
+import collections
 from collections import OrderedDict, deque, namedtuple, Iterable
 from itertools import chain
 import itertools
@@ -84,19 +85,24 @@ def standardize_lr(lr, params):
         If dict: keys correspond to parameter names.
         Dictionary may also contain a 'default' entry; it's value is used
         for any parameter whose name is not in the `lr` dictionary.
-    params: list of symbolic variables
+    params: dict of (name: symbolic variables)
         Parameters which will be fit.
     """
     if shim.isscalar(lr):
         lr = {p: lr for p in params}
-    elif isinstance(lr, dict):
+    elif isinstance(lr, (dict, collections.abc.Mapping)):
         new_lr = {}
-        default_lr = getattr(lr, 'default', None)
-        for p in params:
+        lr = copy.deepcopy(lr)
+        default_lr = lr.get('default', None)
+        for pname, p in params.items():
             if p in lr:
                 assert(shim.isshared(p))
+                assert(pname not in lr)
                 assert(p.name not in lr)
                 new_lr[p] = lr[p]
+            elif pname in lr:
+                assert(pname == p.name or p.name not in lr)
+                new_lr[p] = lr[pname]
             elif p.name in lr:
                 new_lr[p] = lr[p.name]
             else:
@@ -693,7 +699,8 @@ class SeriesSGD(SGDBase):
         if optimizer_kwargs is None:
             optimizer_kwargs = {}
         else:
-            optimizer_kwargs = copy.deepcopy(optimizer_kwargs)
+            optimizer_kwargs = dict(copy.deepcopy(optimizer_kwargs))
+                # Use `dict` constructor to ensure `optimizer_kwargs` is mutable
 
         # Make fit parameters array-like
         # start = shim.asarray(start)
@@ -763,7 +770,9 @@ class SeriesSGD(SGDBase):
         cost_graph = shim.graph.clone(cost_graph, replace=self.var_subs)
         # self.cost_graph2 = cost_graph # DEBUG
         lr = optimizer_kwargs['lr']
-        if isinstance(lr, dict):
+        if isinstance(lr, (dict, collections.abc.Mapping)):
+            # Ensure `lr` is mutable
+            lr = dict(lr)
             # TODO: Move some of this to `standardize_lr()` ?
             subbed_shared_names = {s.name: s for s in self.var_subs}
             for key, val in lr.items():
@@ -779,7 +788,7 @@ class SeriesSGD(SGDBase):
                     assert(new_key not in lr)
                     lr[new_name] = lr[key]
                     del lr[key]
-        lr = standardize_lr(lr, self.optimize_vars)
+        lr = standardize_lr(lr, self.optimize_vars_access)
         optimizer_kwargs['lr'] = lr
 
         # Compile cost function
@@ -828,7 +837,10 @@ class SeriesSGD(SGDBase):
         advance_updates = advance(_start, _stop)
         for var, upd in advance_updates.items():
             upd = shim.graph.clone(upd, replace=self.var_subs)
-            advance_updates[var] = shim.cast(upd, var.dtype, same_kind=True)
+            if hasattr(var, 'dtype'):
+                advance_updates[var] = shim.cast(upd, var.dtype, same_kind=True)
+            else:
+                advance_updates[var] = upd
 
         # Compile the advance function
         # TODO: Find a way to use a precompiled function that already has
@@ -881,7 +893,7 @@ class SeriesSGD(SGDBase):
         logger.info("Compiling the optimization step function.")
         step_inputs = [self.tidx_var, self.batch_size_var]
         step_inputs = [i for i in step_inputs
-                       if i in shim.graph.pure_symbolic_inputs(
+                       if i in shim.graph.symbolic_inputs(
                            optimizer_updates.values())]
             # This line mostly for debugging: allows to have no optimization
             # variables at all, which then have no inputs either
@@ -890,8 +902,14 @@ class SeriesSGD(SGDBase):
             if 'nanguard' not in optimizers.debug_flags:
                 self._step = self.compile_cache.get([], optimizer_updates)
                 if self._step is None:
-                    self._step = shim.graph.compile(step_inputs, [],
-                                                    updates=optimizer_updates)
+                    # _step = shim.graph.compile(step_inputs, [],
+                    _step = shim.graph.compile([], [],
+                                               updates=optimizer_updates)
+                    def step(*inputs):
+                        for var, val in zip(step_inputs, inputs):
+                            var.set_value(val)
+                        _step()
+                    self._step = step
                     self.compile_cache.set([], optimizer_updates, self._step)
                 else:
                     logger.info("Compiled step function loaded from cache.")
@@ -903,9 +921,14 @@ class SeriesSGD(SGDBase):
                     nanguard = optimizers.debug_flags['nanguard']
                     assert('nan_is_error' in nanguard and 'inf_is_error' in nanguard) # Required arguments to NanGuardMode
                 from theano.compile.nanguardmode import NanGuardMode
-                self._step = shim.graph.compile(step_inputs, [],
+                _step = shim.graph.compile(step_inputs, [],
                                                 updates=optimizer_updates,
                                                 mode=NanGuardMode(**nanguard))
+                def step(*inputs):
+                    for var, val in zip(step_inputs, inputs):
+                        var.set_value(val)
+                    _step()
+                self._step = step
             logger.info("Done compilation.")
 
             # Compile a function to extract tracking variables
@@ -994,8 +1017,8 @@ class SeriesSGD(SGDBase):
             init_vals = {}
 
         self.step_i = 0
-        self.curtidx = 0
-        self.old_curtidx = 0
+        self.curtidx = self.start
+        self.old_curtidx = self.start
 
         # Since we repeatedly append new values to the traces while fitting,
         # we store them in a 'deque'.
@@ -1049,13 +1072,15 @@ class SeriesSGD(SGDBase):
             if last or self.step_i % self.cost_track_freq == 0:
                 cost = self.cost()
                 if not np.isfinite(cost):
-                    import pdb; pdb.set_trace()
                     logger.error("Non-finite cost: {}.".format(cost))
                 self._cost_trace.append(cost)
                 self._tracked_cost_iterations.append(self.step_i)
 
     def step(self):
         self.reset_model(**self.optimize_vars_access)
+        end = max(0,
+                  (self.start + self.datalen - self.batch_size
+                   - (1+self.mode_params.burnin_factor)*self.burnin))
         if self.mode == 'sequential':
             if (self.curtidx < self.start
                 or self.curtidx > self.start + self.datalen
@@ -1067,8 +1092,10 @@ class SeriesSGD(SGDBase):
                 if self.mode_params.start_factor == 0:
                     self.curtidx = self.start
                 else:
-                    self.curtidx = np.random.randint(self.start,
-                                                     self.start + self.mode_params.start_factor*self.batch_size)
+                    self.curtidx = np.random.randint(
+                        self.start,
+                        self.start + min(
+                            end, self.mode_params.start_factor*self.batch_size))
                 self.initialize_model(self.curtidx)
             else:
                 # This doesn't seem required anymore
@@ -1076,10 +1103,7 @@ class SeriesSGD(SGDBase):
                 pass
 
         elif self.mode == 'random':
-            self.curtidx = np.random.randint(self.start,
-                                             self.start + self.datalen
-                                             - self.batch_size
-                                             - (1+self.mode_params.burnin_factor)*self.burnin)
+            self.curtidx = np.random.randint(self.start, end)
             self.initialize_model(self.curtidx)
 
         else:
