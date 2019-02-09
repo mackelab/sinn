@@ -20,6 +20,8 @@ from collections import OrderedDict, Sequence, Iterable, Callable
 import inspect
 from inspect import isclass
 from itertools import chain
+import copy
+import sys
 
 import theano_shim as shim
 import mackelab.utils as utils
@@ -50,7 +52,7 @@ failed_build_msg = (
         "not your model, you may need to workaround the issue by "
         "defining a `symbolic_update` in your model class. "
         "Automatic construction of symbolic updates is still work in "
-        " progress and not always possible.")
+        "progress and not always possible.")
 
 def register_model(model, modelname=None):
     """
@@ -341,16 +343,20 @@ class Model(com.ParameterMixin):
 
         # Create symbolic variables for batches
         if shim.cf.use_theano:
-            # Any symbolic function on batches should use these, that way
-            # other functions can retrieve the symbolic input variables.
-            self.batch_start_var = shim.symbolic.scalar('batch_start',
-                                                        dtype=self.tidx_dtype)
-            self.batch_start_var.tag.test_value = 1
-                # Must be large enough so that test_value slices are not empty
-            self.batch_size_var = shim.symbolic.scalar('batch_size',
-                                                       dtype=self.tidx_dtype)
-                # Must be large enough so that test_value slices are not empty
-            self.batch_size_var.tag.test_value = 2
+            # # Any symbolic function on batches should use these, that way
+            # # other functions can retrieve the symbolic input variables.
+            start = np.array(1).astype(self.tidx_dtype)
+            self.batch_start_var = shim.shared(start, name='batch_start')
+            # self.batch_start_var = shim.symbolic.scalar('batch_start',
+            #                                             dtype=self.tidx_dtype)
+            # self.batch_start_var.tag.test_value = 1
+            #     # Must be large enough so that test_value slices are not empty
+            size = np.array(2).astype(self.tidx_dtype)
+            self.batch_size_var = shim.shared(size, name='batch_size')
+            # self.batch_size_var = shim.symbolic.scalar('batch_size',
+            #                                            dtype=self.tidx_dtype)
+            #     # Must be large enough so that test_value slices are not empty
+            # self.batch_size_var.tag.test_value = 2
 
 
     def __getattribute__(self, attr):
@@ -362,7 +368,22 @@ class Model(com.ParameterMixin):
         if (attr != 'params' and hasattr(self, 'params')
             and isinstance(self.params, Iterable)
             and attr in self.params._fields):
-            return getattr(self.params, attr)
+            # Return either a PyMC3 prior (if in PyMC3 context) or shared var
+            # Using sys.get() avoids the need to load pymc3 if it isn't already
+            pymc3 = sys.modules.get('pymc3', None)
+            param = getattr(self.params, attr)
+            if not hasattr(param, 'prior') or pymc3 is None:
+                return param
+            else:
+                try:
+                    pymc3.Model.get_context()
+                except TypeError:
+                    # No PyMC3 model on stack – return plain param
+                    return param
+                else:
+                    # Return PyMC3 prior
+                    return param.prior
+
         else:
             return super().__getattribute__(attr)
 
@@ -454,17 +475,29 @@ class Model(com.ParameterMixin):
         return (h for h in self.history_set if not h.locked)
 
     @property
-    def pymc(self):
+    def pymc(self, **kwargs):
         """
         The first access should be done as `model.pymc()` to instantiate the
         model. Subsequent access, which retrieves the already instantiated
         model, should use `model.pymc`.
         """
         if getattr(self, '_pymc', None) is None:
+            # Don't require that PyMC3 be installed unless we need it
             import sinn.models.pymc3
-                # Don't require that PyMC3 be installed unless we need it
-            return sinn.models.pymc3.PyMC3ModelWrapper(self)
-                # PyMC3ModelWrapper assigns the PyMC3 model to `self._pymc`
+            # Store kwargs so we can throw a warning if they change
+            self._pymc_kwargs = copy.deepcopy(kwargs)
+            # PyMC3ModelWrapper assigns the PyMC3 model to `self._pymc`
+            return sinn.models.pymc3.PyMC3ModelWrapper(self, **kwargs)
+        else:
+            for key, val in kwargs.items():
+                if key not in self._pymc_kwargs:
+                    logger.warning(
+                        "Keyword parameter '{}' was not used when creating the "
+                        "model and will be ignored".format(key))
+                elif self._pymc_kwargs[key] != value:
+                    logger.warning(
+                        "Keyword parameter '{}' had a different value ({}) "
+                        "when creating the model.".format(key, value))
         return self._pymc
 
     @class_or_instance_method
@@ -1479,6 +1512,10 @@ class Model(com.ParameterMixin):
         # Bool is flag indicating whether history graph is fully substituted
         # When they are all True, we stop substitutions
 
+        # Replace any PyMC3 prior by the corresponding shared variable
+        prior_subs = {p.prior: p for p in self.params if hasattr(p, 'prior')}
+        St = [(shim.graph.clone(xt[0], replace=prior_subs), xt[1]) for xt in St]
+
         # FIXME: Assumes no dependencies beyond a lag 1 for every one
         # Get S0 after St: don't need to update _data the second time, so it
         # will be the same _data which is indexed for both.
@@ -1621,6 +1658,10 @@ class Model(com.ParameterMixin):
         ht = [(h._update_function(ti+1), False)
               for h, ti in zip(hists, tidcs)]
         assert len(ht) == len(hists)
+
+        # Replace any PyMC3 prior by the corresponding shared variable
+        prior_subs = {p.prior: p for p in self.params if hasattr(p, 'prior')}
+        ht = [(shim.graph.clone(xt[0], replace=prior_subs), xt[1]) for xt in ht]
 
         # Remove the locked histories from the variables we want to substitute:
         # those don't need to be computed (typically they contain they

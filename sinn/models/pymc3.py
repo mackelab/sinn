@@ -81,6 +81,37 @@ def BatchDist(hist, logp, *args, **kwargs):
     return var
 
 # ================================================
+# RNG Wrapper
+# ================================================
+
+class PyMC_RNG_Shim:
+    def __init__(self, rng):
+        """
+        Provides an interface consistent with the random RandomStreams of theano
+        or :module:theano_shim, but returning PyMC3 distribution objects.
+
+        Parameters
+        ----------
+        rng:    Theano RNG | ShimmedRandomStreams
+            The RNG we want to shim.
+        """
+        self.rng = rng
+
+    def __getattr__(self, attr):
+        return getattr(self.rng, attr)
+
+    def normal(self, size=(), avg=0.0, std=1.0, ndim=None, name=None):
+        try:
+            pm.Model.get_context()
+        except TypeError:
+            # No PyMC3 model on stack – use shimmed RNG
+            return self.rng.normal(size=size, avg=avg, std=std, ndim=ndim,
+                                   name=name)
+        else:
+            # PyMC3 model on stack – return a PyMC3 distribution
+            return pm.Normal(name=name, mu=avg, sd=std, shape=size)
+
+# ================================================
 # PyMC3 Model subclass
 # ================================================
 
@@ -94,6 +125,7 @@ class PyMC3ModelWrapper:
         self.sinn_model = sinn_model
         self.args = []
         self.kwargs = {'sinn_model': sinn_model}
+
     def __call__(self, *args, **kwargs):
         self.args.extend(args)
         self.kwargs.update(kwargs)
@@ -157,6 +189,7 @@ class PyMC3Model(pm.Model):
             self.data_start = sinn_model.t0idx
         else:
             self.data_start = sinn_model.get_tidx(data_start)
+        sinn_model.batch_start_var.set_value(self.data_start)
         if data_end is None:
             self.data_end = sinn_model.tnidx
         else:
@@ -168,11 +201,17 @@ class PyMC3Model(pm.Model):
             self.batch_size = self.data_end - self.data_start
         else:
             self.batch_size = sinn_model.index_interval(batch_size)
+        sinn_model.batch_size_var.set_value(self.batch_size)
         if init is sinn._NoValue:
             # Can't use `None` because it signals no init function at all
             self.init = getattr(sinn_model, 'initialize', None)
         else:
             self.init = init
+        rng = getattr(sinn_model, 'rng', None)
+        if rng is not None:
+            # Wrap the RNG with one that will redirect calls to PyMC3
+            # when called within a model context
+            sinn_model.rng = PyMC_RNG_Shim(sinn_model.rng)
 
     @property
     def data_len(self):
@@ -182,7 +221,7 @@ class PyMC3Model(pm.Model):
         """
         Return a :class:`PyMC3Prior` object associating each model prior
         to a shared variable of the original model.
-        As a convenienc, if both prior and shared var have the same name,
+        As a convenience, if both prior and shared var have the same name,
         ' (PyMC)' is appended to the former.
         """
         pymc = deque()
@@ -203,7 +242,8 @@ class PyMC3Model(pm.Model):
     def makefn(self, outs, mode=None, *args, **kwargs):
         f = super().makefn(outs, mode, *args, **kwargs)
         def makefn_wrapper(*args, **kwargs):
-            self.setup(self.data_start)
+            if hasattr(self, 'setup'):
+                self.setup(self.data_start)
             return f(*args, **kwargs)
         return makefn_wrapper
 
@@ -271,6 +311,29 @@ class PyMC3Model(pm.Model):
             track_vars = self.priors.labeled
         if optimizer_kwargs is None:
             optimizer_kwargs = {'lr': 0.0002}
+        else:
+            # We may be optimizing on substituted vars with different names
+            # (e.g. PyMC priors, which will be replaced by shared placeholders)
+            # so we sub those into the kwargs
+            optimizer_kwargs = dict(optimizer_kwargs)
+                # Make mutable
+            lrs = optimizer_kwargs.get('lr', None)
+            if lrs is not None:
+                lrs = dict(lrs)
+                    # Make mutable
+                optimizer_kwargs['lr'] = lrs
+                changes = {}
+                for pname, lr in lrs.items():
+                    p = getattr(sm, pname, None)
+                    if p is not None:
+                        prior = getattr(p, 'prior')
+                        if prior is not None and prior.name != pname:
+                            changes[pname] = (prior.name, lr)
+                            # lrs[p.name] = lr
+                            # del lrs[pname]
+                for oldname, (newname, lr) in changes.items():
+                    lrs[newname] = lr
+                    del lrs[oldname]
         return sinn.optimize.SeriesSGD(
             start           = self.data_start,
             datalen         = self.data_len,
