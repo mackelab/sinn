@@ -743,9 +743,11 @@ class History(HistoryBase):
         if version >= 2.2:
             hist.idx_dtype = repr['idx_dtype'][()]
             hist.tidx_dtype = repr['tidx_dtype'][()]
+            hist.symbolic = repr['symbolic'][()]
         else:
             hist.idx_dtype = np.min_scalar_type(max(hist.shape))
             hist.tidx_dtype = np.min_scalar_type(-2*len(hist._tarr))
+            hist.symbolic = False
         hist.t0idx = repr['t0idx'].astype(hist.tidx_dtype)
         hist._unpadded_length = repr['_unpadded_length'].astype(hist.tidx_dtype)
         hist.locked = bool(repr['locked'])
@@ -754,7 +756,6 @@ class History(HistoryBase):
 
         hist.name = str(repr['name'])
 
-        hist.symbolic = repr['symbolic'][()]
         hist._iterative = repr['_iterative']
 
         cur_tidx = repr['_cur_tidx'].astype(hist.tidx_dtype)
