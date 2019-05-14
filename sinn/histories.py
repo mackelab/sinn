@@ -489,7 +489,6 @@ class History(HistoryBase):
             self.set_update_function(None)
         else:
             self.set_update_function(f)
-        self._compute_range = None
 
         self._tarr = time_array.astype(t_dtype)
         self.t0idx = shim.cast(0, self._cur_tidx.dtype)       # the index associated to t0
@@ -576,7 +575,22 @@ class History(HistoryBase):
         Returned index is not corrected for padding; to get the number of bins
         computed beyond t0, do `hist.cur_tidx - hist.t0idx`.
         """
-        return self._original_tidx.get_value()
+        curtidx = self._original_tidx.get_value()
+        if curtidx > self.tnidx:
+            logger.warning("Current time of history {} index exceeds its "
+                           "time array. Using highest valid value. "
+                           "({} instead of {})"
+                           .format(self.name, self.tnidx, curtidx))
+            curtidx = self.tnidx
+        return curtidx
+
+    @property
+    def cur_t(self):
+        """
+        Returns the time up to which the history has been computed.
+        Equivalent to `self._tarr[self.cur_tidx]`.
+        """
+        return self._tarr[self.cur_tidx]
 
     @property
     def data(self):
@@ -735,6 +749,7 @@ class History(HistoryBase):
         # TODO: Initialize hist w/ _tarr instead of t0, tn, dt
         hist.name = repr['name']
         hist.shape = tuple(repr['shape'])
+        hist.ndim = repr['ndim']
         hist.dt64 = dt64
         hist.dt = dt64.astype(dt.dtype)
         hist.t0 = t0.astype(dt.dtype)
@@ -776,6 +791,7 @@ class History(HistoryBase):
         hist._data = hist._original_data
         hist.stash = Stash(hist, ('_cur_tidx', '_original_tidx'),
                                        ('_data', '_original_data'))
+        hist.set_update_function(None)
         if lock:
             hist.lock()
         else:
@@ -1102,7 +1118,7 @@ class History(HistoryBase):
         """Remove the history lock."""
         self.locked = False
 
-    def set_update_function(self, func, inputs=None, cast=True, _return_dtype=None):
+    def set_update_function(self, func, inputs=None, cast=True, _return_dtype=None, range_update_function=None):
         """
 
         Parameters
@@ -1159,9 +1175,11 @@ class History(HistoryBase):
         self._update_function_dict = odict['func': func,
                                            'cast': cast,
                                            '_return_dtype': _return_dtype]
+        self.set_range_update_function(range_update_function)
         if inputs is None and func is not None:
             logger.warning(
                 "You should specify the list of inputs with the function.")
+        if inputs is None: inputs = set()
         self.inputs = inputs
 
     def _update_function(self, t):
@@ -1391,9 +1409,10 @@ class History(HistoryBase):
         # We make them as wide as possible, from a half step before the
         # beginning of `hist`, to a half step after the end
         # TODO: Use np.searchsorted to find bounds instead of bool indexing
+        dt = min(self.dt, hist.dt)
         interp_times = hist.time[
-            np.logical_and(hist.time >= self.time[0] - self.dt/2 - ε,
-                           hist.time <= self.time[-1] + self.dt/2 + ε)]
+            np.logical_and(hist.time >= self.time[0] - dt/2 - ε,
+                           hist.time <= self.time[-1] + dt/2 + ε)]
         return self.interpolate(interp_times)
 
     def interpolate(self, interp_times):
@@ -2054,8 +2073,8 @@ class History(HistoryBase):
 
     def add_input(self, variable):
 
-        if self not in self.inputs:
-            self.inputs = set()
+        # if self not in self.inputs:
+        #     self.inputs = set()
 
         if isinstance(variable, (HistoryBase, KernelBase, str)):
             # Not sure why a string would be an input, but it guards against Iterable
@@ -3958,8 +3977,10 @@ class Series(ConvolveMixin, History):
         tarr = self._tarr
 
         if source is None:
+            # TODO: We should probably deprecate this since it must exit early
             # Default is to use series' own compute functions
             self.compute_up_to('end')
+            return self
 
         elif isinstance(source, History):
             # Use `align_to` and a flag to allow mismatching time axes
@@ -4178,15 +4199,17 @@ class Series(ConvolveMixin, History):
         elif isinstance(b, HistoryBase):
             # HACK Should write function that doesn't create empty arrays
             shape = np.broadcast(np.empty(self.shape), np.empty(b.shape)).shape
-            new_series = Series(self, shape=shape)
+            tnidx = min(self.tnidx, b.get_tidx_for(b.tnidx, self))
+            new_series = Series(self, shape=shape,
+                                time_array=self._tarr[:tnidx+1])
             new_series.set_update_function(lambda t: op(self[t], b[t]))
             new_series.set_range_update_function(
                 lambda tarr: op(self[self.time_array_to_slice(tarr)],
                                 b[b.time_array_to_slice(tarr)]))
             new_series.add_input(self)
             computable_tidx = min(
-                self.get_tidx_for(self.cur_tidx, new_series),
-                b.get_tidx_for(b.cur_tidx, new_series))
+                self.get_tidx_for(min(self.cur_tidx, self.tnidx), new_series),
+                b.get_tidx_for(min(b.cur_tidx, b.tnidx), new_series))
         else:
             if hasattr(b, 'shape'):
                 shape = np.broadcast(np.empty(self.shape),
@@ -4201,10 +4224,11 @@ class Series(ConvolveMixin, History):
                 new_series.add_input([self, b])
             else:
                 new_series.add_input(self)
-            computable_tidx = self.get_tidx_for(self.cur_tidx, new_series)
+            computable_tidx = self.get_tidx_for(min(self.cur_tidx, self.tnidx),
+                                                new_series)
 
-        # Since we assume the op is cheap, calculate as much as possible with
-        # triggering updates in the inputs
+        # Since we assume the op is cheap, calculate as much as possible
+        # without triggering updates in the inputs
         new_series.compute_up_to(computable_tidx)
 
         # if ( self._original_tidx.get_value() >= self.tnidx

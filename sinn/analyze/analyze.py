@@ -345,7 +345,7 @@ def filter(series, function, window, name = None, **kwargs):
                 start = np.rint(start).astype(int)
                 return function(series[start:start+window])
         res.set_update_function(f)
-        res.set()
+        res.compute_up_to('end')
     else:
         raise NotImplementedError
 
@@ -366,7 +366,8 @@ def smooth(series, amount, method='mean', name = None, **kwargs):
         name = series.name + "_smoothed"
     return filter(series, window=amount, function=method, name=name, **kwargs)
 
-def subsample(series, amount=None, target_dt=None, aggregation='mean'):
+def subsample(series, amount=None, target_dt=None, aggregation='mean',
+              warn=True):
     """
     Reduce the number of time bins by aggregating every `amount` bins into one.
     The aggregation function used is set by `aggregation`.
@@ -386,6 +387,9 @@ def subsample(series, amount=None, target_dt=None, aggregation='mean'):
         Otherwise it should be a callable which expects to receive a slice of
         data of length `amount`.
         The function to use to aggregate bins.
+    warn: bool (Default: True)
+        True: display and log a warning if the `target_dt` is the same
+        as the series' `dt`.
     Returns
     -------
     Series instance
@@ -452,7 +456,7 @@ def subsample(series, amount=None, target_dt=None, aggregation='mean'):
     nbins = (series.cur_tidx - series.t0idx + 1) // amount
         # We might chop off a few bins, if the new dt is not commensurate with
         # the original number of bins.
-        # +1 because we want the number of bins, not steps
+        # +1 because we want the number of bins, not index interval
     if nbins < 1:
         raise RuntimeError("`Subsample` tried to reduce history to {} time "
                            "bins.".format(nbins))
@@ -482,7 +486,7 @@ def subsample(series, amount=None, target_dt=None, aggregation='mean'):
         for i in range(nbins):
             resdata[i] = aggregation(data[i*amount:(i+1)*amount])
         res._data.set_value(resdata, borrow=True)
-        res._cur_tidx.set_value(res.t0idx + len(resdata))
+        res._cur_tidx.set_value(res.t0idx + len(resdata) - 1)
     res.lock()
     return res
 
@@ -537,7 +541,7 @@ def decimate(history, factor=None, target_dt=None, allow_rounding=False):
         nbins = int( (hist.tn - hist.t0) // newdt ) + 1
             # We might chop off a few bins, if the new dt is not commensurate with
             # the original number of bins.
-            # +1 because this is the number of bins, not steps
+            # +1 because this is the number of bins, not an index interval
         res = type(history)(name = hist.name + "_decimated_by" + str(factor),
                             time_array = np.arange(nbins) * newdt + hist.t0,
                             shape = hist.shape,
