@@ -2887,19 +2887,9 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             raise ValueError("Specifying a shape to Spiketimes is "
                              "unecessary, as it's calculated from pop_sizes")
 
-        # self.pop_idcs is a 1D array with as many entries as there are units
-        # The value at each entry is that neuron's population index
-        self.pop_idcs = np.concatenate( [ [i]*size
-                                          for i, size in enumerate(pop_sizes) ] )
+        self._pop_idcs = None
+        self._pop_slices = None
 
-        # self.pop_slices is a list of slices, such that
-        # self.data[i][ self.pop_slices[j] ] returns the set of neurons corresponding
-        # to population j at time bin i
-        self.pop_slices = []
-        i = 0
-        for pop_size in pop_sizes:
-            self.pop_slices.append(slice(i, i+pop_size))
-            i += pop_size
 
         # Force user to explicitly call `set_connectivity` before producing data.
         # It's too easy otherwise to think that this has been correctly set automatically
@@ -2910,24 +2900,50 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
 
         self.initialize(dtype=dtype)
 
+    @property
+    def pop_idcs(self):
+        """
+        self.pop_idcs is a 1D array with as many entries as there are units
+        The value at each entry is that neuron's population index
+        """
+        if getattr(self, '_pop_idcs', None) is None:
+            self._pop_idcs = np.concatenate(
+                [ [i]*size for i, size in enumerate(pop_sizes) ] )
+        return self._pop_idcs
+
+    @property
+    def pop_slices(self):
+        """
+        self.pop_slices is a list of slices, such that
+        self.data[i][ self.pop_slices[j] ] returns the set of neurons corresponding
+        to population j at time bin i
+        """
+        if getattr(self, '_pop_slices', None) is None:
+            self._pop_slices = []
+            i = 0
+            for pop_size in self.pop_sizes:
+                self._pop_slices.append(slice(i, i+pop_size))
+                i += pop_size
+        return self._pop_slices
+
     def raw(self):
         return super().raw(_data = self._data,
-                           pop_sizes = self.pop_sizes)
+                            pop_sizes = self.pop_sizes)
 
     @classmethod
     def from_raw(cls, raw, update_function=sinn._NoValue, symbolic=False, lock=True):
         """See History.from_raw"""
-        retval = super().from_raw(raw, update_function, symbolic, lock,
-                                  pop_sizes=raw['pop_sizes'])
+        retval = super().from_raw(raw, update_function, symbolic, lock)
         # data was wrapped with a scalar array then further with shim.shared.
         # This line recovers the original
         retval._data = retval._data.get_value()[()]
+        retval.pop_sizes = raw['pop_sizes']
         return retval
 
     @property
     def npops(self):
         """The number of populations."""
-        return len(self.pop_slices)
+        return len(self.pop_sizes)
 
     def get_popterm(self, values):
         if isinstance(values, popterm.PopTerm):
