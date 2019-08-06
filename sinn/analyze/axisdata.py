@@ -1084,7 +1084,7 @@ class MarginalCollection:
                                        'desc', 'longdesc',
                                        'idx', 'flatidx',
                                        'to_desc', 'back_desc'])
-    Marker = namedtuple('Marker', ['pos', 'color'])
+    Marker = namedtuple('Marker', ['pos', 'color', 'α', 'size'])
     AxisFormat = namedtuple('AxesFormat', ['key', 'scale', 'visible', 'apply'])
 
     # TODO: Remove flat_idx ?
@@ -1305,7 +1305,11 @@ class MarginalCollection:
         else:
             self.colorscheme = scheme
 
-    def set_markers(self, markers=None, colors=None):
+    def set_markers(self, markers=None, colors=None, alphas=1., size=None):
+        """
+        All parameters can be passed as either iterable (same length) or scalar.
+        size=None => compute marker size from axis size (0.2% plot area)
+        """
         # Standardize `markers` format
         if isinstance(markers, (dict, ParameterSet)):
             # `markers` is treated as a list of dicts, one dict per marker
@@ -1328,9 +1332,31 @@ class MarginalCollection:
             if len(colors) != 1:
                 raise ValueError("`colors` argument must either be of length 1 or "
                                  "of the same length as `markers`.")
-            colors = tuple(colors)*len(markers)
+            colors = list(colors)*len(markers)
+        if not isinstance(alphas, Iterable):
+            alphas = [alphas]*len(markers)
+        else:
+            alphas = list(alphas)  # In case alphas is consummable
+            if len(alphas) != len(markers):
+                if len(alphas) != 1:
+                    raise ValueError(
+                        "`alphas` argument must either be of length 1 or "
+                        "of the same length as `markers`.")
+                alphas = alphas*len(markers)
+        if not isinstance(size, Iterable):
+            sizes = [size]*len(markers)
+        else:
+            sizes = list(size)  # In case alphas is consummable
+            if len(sizes) != len(markers):
+                if len(sizes) != 1:
+                    raise ValueError(
+                        "`size` argument must either be of length 1 or "
+                        "of the same length as `markers`.")
+                sizes = sizes*len(markers)
 
-        self.markers = [self.Marker(pos, color) for pos, color in zip(markers, colors)]
+        self.markers = [self.Marker(pos, color, α, s)
+                        for pos, color, α, s
+                        in zip(markers, colors, alphas, sizes)]
 
     def set_transformed(self, transformed_axes):
         """
@@ -1397,7 +1423,7 @@ class MarginalCollection:
         """
         Internal function that applies the parameters specified in `set_axis()`.
         """
-        if key in self._axes_format:
+        if self._axes_format.sanitize(key) in self._axes_format:
             # Set which spines are visible
             format = self._axes_format[key]
             if format.visible is not None:
@@ -1475,11 +1501,8 @@ class MarginalCollection:
             of a dictionary.
             If there is only a single ellipse to draw, it does not need to be wrapped
             in a list.
-        marker_size: float
-            Value is passed on to the 's' keyword of `scatter()` which plots the markers.
-            If not specified, calculated from the axes witdh.
         **kwargs:
-            Keyword arguments passed to `ScalarAxisData.histogram_plot()`.
+            Keyword arguments passed to `ScalarAxisData.plot()`.
         """
         if ax is None: ax = plt.gca()
 
@@ -1501,8 +1524,16 @@ class MarginalCollection:
             if to_desc is not None:
                 transform = ml.parameters.Transform(to_desc)
                 paramj_markers = [transform(marker) for marker in paramj_markers]
+        # TODO: Don't recreate these lists every time we plot
         colors = [marker.color for marker in self.markers]
-            # TODO: Don't recreate these lists every time we plot
+        αs = [marker.α for marker in self.markers]
+        if marker_size is None:
+            axsize = np.prod(ax.get_window_extent().bounds[2:])
+            marker_size = axsize / 500
+                # Base the marker size on the display size
+                # `s` argument specifies marker _area_, so we use display area
+        sizes = [marker.size if marker.size is not None else marker_size
+                for marker in self.markers]
         maxexpand = self.maxexpand
 
         if self.transformed[keyi] != self.transformed[keyj]:
@@ -1519,7 +1550,7 @@ class MarginalCollection:
         # Draw stddev ellipses
         if stddevs is None:
             stddevs = ()
-        elif not isinstance(stddevs, Iterable):
+        elif not isinstance(stddevs, Iterable) or isinstance(stddevs, dict):
             stddevs = (stddevs,)
         for stddev in stddevs:
             # Check that required parameters are there
@@ -1540,14 +1571,10 @@ class MarginalCollection:
         # Possibly expand the plot region if it doesn't include some of the markers
         xlim, ylim = np.array(plt.xlim()), np.array(plt.ylim())
         xwidth, yheight = xlim[1]-xlim[0], ylim[1]-ylim[0]
-        if marker_size is None:
-            # Base the marker size on the smallest display size (either in x or y)
-            # TODO: does s give linear or area size ? if latter we should base
-            #       it on width * height rather than min(width, height)
-            axsize = min(ax.get_window_extent().bounds[2:])
-            marker_size = axsize / 4
-        for marki, markj, color in zip(parami_markers, paramj_markers, colors):
-            ax.scatter(markj, marki, s=marker_size, c=color, zorder=2)
+        for marki, markj, color, α, s in zip(
+              parami_markers, paramj_markers, colors, αs, sizes):
+            ax.scatter(markj, marki, s=s, c=color, zorder=2, alpha=α,
+                       edgecolors='none')
                 # Recall that histograms set their x-axis to j-parameter
         newxlim, newylim = np.array(plt.xlim()), np.array(plt.ylim())
         if maxexpand*(xlim[1] - xlim[0]) < (newxlim[1] - newxlim[0]):
@@ -1615,10 +1642,10 @@ class MarginalCollection:
             kwargs1D = {}
         if kwargs2D is None:
             kwargs2D = {}
-        def plot_marginal1D(*args):
-            return self.plot_marginal1D(*args, **kwargs1D)
-        def plot_marginal2D(*args):
-            return self.plot_marginal2D(*args, **kwargs2D)
+        def plot_marginal1D(*args, **kwargs):
+            return self.plot_marginal1D(*args, **kwargs, **kwargs1D)
+        def plot_marginal2D(*args, **kwargs):
+            return self.plot_marginal2D(*args, **kwargs, **kwargs2D)
 
         self._plot_grid_layout(gridkeys=params,
                                plot_diagonal=plot_marginal1D,

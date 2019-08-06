@@ -1790,6 +1790,7 @@ class FitCollection:
         else:
             logLs = [fit.data.cost_trace[-1].logL for fit in self.fits]
         maxlogL = max(logLs)
+        σlogLs = np.argsort(logLs)
 
         def get_color(logL):
             # Do the interpolation in hsv space ensures intermediate colors are OK
@@ -1820,7 +1821,11 @@ class FitCollection:
         plot_traces = [trace[idcs] for trace, idcs in zip(traces, trace_idcs)]
 
         # Loop over the traces
-        for trace, stops, logL in zip(plot_traces, trace_stops, logLs):
+        ntraces = len(plot_traces)
+        #transform = lambda rank: 0.5 - np.tanh(5 * (rank/ntraces - 0.4)) / 2
+        transform = lambda rank: 1 - rank/ntraces
+        for trace, stops, logL, rank in zip(
+            plot_traces, trace_stops, logLs, σlogLs):
             # Set plotting parameters
             if logL > maxlogL - keep_range:
                 if keep_color is None:
@@ -1832,8 +1837,17 @@ class FitCollection:
                 if discard_color is None:
                     continue
                 kwargs = {'color': discard_color,
-                          'zorder': -1,
+                          'zorder': -5,
                           'linewidth': linewidth[1]}
+                # If there are a lot of discarded traces, vary their opacity
+                # according to logL, so that we don't just see a blob
+                if ntraces > 100:  # HACK: Hard-coded arbitrary threshold
+                    c = mpl.colors.to_rgb(kwargs['color'])
+                    α = transform(rank)
+                    # Using alpha doesn't always work, so merge with white
+                    # background is hard-coded
+                    c = 1 + (np.array(c)-1)*α
+                    kwargs['color'] = tuple(c)
 
             # Draw plot
             plot_kwargs.update(kwargs)

@@ -392,10 +392,11 @@ def subsample(series, amount=None, target_dt=None, aggregation='mean',
         as the series' `dt`.
     Returns
     -------
-    Series instance
+    Series instance or array
         The result will be `amount` times shorter than `history`. The result
         of each new bin is the average over `amount` bins of the original
         series. Bins are identified by the time at which they begin.
+        If an array is passed, a plain array is returned instead of a series.
     """
     if isinstance(series, np.ndarray):
         if amount is None:
@@ -408,7 +409,7 @@ def subsample(series, amount=None, target_dt=None, aggregation='mean',
             # About 10x faster than passing a callable which computes mean|sum
             normalizer = (amount if aggregation is 'mean' else 1)
             return sum(data[i : (i+nbins)*amount : amount]
-                       for i in range(amount))/normalizer,
+                       for i in range(amount))/normalizer
                 # Can't use np.mean on a generator
         else:
             resdata = np.zeros((nbins,) + data.shape[1:])
@@ -417,6 +418,9 @@ def subsample(series, amount=None, target_dt=None, aggregation='mean',
             return resdata
 
     # else: Everyting below is the `else` branch
+    if not isinstance(series, histories.HistoryBase):
+        raise ValueError("`series` argument should be a History, but is of "
+                         "type `{}`".format(type(series)))
     series = histories.DataView(series)
 
     if (not isinstance(aggregation, Callable)

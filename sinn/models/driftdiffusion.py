@@ -14,7 +14,7 @@ import logging
 
 import theano_shim as shim
 import sinn
-from sinn.histories import Series
+from sinn.histories import Series, HistoryBase
 from sinn.models.common import Model, register_model
 
 from mackelab.utils import StringFunction
@@ -31,6 +31,7 @@ class DriftDiffusion(Model):
     State = namedtuple('State', ['x'])
 
     def __init__(self, params, x_history, random_stream=None,
+                 t0=None, tn=None, dt=None,
                  drift=None, diffusion=None, namespace=None):
         """
         Default `drift` and `diffusion` implement
@@ -59,14 +60,32 @@ class DriftDiffusion(Model):
             raise TypeError("`x_history` argument must be a sinn `Series`.")
         Model.output_rng(x_history, self.rndstream)
 
-        super().__init__(params, public_histories=(x_history,))
+        if t0 is None: t0 = x_history.t0
+        if tn is None: tn = x_history.tn
+        if dt is None: dt = x_history.dt
+
+        super().__init__(params, t0=t0, tn=tn, dt=dt,
+                         public_histories=(x_history,))
         # NOTE: Do not use `params` beyond here. Always use self.params.
 
         self.x = x_history
+        inputs = set([self.x])
+        # TODO: I haven't tested dependence on other histories.
+        #       Also, how should we deal with dependence with a time lag ?
+        if namespace is not None:
+            for I in namespace.values():
+                if isinstance(I, HistoryBase):
+                    inputs.add(I)
+            if len(inputs) > 1:
+                logger.warning(
+                    "Support for dependence on other histories is experimental."
+                    " You have specified update dependencies on the histories "
+                    + ', '.join([str(I) for I in inputs[1:]]) + "."
+                )
 
         self.add_history(self.x)
-        self.x.set_update_function(self.x_fn)
-        self.x.add_input(self.x)
+        self.x.set_update_function(self.x_fn, inputs=inputs)
+        #self.x.add_input(self.x)
 
         if isinstance(drift, str):
             # Evaluate string to get function
@@ -119,7 +138,7 @@ class DriftDiffusion(Model):
         #      here:     `sampler()`
         return self.rndstream.normal(size=self.x.shape, avg=0, std=np.sqrt(self.x.dt))
 
-    def drift(self, t):
+    def drift(self, t, x):
         tidx = x.get_t_idx(t)
         return -x[tidx-1]
 

@@ -1180,7 +1180,8 @@ class History(HistoryBase):
             logger.warning(
                 "You should specify the list of inputs with the function.")
         if inputs is None: inputs = set()
-        self.inputs = inputs
+        elif not isinstance(inputs, Iterable): inputs = [inputs]
+        self.inputs = set(inputs)
 
     def _update_function(self, t):
         # TODO: If setting update function in __init__ is deprecated,
@@ -2423,6 +2424,37 @@ class History(HistoryBase):
 
         return retval
 
+    def plot(self, tslc=None, idx=None, ax=None, **plot_kwargs):
+        """
+        tslc: time slice. Can use `np.slc[t0:tn]`
+        idx: Indices of components to plot. Can be tuple to allow dims > 1.
+             Specified as either integer or slice.
+        ax: matplotlib axes. If not specified, use current axes.
+        plot_kwargs: keywords forwarded to ax.plot()
+        """
+        if ax is None:
+            from matplotlib.pyplot import gca
+            ax = gca()
+        if tslc is None:
+            start = self.t0idx
+            stop = self.tnidx + 1
+            step = 1
+        else:
+            start, stop, step = tslc.start, tslc.stop, tslc.step
+            if start is not None: start = self.get_tidx(start)
+            if stop is not None: stop = self.get_tidx(stop)
+            if step is not None: step = self.index_interval(step)
+        time = self.timeaxis.stops[start:stop:step]
+        if idx is None:
+            idx = (np.s_[:],) * self.ndim
+        elif not isinstance(idx, tuple):
+            idx = (idx,) * self.ndim
+        # FIXME: Make an indexing interface to Spiketrain, so that this works
+        data = self._data[(np.s_[start:stop:step],) + idx]
+
+        ax.plot(time, data, **plot_kwargs)
+
+
 class PopulationHistory(PopulationHistoryBase, History):
     """
     History where traces are organized into populations.
@@ -2553,11 +2585,13 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
         self.initialize(init_data)
         super().clear()
 
-    def set_update_function(self, func, _return_dtype=None):
+    def set_update_function(self, func, *args, _return_dtype=None, **kwargs):
+        # FIXME: I don't know when this was written, but shouldn't we return a time type, not index type ?
+        #        Could have been copy-pasted from Spiketrain...
         if _return_dtype is None:
-            super().set_update_functin(func, self.idx_dtype)
+            super().set_update_functin(func, *args, self.idx_dtype, **kwargs)
         else:
-            super().set_update_function(func, _return_dtype)
+            super().set_update_function(func, *args, _return_dtype, **kwargs)
 
     def retrieve(self, key):
         '''A function taking either an index or a splice and returning respectively
@@ -3052,11 +3086,11 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         self.initialize(None)
         super().clear()
 
-    def set_update_function(self, func, _return_dtype=None):
+    def set_update_function(self, func, *args, _return_dtype=None, **kwargs):
         if _return_dtype is None:
-            super().set_update_function(func, _return_dtype=self.idx_dtype)
+            super().set_update_function(func, *args, _return_dtype=self.idx_dtype, **kwargs)
         else:
-            super().set_update_function(func, _return_dtype=_return_dtype)
+            super().set_update_function(func, *args, _return_dtype=_return_dtype, **kwargs)
 
 
     def get_trace(self, pop=None, neuron=None, include_padding='none', time_slice=None):
@@ -4209,20 +4243,27 @@ class Series(ConvolveMixin, History):
     def _apply_op(self, op, b=None):
         if b is None:
             new_series = Series(self)
-            new_series.set_update_function(lambda t: op(self[t]))
-            new_series.set_range_update_function(lambda tarr: op(self[self.time_array_to_slice(tarr)]))
-            new_series.add_input(self)
+            new_series.set_update_function(
+                lambda t: op(self[t]),
+                inputs = self)
+            new_series.set_range_update_function(
+                lambda tarr: op(self[self.time_array_to_slice(tarr)]),
+                inputs = self)
+            # new_series.add_input(self)
         elif isinstance(b, HistoryBase):
             # HACK Should write function that doesn't create empty arrays
             shape = np.broadcast(np.empty(self.shape), np.empty(b.shape)).shape
             tnidx = min(self.tnidx, b.get_tidx_for(b.tnidx, self))
             new_series = Series(self, shape=shape,
                                 time_array=self._tarr[:tnidx+1])
-            new_series.set_update_function(lambda t: op(self[t], b[t]))
+            new_series.set_update_function(
+                lambda t: op(self[t], b[t]),
+                inputs = [self, b])
             new_series.set_range_update_function(
                 lambda tarr: op(self[self.time_array_to_slice(tarr)],
-                                b[b.time_array_to_slice(tarr)]))
-            new_series.add_input(self)
+                                b[b.time_array_to_slice(tarr)]),
+                inputs = [self, b])
+            #new_series.add_input(self)
             computable_tidx = min(
                 self.get_tidx_for(min(self.cur_tidx, self.tnidx), new_series),
                 b.get_tidx_for(min(b.cur_tidx, b.tnidx), new_series))
