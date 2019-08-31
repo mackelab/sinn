@@ -2426,7 +2426,7 @@ class History(HistoryBase):
 
     def plot(self, tslc=None, idx=None, ax=None, **plot_kwargs):
         """
-        tslc: time slice. Can use `np.slc[t0:tn]`
+        tslc: time slice. Can use `np.s_[t0:tn]`
         idx: Indices of components to plot. Can be tuple to allow dims > 1.
              Specified as either integer or slice.
         ax: matplotlib axes. If not specified, use current axes.
@@ -2446,13 +2446,13 @@ class History(HistoryBase):
             if step is not None: step = self.index_interval(step)
         time = self.timeaxis.stops[start:stop:step]
         if idx is None:
-            idx = (np.s_[:],) * self.ndim
+            idx = (np.s_[:],) * int(self.ndim)  # self.ndim is 0d array: need plain int
         elif not isinstance(idx, tuple):
-            idx = (idx,) * self.ndim
+            idx = (idx,) * int(self.ndim)
         # FIXME: Make an indexing interface to Spiketrain, so that this works
         data = self._data[(np.s_[start:stop:step],) + idx]
-
         ax.plot(time, data, **plot_kwargs)
+        return ax
 
 
 class PopulationHistory(PopulationHistoryBase, History):
@@ -4386,7 +4386,6 @@ class DataView(HistoryBase):
         return self.hist.get_time(*args)
     def get_t_idx(self, *args):
         return self.hist.get_t_idx(*args)
-
 
 sinn.common.register_datatype(History)
 sinn.common.register_datatype(PopulationHistory)
