@@ -24,10 +24,10 @@ import copy
 import sys
 
 import theano_shim as shim
-import mackelab.utils as utils
-import mackelab.theano
-from mackelab.theano import GraphCache, CompiledGraphCache
-from mackelab.utils import class_or_instance_method
+import mackelab_toolbox.utils as utils
+import mackelab_toolbox.theano
+from mackelab_toolbox.theano import GraphCache, CompiledGraphCache
+from mackelab_toolbox.utils import class_or_instance_method
 import sinn.config as config
 import sinn.common as com
 import sinn.histories

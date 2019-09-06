@@ -17,9 +17,9 @@ from tqdm import tqdm
 import theano
 import theano.tensor as T
 
-import mackelab as ml
-import mackelab.iotools
-import mackelab.optimizers as optimizers
+import mackelab_toolbox as mtb
+import mackelab_toolbox.iotools
+import mackelab_toolbox.optimizers as optimizers
 from mackelab.utils import OrderedEnum
 from mackelab.theano import CompiledGraphCache
 #from mackelab.optimizers import Adam, NPAdam
@@ -1370,7 +1370,7 @@ class FitCollection:
                 #         input_format = None
 
                 def load_from_file(fitpath):
-                    data = ml.iotools.load(fitpath, input_format=input_format,
+                    data = mtb.iotools.load(fitpath, input_format=input_format,
                                            **kwargs)
                     if load is not None:
                         data = load(data)
@@ -1404,7 +1404,7 @@ class FitCollection:
             for fit in self.fits[1:]:
                 if fit.parameters is None or self.parameters is None:
                     continue
-                diff = ml.parameters._dict_diff(self.parameters,
+                diff = mtb.parameters._dict_diff(self.parameters,
                                                 fit.parameters)
                 excluded_keys.update(ParameterSet(diff[0]).flatten().keys())
                 excluded_keys.update(ParameterSet(diff[1]).flatten().keys())
@@ -1882,7 +1882,7 @@ class FitCollection:
                 elif ticks == 1:
                     axis.set_ticks([vmax])
                 else:
-                    axis.set_major_locator(ml.plot.MaxNTickLocator(
+                    axis.set_major_locator(mtb.plot.MaxNTickLocator(
                         nbins=ticks-1, vmin=vmin, vmax=vmax,
                         **yticklocator_options))
             elif isinstance(ticks, float):
@@ -1902,7 +1902,7 @@ class FitCollection:
             if ylabelpos == 'middle':
                 ax.set_ylabel(ylabel, **ylabelkwargs)
             elif ylabelpos == 'corner':
-                ml.plot.add_corner_ylabel(ax, ylabel, **ylabelkwargs)
+                mtb.plot.add_corner_ylabel(ax, ylabel, **ylabelkwargs)
             else:
                 raise ValueError("Unrecognized argument for `ylabelpos`: {}."
                                  .format(ylabelpos))

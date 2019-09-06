@@ -17,7 +17,7 @@ import sinn
 from sinn.histories import Series, HistoryBase
 from sinn.models.common import Model, register_model
 
-from mackelab.utils import StringFunction
+from mackelab_toolbox.utils import StringFunction
 
 class DriftDiffusion(Model):
     """

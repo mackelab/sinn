@@ -22,10 +22,10 @@ except ImportError:
 from parameters import ParameterSet
 
 import sinn
-import mackelab as ml
-import mackelab.utils
-import mackelab.iotools
-from mackelab.stylelib import colorschemes
+import mackelab_toolbox as mtb
+import mackelab_toolbox.utils
+import mackelab_toolbox.iotools
+from mackelab_toolbox.stylelib import colorschemes
 
 from . import common as com
 from .axis import Axis
@@ -1096,7 +1096,7 @@ class MarginalCollection:
         """
         Construct a collection of ScalarAxisData objects. Internally maintains a dictionary
         of the axes, so that specific axes can be formatted; this dictionary is an
-        instance of ml.utils.SanitizedOrderedDict, to allow "close-enough" indexing.
+        instance of mtb.utils.SanitizedOrderedDict, to allow "close-enough" indexing.
 
         Parameters
         ---------------
@@ -1123,7 +1123,7 @@ class MarginalCollection:
         histogram_kwargs: dictionary
             Dictionary of keyword arguments to pass to `numpy.histogramdd`.
         key_sanitizer: [REMOVED] function, or list of characters
-            This argument is passed to ml.utils.SanitizedOrderedDict, when creating the
+            This argument is passed to mtb.utils.SanitizedOrderedDict, when creating the
             internal axes dictionary.
             Taken from `params`
         **kwargs:
@@ -1168,10 +1168,10 @@ class MarginalCollection:
         self.set_markers(markers)
         self.set_transformed(False)
         # Set dictionary of functions to apply to specific plot axes (aka spines)
-        if isinstance(params, ml.utils.SanitizedDict):
-            self._axes_format = ml.utils.SanitizedOrderedDict(sanitize=params.sanitize)
+        if isinstance(params, mtb.utils.SanitizedDict):
+            self._axes_format = mtb.utils.SanitizedOrderedDict(sanitize=params.sanitize)
         else:
-            self._axes_format = ml.utils.SanitizedOrderedDict()
+            self._axes_format = mtb.utils.SanitizedOrderedDict()
 
     @staticmethod
     def marginals_from_mcmc(traces, params, histogram_kwargs, threshold=1e-5, **kwargs):
@@ -1301,7 +1301,7 @@ class MarginalCollection:
             If a string, the corresponding scheme in mackelab.stylelib.colorschemes.cmaps is selected.
         """
         if isinstance(scheme, str):
-            self.colorscheme = ml.stylelib.colorschemes.cmaps[scheme]
+            self.colorscheme = mtb.stylelib.colorschemes.cmaps[scheme]
         else:
             self.colorscheme = scheme
 
@@ -1457,7 +1457,7 @@ class MarginalCollection:
         if self.transformed[key]:
             to_desc = self.params[key].to_desc
             if to_desc is not None:
-                transform = ml.parameters.Transform(to_desc)
+                transform = mtb.parameters.Transform(to_desc)
                 parami_markers = [transform(marker) for marker in parami_markers]
         axis = hm.axes[0]
         if self.transformed[key]:
@@ -1517,12 +1517,12 @@ class MarginalCollection:
         if self.transformed[keyi]:
             to_desc = self.params[keyi].to_desc
             if to_desc is not None:
-                transform = ml.parameters.Transform(to_desc)
+                transform = mtb.parameters.Transform(to_desc)
                 parami_markers = [transform(marker) for marker in parami_markers]
         if self.transformed[keyj]:
             to_desc = self.params[keyj].to_desc
             if to_desc is not None:
-                transform = ml.parameters.Transform(to_desc)
+                transform = mtb.parameters.Transform(to_desc)
                 paramj_markers = [transform(marker) for marker in paramj_markers]
         # TODO: Don't recreate these lists every time we plot
         colors = [marker.color for marker in self.markers]
@@ -1827,4 +1827,4 @@ class MarginalCollection:
                     raise ValueError("Unrecognized grid layout '{}'.".format(layout))
 
 
-ml.iotools.register_datatype(ScalarAxisData)
+mtb.iotools.register_datatype(ScalarAxisData)

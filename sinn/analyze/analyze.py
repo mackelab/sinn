@@ -27,7 +27,7 @@ except ImportError:
     logger.warning("Unable to import matplotlib. Plotting functions "
                    "will not work.")
 
-from mackelab.stylelib import colorschemes
+from mackelab_toolbox.stylelib import colorschemes
 import theano_shim as shim
 
 import sinn

@@ -23,7 +23,7 @@ jsonpickle_numpy.register_handlers()
 
 import theano_shim as shim
 import theano_shim.sparse
-from mackelab.utils import Stash, fully_qualified_name
+from mackelab_toolbox.utils import Stash, fully_qualified_name
 import sinn
 from sinn.common import HistoryBase, PopulationHistoryBase, KernelBase
 import sinn.config as config

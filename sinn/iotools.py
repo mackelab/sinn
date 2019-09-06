@@ -38,8 +38,8 @@ import numpy as np
 import dill
 logger = logging.getLogger('sinn.iotools')
 
-import mackelab as ml
-import mackelab.iotools
+import mackelab_toolbox as mtb
+import mackelab_toolbox.iotools
 
 extensions = ['sin', 'sir', 'dat', 'txt']
 known_types = {}
@@ -49,10 +49,10 @@ known_types = {}
 # DEPRECATED: Use mackelab.iotools
 
 def save(file, data, format='npr', overwrite=False):
-    ml.iotools.save(file, data, format, overwrite)
+    mtb.iotools.save(file, data, format, overwrite)
 
 def saveraw(file, data, overwrite=False):
-    ml.iotools.save(file, data, 'npr', overwrite)
+    mtb.iotools.save(file, data, 'npr', overwrite)
 
 def load(filename, types=None, load_function=None, input_format=None):
     global known_types
@@ -60,7 +60,7 @@ def load(filename, types=None, load_function=None, input_format=None):
         types = known_types.copy().update(types)
     else:
         types = known_types
-    return ml.iotools.load(filename, types, load_function, input_format)
+    return mtb.iotools.load(filename, types, load_function, input_format)
 
 def loadraw(filename, basedir=None, return_path=False):
     fn, ext = os.path.splitext(filename)
@@ -72,10 +72,10 @@ def loadraw(filename, basedir=None, return_path=False):
     # Try the raw path first
     if os.path.exists(rawpath):
         savepath = rawpath
-        data = ml.iotools.load(rawpath, input_format='npr')
+        data = mtb.iotools.load(rawpath, input_format='npr')
     else:
         savepath = path
-        data = ml.iotools.load(path, input_format='npr')
+        data = mtb.iotools.load(path, input_format='npr')
 
     # Return
     if return_path:
@@ -92,4 +92,3 @@ def paramstr(x):
         raise ValueError("Unsupported parameter type '{}'."
                          .format(type(x)))
     return s
-
