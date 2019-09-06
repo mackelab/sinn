@@ -23,8 +23,8 @@ setup(
 
       install_requires=['numpy >= 1.13',
                         'scipy',
-                        'mackelab_toolbox'
-                        #'dill', # Histories are picklable now
+                        #'mackelab_toolbox',
+                        'theano_shim',
                         'tqdm',
                         'packaging',
                         'jsonpickle']

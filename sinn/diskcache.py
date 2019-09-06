@@ -21,7 +21,7 @@ import logging
 logger = logging.getLogger('sinn.diskcache')
 
 import sinn
-import sinn.shelve as shelve
+import shelve
 import sinn.iotools as io
 
 
@@ -81,5 +81,3 @@ def save(obj):
     except FileNotFoundError:
         logger.warning("Unable to open the disk cache file '{}'."
                        .format(cache_filename))
-
-
