@@ -33,7 +33,7 @@ import theano_shim as shim
 import sinn
 import sinn.histories as histories
 from . import common as com
-from . import axisdata
+import sinn.axisdata as axisdata
 
 # ==================================
 # Data types

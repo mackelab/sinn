@@ -1,6 +1,6 @@
 # This is module only for backwards compatibility
 
-from .axisdata import *
+from sinn.axisdata import *
 
 HeatMap = ScalarAxisData
 HeatMap.heatmap = ScalarAxisData.plot
