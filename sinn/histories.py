@@ -4247,8 +4247,7 @@ class Series(ConvolveMixin, History):
                 lambda t: op(self[t]),
                 inputs = self)
             new_series.set_range_update_function(
-                lambda tarr: op(self[self.time_array_to_slice(tarr)]),
-                inputs = self)
+                lambda tarr: op(self[self.time_array_to_slice(tarr)]))
             # new_series.add_input(self)
         elif isinstance(b, HistoryBase):
             # HACK Should write function that doesn't create empty arrays
@@ -4261,8 +4260,7 @@ class Series(ConvolveMixin, History):
                 inputs = [self, b])
             new_series.set_range_update_function(
                 lambda tarr: op(self[self.time_array_to_slice(tarr)],
-                                b[b.time_array_to_slice(tarr)]),
-                inputs = [self, b])
+                                b[b.time_array_to_slice(tarr)]))
             #new_series.add_input(self)
             computable_tidx = min(
                 self.get_tidx_for(min(self.cur_tidx, self.tnidx), new_series),
