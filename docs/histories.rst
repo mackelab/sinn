@@ -1,7 +1,19 @@
-History class
+Histories
 =============
 
-Tutorial
+Histories are a data structure with a time axis. A subclass of `History` specifies the form in which data is stored; currently available types are:
+
+The implementation of different types
+- `Series`: Store data in a Numpy array
+  Useful for data and post mortem analysis, but gets really heavy when there are many histories.
+- `SpikeTrain`: Store data in `bool` in a sparse array.
+- (Planned) `LagFreeSeries`: Store only the most recently computed time.
+- (Planned) `LagSeries`: Store only the last `n` time steps.
+
+If none of these suit your need, you can also [define your own history type](#defining-your-own-history-type).
+
+
+Usage tutorial
 --------
 The History class, and the specialized classes that inherit from it, serves the purpose
 of keeping two data structures in sync:
@@ -34,7 +46,7 @@ For the purpose of this example let's define another history::
 
 Here we've used the first history as template to the second; this ensures they both share the
 time array.
-    
+
 We then define an update function. An update function always has the same signature: it expects
 one variable (`t`: time), and should be able to accept either a scalar `t` or an array
 of time values. The value of `t` may represent either an index or an actual time; if you need
@@ -55,7 +67,7 @@ the following are all acceptable update functions::
                                for r, size in zip(rate[t], spikes.pop_sizes ] )
 
 However, the following would introduce an unresolvable dependency when combined with `spike_update1`::
-      
+
   def rate_update3(t):
       return [spikes[t][slc].mean() for slc in spikes.pop_slices]
 
@@ -79,6 +91,10 @@ call. To compute a history at all time points, we can use any of the two followi
 
 (`spikes.set()` internally calls `compute_up_to('end')` when called with no argument).
 
+Defining your own history type
+------------------------------
+
+Requirements are currently documented in the `History` docstring.
 
 Reference
 ---------
@@ -97,4 +113,3 @@ Reference
    .. method:: PopTerm
       Call as `PopTerm()` on a correctly sized array to make it
       broadcastable with population timeslices.
-                   

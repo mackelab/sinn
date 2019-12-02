@@ -2,6 +2,14 @@
 = Simulation and Inference of Neuron Networks (SINN) =
 =      Copyright (c) 2017-2019 Alexandre René        =
 ======================================================
+=======
+# Sinn: A library for simulation and inference for dynamical systems
+
+## Motivation
+
+Libraries like Theano and TensorFlow provide powerful capabilities for fitting models to data. However, they are most tailored to fitting neural networks – the implementation of the kinds of dynamic mechanistic models often found in physics or applied mathematics remains error-prone and labour-intensive. Sinn provides a set of high-level constructs designed to integrate well with lower-level optimization libraries.
+
+## Features
 
 
 Sinn was originally developed in order to infer a mesoscopic neuron model (René et al., in prepration) and stood for “Simulation and Inference of Neural Networks”.
@@ -30,12 +38,6 @@ Sinn was originally developed in order to infer a mesoscopic neuron model (René
 - Dynamic programming, aka lazy evaluation.
 
     Data is computed only as needed. This allows you to specify functions as
-    <!-- begin MathToWeb -->
-    <!-- (your LaTeX) \[\begin{aligned}
-    x_k &= f(x_{k-1}, y_{k-1}) \\
-    y_k &= g(x_{k}, y_{k-1}) \\
-    z_k &= h(x_k)
-    \end{aligned}\] -->
     <math xmlns="http://www.w3.org/1998/Math/MathML">
     <mtable class="m-equation-square" displaystyle="true" style="display: block; margin-top: 1.0em; margin-bottom: 2.0em">
     	<mtr>
@@ -86,7 +88,7 @@ Sinn was originally developed in order to infer a mesoscopic neuron model (René
     					</mtd>
     					<mtd columnalign="left">
     						<mo>=</mo>
-    						<mi>g</mi>
+    						<mi>f</mi>
     						<mrow>
     							<mo form="prefix">(</mo>
     							<msub>
@@ -106,33 +108,12 @@ Sinn was originally developed in order to infer a mesoscopic neuron model (René
     						</mrow>
     					</mtd>
     				</mtr>
-    				<mtr>
-    					<mtd columnalign="right">
-    						<msub>
-    							<mi>z</mi>
-    							<mi>k</mi>
-    						</msub>
-    					</mtd>
-    					<mtd columnalign="left">
-    						<mo>=</mo>
-    						<mi>h</mi>
-    						<mrow>
-    							<mo form="prefix">(</mo>
-    							<msub>
-    								<mi>x</mi>
-    								<mi>k</mi>
-    							</msub>
-    							<mo form="postfix">)</mo>
-    						</mrow>
-    					</mtd>
-    				</mtr>
     			</mtable>
     		</mtd>
     	</mtr>
     </mtable>
     </math>
-    <!-- end MathToWeb -->
-    and then compute either *x*, *y* or *z* at any point *k<sup>\*</sup>*, without worrying about circular dependencies between the three arrays[^1], computing values of *x* or *y* twice and without unnecessary calculations for points beyond *k<sup>\*</sup>*.
+    and then compute either *x* or *y* at any point *k<sup>\*</sup>*, without worrying about circular dependencies between the two arrays[^1] and without unnecessary calculations for points beyond *k<sup>\*</sup>*.
 
 [^1] Unless there is an actual circular dependency of course.
 
@@ -145,7 +126,7 @@ At present Sinn is at a pre-alpha stage of development, with features are still 
 
 - Create the virtual environment if required
 
-  python3 -m venv --system-site-packages ~/usr/venv/mackelab
+  python3 -m venv --system-site-packages $HOME/usr/venv/sinn
 
   You can omit --system-site-packages if you install all dependencies (like
   SciPy) within the virtual environment.
@@ -153,12 +134,15 @@ At present Sinn is at a pre-alpha stage of development, with features are still 
 
 - Activate the virtual environment
 
-  source ~/usr/venv/mackelab/bin/activate
+  source $HOME/usr/venv/sinn/bin/activate
+
+- `cd` to the directory containing this file
+
+- Install with
+
+  pip install .
+
+  As usual, if you want to be able to modify the code, add the `-e` flag to obtain a development installation.
 
 
-- cd to the directory containing this file
-
-
-- Install the code in "Development mode"
-
-  pip install -e .
+Copyright (c) 2017-2019 Alexandre René

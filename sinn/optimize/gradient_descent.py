@@ -20,8 +20,8 @@ import theano.tensor as T
 import mackelab_toolbox as mtb
 import mackelab_toolbox.iotools
 import mackelab_toolbox.optimizers as optimizers
-from mackelab.utils import OrderedEnum
-from mackelab.theano import CompiledGraphCache
+from mackelab_toolbox.utils import OrderedEnum
+from mackelab_toolbox.theano import CompiledGraphCache
 #from mackelab.optimizers import Adam, NPAdam
 import theano_shim as shim
 

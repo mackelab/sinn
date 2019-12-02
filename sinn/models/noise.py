@@ -13,7 +13,7 @@ import numpy as np
 from collections import namedtuple, OrderedDict
 
 import theano_shim as shim
-import sinn.config as config
+config = shim.config
 import sinn.common as com
 import sinn.models.common
 

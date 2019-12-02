@@ -502,6 +502,10 @@ class PopTerm(np.ndarray):
         return np.max(self._data, *args, **kwargs)
     def min(self, *args, **kwargs):
         return np.min(self._data, *args, **kwargs)
+    def any(self, *args, **kwargs):
+        return np.array(self).any()
+    def all(self, *args, **kwargs):
+        return np.array(self).all()
     def dot(self, *args, **kwargs):
         # TODO: Check compatibility, do expansions
         res = self.view(np.ndarray).dot(*args, **kwargs)

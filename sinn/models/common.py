@@ -113,7 +113,7 @@ def batch_function_scan(*inputs):
     ----------
     inputs: list of str
         Each string must correspond exactly to the identifier for one
-        of the model's histories. (They are retrieved with °gettattr`.)
+        of the model's histories. (They are retrieved with `gettattr`.)
         The slice corresponding to a batch for each defined input will
         be passed to the function, in the order defined by :param:inputs.
 
@@ -130,7 +130,7 @@ def batch_function_scan(*inputs):
             requires_rng = True
             Parameter_info = odict['θ': 'floatX']
             Parameters = sinn.define_parameters(Parameter_info)
-            State = namedtuple
+            State = namedtuple()
             def __init__(self, params, random_stream=None):
                 self.A = Series('A', shape=(1,), time_array=np.arange(1000))
                 self.rndstream = random_stream
@@ -200,7 +200,7 @@ def batch_function_scan(*inputs):
                     m = len(nonstateinputs)
                     _nonstateinputs = args[:m]
                     _state = args[m:]
-                    assert(len(_state) == len(statehists))
+                    assert len(_state) == len(statehists)
                     _stateinputs = [_state[j] for i,j in stateinput_idcs]
                     state_outputs, updates = self.symbolic_update(tidx, *_state)
                     nonstate_outputs, nonstate_updates = self.nonstate_symbolic_update(
@@ -1448,7 +1448,7 @@ class Model(com.ParameterMixin):
 
         # This function is actually a wrapper which caches the result of
         # `_get_symbolic_update`, to avoid constructing the graph twice.
-        # However, this is the function the function that is part of the API
+        # However, it is `symbolic_update` that is part of the API
         # and which should be overloaded by a derived class, so this is the
         # one we document.
         l = len(list(self.unlocked_statehists))
@@ -1482,6 +1482,7 @@ class Model(com.ParameterMixin):
         # return outputs, updates
 
     def _get_symbolic_update(self, tidx, *statevars):
+        """See :method:symbolic_update."""
         # Stash current symbolic updates
         assert set(self.statehists).issubset(self.history_set)
         for h in self.history_set:
