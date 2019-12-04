@@ -23,7 +23,7 @@ jsonpickle_numpy.register_handlers()
 
 import theano_shim as shim
 import theano_shim.sparse
-from mackelab_toolbox.utils import Stash, fully_qualified_name
+from mackelab_toolbox.utils import Stash, fully_qualified_name, broadcast_shapes
 import sinn
 from sinn.common import HistoryBase, PopulationHistoryBase, KernelBase
 import sinn.config as config
@@ -283,11 +283,15 @@ class History(HistoryBase):
             convert to floatX, but a full precision version is also kept for some calculations such
             as `index_interval()`.
         t0: float
-            Time at which the history starts. /Deprecated: use `time_array`./
+            Time at which the history starts. /Deprecated: use :param:time_array./
         tn: float
-            Time at which the history ends. /Deprecated: use `time_array`./
+            Time at which the history ends. /Deprecated: use :param:time_array./
+            Remark: Because the logic is that :param:tn is inclusive, when
+            specifying a history with :param:t0, :param:tn, :param:dt, it will
+            always be at least of length one (because :param:tn must be >=
+            :param:t0.). To specify an empty history use :param:time_array.
         dt: float
-            Timestep. /Deprecated: use `time_array`./
+            Timestep. /Deprecated: use :param:time_array./
         shape: int tuple
             Shape of a history slice at a single point in time.
             E.g. a movie history might store NxN frames in an TxNxN array.
@@ -372,9 +376,9 @@ class History(HistoryBase):
             # 'hist' does not serve as a default value for 'iterative', since the new history will typically have a different function
             # Same goes for 'symbolic'
         else:
-            assert(time_array is not sinn._NoValue
-                   or sinn._NoValue not in [t0, tn, dt])
-            assert(shape is not sinn._NoValue)
+            assert (time_array is not sinn._NoValue
+                    or sinn._NoValue not in [t0, tn, dt])
+            assert shape is not sinn._NoValue
         if iterative is sinn._NoValue:
             # Default value
             iterative = True
@@ -384,15 +388,22 @@ class History(HistoryBase):
                 t_dtype = time_array.dtype
             else:
                 t_dtype = np.dtype(shim.config.floatX)
-            t0 = time_array[0]   # Casting time_array after allows t0 and tn
-            tn = time_array[-1]  # to be a "larger" type than t_dtype
-            time_array = time_array.astype(t_dtype)
-            dt64 = sinn.upcast(tn.astype('float64') - t0.astype('float64'),
-                               to_dtype=np.float64,
-                               from_dtype=np.float32) / (len(time_array)-1)
-                 # Esp. if time_array is float32, this should be more precise than time_array[1] - time_array[0]
-            dt = dt64.astype(t_dtype)
-            assert( np.all(sinn.isclose(time_array[1:] - time_array[:-1], dt)) )
+            if len(time_array) == 0:
+                if t0 is sinn._NoValue: t0 = None
+                if tn is sinn._NoValue: tn = t0
+                if dt is sinn._NoValue: dt = None
+                dt64 = dt
+                time_array = time_array.astype(t_dtype)
+            else:
+                t0 = time_array[0]   # Casting time_array after allows t0 and tn
+                tn = time_array[-1]  # to be a "larger" type than t_dtype
+                dt64 = sinn.upcast(tn.astype('float64') - t0.astype('float64'),
+                                   to_dtype=np.float64,
+                                   from_dtype=np.float32) / (len(time_array)-1)
+                     # Esp. if time_array is float32, this should be more precise than time_array[1] - time_array[0]
+                dt = dt64.astype(t_dtype)
+                time_array = time_array.astype(t_dtype)
+                assert np.all(sinn.isclose(time_array[1:] - time_array[:-1], dt))
         else:
             t_dtype = np.result_type(t0, tn, np.float32)
                 # Don't consider dt – dt should always be passed as double
@@ -404,6 +415,7 @@ class History(HistoryBase):
             # tn = np.ceil( (tn - t0)/dt ) * dt + t0
             # Get time step
             n_steps = np.rint((tn - t0)/dt).astype(np.int)
+            assert n_steps >= 0
             if np.can_cast(np.float64, dt.dtype):
                 dt64 = dt
             else:
@@ -450,10 +462,11 @@ class History(HistoryBase):
             # passed e.g. as an ndarray
         self.ndim = len(shape)
 
-        self.dt = shim.cast(dt64, t_dtype)
+        if dt64 is None: self.dt = None
+        else: self.dt = shim.cast(dt64, t_dtype)
         self.dt64 = dt64
         self.idx_dtype = np.min_scalar_type(max(self.shape))
-        self.tidx_dtype = np.min_scalar_type(-2*len(time_array))
+        self.tidx_dtype = np.min_scalar_type(-2*max(len(time_array), 1))
             # Leave enough space in time indices to double the time array
             # Using a negative value forces the type to be 'int' and not 'uint',
             # which we need to store -1
@@ -896,56 +909,62 @@ class History(HistoryBase):
             key_filter = None
 
         elif isinstance(key, slice):
-            # NOTE: If you make changes to the logic here, check mixins.convolve
-            #       to see if they should be ported.
+            key, key_filter = self._resolve_slice(key)
+            latest = key.stop - 1
 
-            step = 1 if key.step is None else key.step
-            step = self.index_interval(step)
-                # Make sure we have an index step
-
-            if key.start is None:
-                start = shim.ifelse(shim.gt(step, 0),
-                                    0,
-                                    len(self._tarr) )
-            else:
-                start = self.get_t_idx(key.start)
-                start = shim.ifelse(start >= 0,
-                                    start,
-                                    len(self._tarr) + start)
-            if key.stop is None:
-                stop = shim.ifelse(shim.gt(step, 0),
-                                   len(self._tarr),
-                                   -1)
-            else:
-                stop = self.get_t_idx(key.stop)
-                stop = shim.ifelse(stop >= 0,
-                                   stop,
-                                   len(self._tarr) + stop)
-
-            # allow to select beyond the end, to be consistent
-            # with slicing conventions
-            earliest = shim.largest(0, shim.smallest(start, stop - step))
-            latest = shim.smallest(len(self._tarr) - 1,
-                                   shim.largest(start, stop - step))
-            shim.check(earliest >= 0)
-            shim.check(latest >= 0)
-            # if step > 0:
-            #     start = shim.largest(start, 0)
-            #     stop = shim.smallest(stop, self.t0idx + len(self) + 1)
-            #     latest = stop - 1
-            #         # `latest` is the latest time we need to compute
+            # # NOTE: If you make changes to the logic here, check mixins.convolve
+            # #       to see if they should be ported.
+            #
+            # step = 1 if key.step is None else key.step
+            # step = self.index_interval(step)
+            #     # Make sure we have an index step
+            #
+            # if key.start is None:
+            #     start = shim.ifelse(shim.gt(step, 0),
+            #                         0,
+            #                         len(self._tarr) )
             # else:
-            #     start = shim.smallest(start, self.t0idx + len(self))
-            #     stop = shim.largest(stop, -1)
-            #     latest = start
-
-                # compute_up_to will try to compute to the end if this is false
-
-            key_filter = None if key.step is None else slice(None, None, step)
-            key = slice(earliest, latest + 1)
-                # applying the step 'filter' afterwards avoids the problem of times
-                # inadvertently being converted to negative indices
-                # +1 because 'latest' is always > earliest
+            #     start = self.get_t_idx(key.start)
+            #     start = shim.ifelse(start >= 0,
+            #                         start,
+            #                         len(self._tarr) + start)
+            # if key.stop is None:
+            #     stop = shim.ifelse(shim.gt(step, 0),
+            #                        len(self._tarr),
+            #                        -1)
+            # else:
+            #     stop = self.get_t_idx(key.stop)
+            #     stop = shim.ifelse(stop >= 0,
+            #                        stop,
+            #                        len(self._tarr) + stop)
+            #
+            # # allow to select beyond the end, to be consistent
+            # # with slicing conventions
+            # earliest = shim.largest(0, shim.smallest(start, stop - step))
+            # latest = shim.smallest(len(self._tarr) - 1,
+            #                        shim.largest(start, stop - step))
+            # shim.check(earliest >= 0)
+            # shim.check(latest >= -1)  # Can be -1 on an empty slice
+            # # if step > 0:
+            # #     start = shim.largest(start, 0)
+            # #     stop = shim.smallest(stop, self.t0idx + len(self) + 1)
+            # #     latest = stop - 1
+            # #         # `latest` is the latest time we need to compute
+            # # else:
+            # #     start = shim.smallest(start, self.t0idx + len(self))
+            # #     stop = shim.largest(stop, -1)
+            # #     latest = start
+            #
+            # key_start = earliest
+            # key_stop = latest + 1
+            #
+            #     # compute_up_to will try to compute to the end if this is false
+            #
+            # key = slice(key_start, key_stop + 1)
+            # key_filter = None if key.step is None else slice(None, None, step)
+            #     # applying the step 'filter' afterwards avoids the problem of times
+            #     # inadvertently being converted to negative indices
+            #     # +1 because 'latest' is always > earliest
 
             # if isinstance(key, slice) and key.stop is None:
             #     # key.stop can't be replaced by a numerical value if step < 0
@@ -959,7 +978,7 @@ class History(HistoryBase):
         elif shim.isarray(key):
 
             #TODO: treat case where this gives a stop at -1
-            assert(key.ndim == 1)
+            assert key.ndim == 1
             start = self.get_t_idx(key[0])
             end = self.get_t_idx(key[-1])
             earliest = shim.largest(0, shim.smallest(start, end))
@@ -978,7 +997,7 @@ class History(HistoryBase):
                                #     # even when key has length 1
             # Make sure the entire indexing array has the same step
             if not shim.is_theano_object(key) and key.shape[0] > 1:
-                assert(np.all(sinn.isclose(key[1:] - key[:-1], key[1]-key[0])))
+                assert np.all(sinn.isclose(key[1:] - key[:-1], key[1]-key[0]))
 
             key = slice(earliest, latest + 1)
                 # +1 because the latest bound is inclusive
@@ -1046,6 +1065,82 @@ class History(HistoryBase):
             return result
         else:
             return result[key_filter]
+
+    def _resolve_slice(self, key, exclude_padding=False):
+        """
+        Resolves a slice by replacing `None` with index values.
+        Returns slc and step_filter; use as
+
+        >>> res = f(data[slc])
+        >>> if step_filter is not None:
+        >>>     res = res[step_filter]
+
+        Applying the step 'filter' afterwards avoids a problem where times
+        are inadvertently converted to negative indices
+
+        Parameters
+        ----------
+        key: slice
+        exclude_padding: bool
+            If True, index values are clipped so as not to include history
+            padding.
+
+        Returns
+        -------
+        slice (start, stop, `None`)
+        step_filter (for the step)
+        """
+        step = 1 if key.step is None else self.index_interval(key.step)
+            # Make sure we have an index step
+
+        if exclude_padding:
+            imin = self.t0idx
+            imax = i0 + len(self)
+        else:
+            imin = 0
+            imax = len(self._tarr)
+
+        if key.start is None:
+            start = shim.ifelse(shim.gt(step, 0),
+                                imin,
+                                imax - 1)
+        else:
+            start = self.get_t_idx(key.start)
+            # Indexing is not affected by `exclude_padding`
+            start = shim.ifelse(start >= 0,
+                                start,                           len(self._tarr) + start)
+        if key.stop is None:
+            stop = shim.ifelse(shim.gt(step, 0),
+                               imax,
+                               imin - 1)
+        else:
+            stop = self.get_t_idx(key.stop)
+            # Indexing is not affected by `exclude_padding`
+            stop = shim.ifelse(stop >= 0,
+                               stop,
+                               len(self._tarr) + stop)
+
+        # allow to select beyond the end, to be consistent
+        # with slicing conventions
+        earliest = shim.largest(imin, shim.smallest(start, stop - step))
+        latest = shim.smallest(imax - 1,
+                               shim.largest(start, stop - step))
+        shim.check(earliest >= 0)
+        shim.check(latest >= -1)  # Can be -1 on an empty slice
+
+        key_start = earliest
+        key_stop  = latest + 1
+        if exclude_padding:
+            # Shift indices so they are relative to an unpadded history
+            # Since we do this, could we the logic above assuming imin=0 ?
+            output_start -= self.t0idx
+            input_start  -= self.t0idx
+
+        key = slice(key_start, key_stop)
+        key_filter = None if key.step is None else slice(None, None, step)
+
+        return key, key_filter
+
 
     @property
     def time(self):
@@ -1120,6 +1215,8 @@ class History(HistoryBase):
 
     def set_update_function(self, func, inputs=None, cast=True, _return_dtype=None, range_update_function=None):
         """
+        TODO: Enforce a unit in the signature (s, idx, etc.) so that we can do
+        f(1*second)  and f(3*tidx).
 
         Parameters
         ----------
@@ -1452,7 +1549,7 @@ class History(HistoryBase):
         if start == 'numeric' and shim.graph.is_computable([cur_tidx]):
             cur_tidx = shim.graph.eval(cur_idx, if_too_costly='ignore')
         else:
-            assert(start == 'symbolic')
+            assert start == 'symbolic'
             if self.locked:
                 return
             elif not shim.graph.is_computable([tidx, cur_tidx],
@@ -1476,7 +1573,7 @@ class History(HistoryBase):
             end = len(self._tarr) - 1
             replace = True
         else:
-            assert(shim.istype(tidx, 'int'))
+            assert shim.istype(tidx, 'int')
             start = cur_tidx + 1
             end = tidx
             replace = False
@@ -1670,7 +1767,7 @@ class History(HistoryBase):
                     # time Δ is computed
                     self._cur_Δi += 1
                 else:
-                    assert(cur_Δi < self._cur_Δi)
+                    assert cur_Δi < self._cur_Δi
 
             if outer_loop:
                 # self.update(end, self._update_function(tarr[end]))
@@ -1680,7 +1777,7 @@ class History(HistoryBase):
                 del self._computing
 
         else:
-            assert(not shim.is_theano_object(tarr))
+            assert not shim.is_theano_object(tarr)
             logger.monitor("Iteratively computing {} from {} to {}."
                         .format(self.name, tarr[start], tarr[stop-1]))
             old_percent = 0
@@ -1792,17 +1889,21 @@ class History(HistoryBase):
         """
         atol = config.get_abs_tolerance(Δt)
         rtol = config.get_rel_tolerance(Δt)
-        if not shim.is_theano_object(Δt) and abs(Δt) < self.dt64 - atol:
-            if Δt == 0:
-                return 0
-            else:
-                raise ValueError("You've asked for the index interval corresponding to "
-                                 "Δt = {}, which is smaller than this history's step size "
-                                 "({}).".format(Δt, self.dt64))
+        if not shim.is_theano_object(Δt) and Δt < 0:
+            raise ValueError("You've asked for the index interval "
+                             "corresponding to Δt = {}, which is negative."
+                             .format(Δt))
         if shim.istype(Δt, 'int'):
             if not shim.istype(Δt, self.tidx_dtype):
                 Δt = shim.cast( Δt, self.tidx_dtype )
             return Δt
+        elif not shim.is_theano_object(Δt) and abs(Δt) < self.dt64 - atol:
+            if Δt != 0:
+                logger.warning(
+                    "You've asked for the index interval corresponding to "
+                    "Δt = {}, which is smaller than this history's step size "
+                    "({}).".format(Δt, self.dt64))
+            return 0
         else:
             if allow_fractional:
                 return Δt/self.dt64
@@ -1957,7 +2058,7 @@ class History(HistoryBase):
 
     def make_positive_slice(self, slc):
         def flip(idx):
-            assert(shim.istype(idx, 'int'))
+            assert shim.istype(idx, 'int')
             return idx if idx >= 0 else len(self._tarr) + idx
         return slice(0 if slc.start is None else flip(slc.start),
                      len(self._tarr) if slc.stop is None else flip(slc.stop))
@@ -1990,8 +2091,8 @@ class History(HistoryBase):
         This overwrites the original data; consider first making a deepcopy
         if you need to keep the original.
         """
-        assert(self._cur_tidx.get_value() == self._original_tidx.get_value())
-        assert(np.all(self._data.get_value() == self._original_data.get_value()))
+        assert self._cur_tidx.get_value() == self._original_tidx.get_value()
+        assert np.all(self._data.get_value() == self._original_data.get_value())
         # for attrname in dir(self):
         for attrname in ['_original_tidx', '_original_data']:
             attr = getattr(self, attrname)
@@ -2021,14 +2122,16 @@ class History(HistoryBase):
             t0 = shim.cast(idx_shift * self.dt64, shim.config.floatX)
                 # Ensure the discretized kernel's t0 is a multiple of dt
 
-            memory_idx_len = int(kernel.memory_time // self.dt64) - 1 - idx_shift
+            memory_idx_len = int(kernel.memory_time // self.dt64) - idx_shift
                 # It is essential here to use the same forumla as pad_time
-                # We substract one because one bin more or less makes no difference,
+            if memory_idx_len > 100:
+                memory_idx_len -= 1
+                # We substract one because for long enough kernels one bin more
+                # or less makes no difference,
                 # and doing so ensures that padding with `memory_time` always
                 # is sufficient (no dumb numerical precision errors adds a bin)
                 # NOTE: kernel.memory_time includes the time between 0 and t0,
                 # and so we need to substract idx_shift to keep only the time after t0.
-
             #full_idx_len = memory_idx_len + idx_shift
             #    # `memory_time` is the amount of time before t0
             dis_name = ("dis_" + kernel.name + " (" + self.name + ")")
@@ -2037,8 +2140,16 @@ class History(HistoryBase):
             # else:
             #     symbolic=False
             symbolic=False
-            dis_kernel = Series(t0=t0,
-                                tn=t0 + memory_idx_len*self.dt64,
+
+            if memory_idx_len <= 0:
+                # The memory time of the kernel is shorter than the time step
+                logger.warning("Kernel {} has length 0. Any parameters "
+                               "associated to this kernel will be ignored and "
+                               "all convolutions will be zero."
+                               .format(kernel.name))
+                memory_idx_len = 0
+            tarr = t0 + np.arange(memory_idx_len)*self.dt64
+            dis_kernel = Series(time_array=tarr,
                                 dt=self.dt64,
                                 shape=kernel.shape,
                                 # f=kernel_func,
@@ -2299,7 +2410,7 @@ class History(HistoryBase):
 
         if ( not shim.is_theano_object(array) and shim.istype(array, 'float')
              and not singleton_array ):
-            assert(abs(array[1] - array[0]) >= self.dt - sinn.config.abs_tolerance)
+            assert abs(array[1] - array[0]) >= self.dt - sinn.config.abs_tolerance
 
         singleton_dt = self.dt if shim.istype(array, 'float') else 1
         step = shim.ifelse(singleton_array,
@@ -2312,7 +2423,7 @@ class History(HistoryBase):
                                self.get_t_idx(array[0]))
         if not shim.is_theano_object(array) and not singleton_array:
             # Check that array is evenly spaced
-            assert(np.all(sinn.ismultiple(array[1:] - array[:-1], step)))
+            assert np.all(sinn.ismultiple(array[1:] - array[:-1], step))
 
         idxstep = self.index_interval(step)
 
@@ -2326,13 +2437,13 @@ class History(HistoryBase):
         # Since negative idxstop is an unnecessary corner case, we rather not support
         # it than add cruft to the Theano graph.
         if not shim.is_theano_object(idxstop):
-            assert(idxstop >= 0)
+            assert idxstop >= 0
 
         if lag is not None:
             if shim.istype(lag, 'float'):
                 lag = self.index_interval(lag)
             else:
-                assert(shim.istype(lag, 'int'))
+                assert shim.istype(lag, 'int')
             idxstart += lag
             idxstop += lag
 
@@ -2386,7 +2497,7 @@ class History(HistoryBase):
         #         if (hist.symbolic and hist.compiled_history is self):
         #             input_list = sinn.inputs[hist]
         #             break
-        assert(self.inputs is not None)
+        assert self.inputs is not None
 
         # If this history is iterative, it should have at least one input
 
@@ -2505,14 +2616,14 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
         if name is None:
             name = "spiketimes{}".format(self.instance_counter + 1)
         try:
-            assert(pop_sizes is not sinn._NoValue)
+            assert pop_sizes is not sinn._NoValue
         except AssertionError:
             raise ValueError("'pop_sizes' is a required parameter.")
         try:
             len(pop_sizes)
         except TypeError:
             pop_sizes = (pop_sizes,)
-        assert(all( shim.istype(s, 'int') for s in pop_sizes ))
+        assert all( shim.istype(s, 'int') for s in pop_sizes )
         self.pop_sizes = pop_sizes
 
         shape = (np.sum(pop_sizes),)
@@ -2658,7 +2769,7 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
 
         newidx = self.get_t_idx(tidx)
         if not theano.is_theano_variable(newidx):
-            assert(newidx <= self._original_tidx.get_value() + 1)
+            assert newidx <= self._original_tidx.get_value() + 1
 
         time = self.get_time(tidx)
         for neuron_idx in neuron_idcs:
@@ -2727,7 +2838,7 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
             raise NotImplementedError
 
         else:
-            assert(len(source) == len(self._data))
+            assert len(source) == len(self._data)
             for i, spike_list in enumerate(source):
                 self._data[i] = spike_list
 
@@ -2900,7 +3011,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             #        we could call the metaclass here instead, which would return a proper class
 
         if name is None:
-            name = "spiketimes{}".format(self.instance_counter + 1)
+            name = "spiketrain{}".format(self.instance_counter + 1)
         if hist is not sinn._NoValue and pop_sizes is sinn._NoValue:
             pop_sizes = hist.pop_sizes
         if pop_sizes is sinn._NoValue:
@@ -2909,7 +3020,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             len(pop_sizes)
         except TypeError:
             pop_sizes = (pop_sizes,)
-        assert(all( shim.istype(s, 'int') for s in pop_sizes ))
+        assert all( shim.istype(s, 'int') for s in pop_sizes )
         self.pop_sizes = pop_sizes
 
         shape = (np.sum(pop_sizes),)
@@ -3158,7 +3269,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         time_slice = time_slice if time_slice is not None else slice(None, None)
         tslice = self._get_time_index_slice(time_slice, include_padding)
 
-        assert(self._cur_tidx.get_value() >= tslice.stop - 1)
+        assert self._cur_tidx.get_value() >= tslice.stop - 1
 
         data_arr = self._data.tocsr()
         if neuron is None:
@@ -3259,9 +3370,9 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             #                      "Flatten the array before passing to `update`"
             #                      .format(neuron_idcs.ndim))
         if not shim.is_theano_variable([newidx, latestidx]):
-            assert(latestidx <= self._original_tidx.get_value() + 1)
+            assert latestidx <= self._original_tidx.get_value() + 1
             if newidx.ndim > 0:
-                assert(newidx.shape[0] == neuron_idcs.shape[0])
+                assert newidx.shape[0] == neuron_idcs.shape[0]
 
         for ti, idcs in zip(tidx, neuron_idcs):
             # TODO: Assign in one block
@@ -3350,14 +3461,14 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
                 tidxslice = slice(None)
                 self._original_tidx.set_value(self.t0idx + len(self) - 1)
                 self._cur_tidx = self._original_tidx
-                assert(source.shape == self._data.shape)
+                assert source.shape == self._data.shape
             else:
-                assert( tslice.step is None or tslice.step == 1)
+                assert tslice.step is None or tslice.step == 1
                 tidxslice = slice(self.get_t_idx(tslice.start), self.get_t_idx(tslice.stop))
                 self._original_tidx.set_value( tidxslice.stop - 1 )
                 self._cur_tidx = self._original_tidx
                 if not shim.is_theano_object(tidxslice):
-                    assert(source.shape == tuple(tidxslice.stop - tidxslice.start,
+                    assert (source.shape == tuple(tidxslice.stop - tidxslice.start,
                                                  self._data.shape[1]))
             csc_data = self._data.tocsc()
             csc_data[tidxslice,:] = shim.sparse.csc_from_dense(source)
@@ -3397,8 +3508,9 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         '''
 
         # The setup of slicing is copied from Series._convolve_op_single_t
-        if kernel_slice.start == kernel_slice.stop:
-            return 0
+        if (kernel_slice.start == kernel_slice.stop
+            or len(discretized_kernel) == 0):
+            return shim.zeros(self.shape, dtype=self.dtype)
         tidx = self.get_t_idx(tidx)
 
         kernel_slice = self.make_positive_slice(kernel_slice)
@@ -3470,6 +3582,24 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
                  *args, **kwargs):
         """Small wrapper around ConvolveMixin.convolve. Discretizes the kernel and converts the kernel_slice into a slice of time indices. Also converts t into a slice of indices, so the
         _convolve_op* methods can work with indices.
+
+        See mixins.ConvolveMixin.convolve
+
+        Returns
+        -------
+        Array of shape `shape`
+          - If :param:t is a scalar and only one kernel slice is given, then
+            `shape = (self.shape)`
+          - If :param:t is a slice or an array, and only one kernel slice is
+            given, then `shape = (len(t), self.shape)`
+          - If :param:t is a scalar and multiple kernel slices are given, then
+            `shape = (K, self.shape)`, where `K` is the number of kernel slices
+          - If :param:t is a slice or an array, and multiple kernel slices
+            are given, then `shape = (K, len(T), self.shape)`
+        `(T,)+self.S`, `T` is the number of time steps
+        If `t` is given as a scalar, then return
+        If K kernel slices are specified, then returns an array of shape
+        `(K,T)+self.S`
         """
         # This copied over from Series.convolve
 
@@ -3478,20 +3608,6 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
 
         if not isinstance(kernel_slice, slice):
             raise ValueError("Kernel bounds must be specified as a slice.")
-
-        discretized_kernel = self.discretize_kernel(kernel)
-        sinn.add_sibling_input(self, discretized_kernel)
-            # This adds the discretized_kernel as an input to any history
-            # which already has `self` as an input. It's a compromise solution,
-            # because these don't necessarily involve this convolution, but
-            # the overeager association avoids the complicated problem of
-            # tracking exactly which histories now need `discretized_kernel`
-            # as an input.
-
-        def get_start_idx(t):
-            return 0 if t is None else discretized_kernel.get_t_idx(t)
-        def get_stop_idx(t):
-            return len(discretized_kernel._tarr) if t is None else discretized_kernel.get_t_idx(t)
         try:
             len(kernel_slice)
         except TypeError:
@@ -3499,10 +3615,58 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             single_kernel = True
         else:
             single_kernel = False
+        tidx = self.get_t_idx(t)
+
+        discretized_kernel = self.discretize_kernel(kernel)
+        if len(discretized_kernel) == 0:
+            # TODO: Implement conditional based on kernel op
+            # if discretized_kernel.op_shape == 'broadcast':
+            #     kshape = discretized_kernel.shape
+            #     assert len(kshape) == 2 and kshape[0] == kshape[1]
+            #     assert self.ndim == 1
+            #     if kshape[-1] == self.npops:
+            #         # kernel shape matches number of populations
+            #         shape = self.shape + kshape[-1:]
+            #     elif kshape[-1] == self.shape[0]:
+            #         # kernel shape matches number of neurons
+            #         shape = kshape
+            #     else:
+            #         raise ValueError("Kernel and history shapes don't match."
+            #                          "Kernel: {} {}\n History: {} {}"
+            #                          .format(discretized_kernel.name, kshape,
+            #                                  self.name, self.shape))
+            # else:
+            #     assert discretized_kernel.op_shape == 'inner'
+            shape = self.shape
+            if not shim.isscalar(t):
+                if isinstance(t, np.ndarray):
+                    T = len(t)
+                else:
+                    slc, fltr = self._resolve_slice(t)
+                    if fltr is None:
+                        T = len(range(slc.start, slc.stop))
+                    else:
+                        T = len(range(slc.start, slc.stop)[fltr])
+                shape = (T,) + shape
+            if not single_kernel:
+                shape = (len(kernel_slice),) + shape
+            return np.zeros(shape)
+
+        def get_start_idx(s):
+            return 0 if s is None else discretized_kernel.get_t_idx(s)
+        def get_stop_idx(s):
+            return len(discretized_kernel._tarr) if s is None else discretized_kernel.get_t_idx(s)
 
         kernel_idx_slices = [ slice( get_start_idx(slc.start), get_stop_idx(slc.stop) )
                               for slc in kernel_slice ]
-        tidx = self.get_t_idx(t)
+
+        sinn.add_sibling_input(self, discretized_kernel)
+            # This adds the discretized_kernel as an input to any history
+            # which already has `self` as an input. It's a compromise solution,
+            # because these don't necessarily involve this convolution, but
+            # the overeager association avoids the complicated problem of
+            # tracking exactly which histories now need `discretized_kernel`
+            # as an input.
 
         result = super().convolve(discretized_kernel,
                                   tidx, kernel_idx_slices, *args, **kwargs)
@@ -3515,7 +3679,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
     #       This would involve also implementing operators which return a Spiketrain
     def pop_add(self, neuron_term, summand):
         if not shim.is_theano_object(neuron_term, summand):
-            assert(len(self.pop_slices) == len(summand))
+            assert len(self.pop_slices) == len(summand)
             return shim.concatenate([neuron_term[..., pop_slice] + sum_el
                                      for pop_slice, sum_el in zip(self.pop_slices, summand)],
                                     axis=-1)
@@ -3527,7 +3691,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
 
     def pop_mul(self, neuron_term, multiplier):
         if not shim.is_theano_object(neuron_term, multiplier):
-            assert(len(self.pop_slices) == len(multiplier))
+            assert len(self.pop_slices) == len(multiplier)
             return shim.concatenate([neuron_term[..., pop_slice] * mul_el
                                      for pop_slice, mul_el in zip(self.pop_slices, multiplier)],
                                     axis=-1)
@@ -3539,7 +3703,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
 
     def pop_div(self, neuron_term, divisor):
         if not shim.is_theano_object(neuron_term, divisor):
-            assert(len(self.pop_slices) == len(divisor))
+            assert len(self.pop_slices) == len(divisor)
             return shim.concatenate( [ neuron_term[..., pop_slice] / div_el
                                        for pop_slice, div_el in zip(self.pop_slices, divisor)],
                                      axis = -1)
@@ -3613,7 +3777,7 @@ class Series(ConvolveMixin, History):
         been calculated sufficiently far.
 
         '''
-        assert(not isinstance(key, float))
+        assert not isinstance(key, float)
         return self._data[key]
 
     def update(self, tidx, value):
@@ -3640,9 +3804,9 @@ class Series(ConvolveMixin, History):
         # Check if value includes an update dictionary.
         if isinstance(value, tuple):
             # `value` is a theano.scan-style return tuple
-            assert(len(value) == 2)
+            assert len(value) == 2
             updates = value[1]
-            assert(isinstance(updates, dict))
+            assert isinstance(updates, dict)
             value = value[0]
         else:
             updates = None
@@ -3660,7 +3824,7 @@ class Series(ConvolveMixin, History):
         if shim.istype(tidx, 'int'):
             end = tidx
             if not shim.is_theano_object(tidx):
-                assert(tidx <= self._original_tidx.get_value() + 1)
+                assert tidx <= self._original_tidx.get_value() + 1
                 # Ensure that we update at most one step in the future
         else:
             assert isinstance(tidx, slice)
@@ -3669,7 +3833,7 @@ class Series(ConvolveMixin, History):
             shim.check(tidx.stop > tidx.start)
             end = tidx.stop - 1
             if not shim.is_theano_object(tidx):
-                assert(tidx.start <= self._original_tidx.get_value() + 1)
+                assert tidx.start <= self._original_tidx.get_value() + 1
                     # Ensure that we update at most one step in the future
 
         if self.symbolic:
@@ -3742,7 +3906,7 @@ class Series(ConvolveMixin, History):
                     shim.add_updates(updates)
                 shim.add_update(self._original_data, self._data)
                 # Update the time index
-                assert(shim.is_theano_object(self._original_tidx))
+                assert shim.is_theano_object(self._original_tidx)
                 if not isinstance(end, shim.cf.GraphTypes):
                     name = (self._original_tidx.name
                             + '[update to {}]'.format(end))
@@ -3756,9 +3920,9 @@ class Series(ConvolveMixin, History):
 
             # Should only have Theano updates with Theano original data
             # (But running variables might be normal vars, right ?)
-            assert(shim.isshared(self._original_data))
+            assert shim.isshared(self._original_data)
                    #and shim.is_theano_object(self._data))
-            assert(shim.isshared(self._original_tidx))
+            assert shim.isshared(self._original_tidx)
                    #and shim.is_theano_object(self._cur_tidx))
         else:
             if shim.is_theano_object(value):
@@ -3967,7 +4131,7 @@ class Series(ConvolveMixin, History):
         time_slice = time_slice if time_slice is not None else slice(None, None)
         tslice = self._get_time_index_slice(time_slice, include_padding)
 
-        assert(self._cur_tidx.get_value() >= tslice.stop - 1)
+        assert self._cur_tidx.get_value() >= tslice.stop - 1
 
         if component is None:
             return self._original_data.get_value()[tslice]
@@ -4123,26 +4287,20 @@ class Series(ConvolveMixin, History):
                  *args, **kwargs):
         """Small wrapper around ConvolveMixin.convolve. Discretizes the kernel and converts the kernel_slice into a slice of time indices. Also converts t into a slice of indices, so the
         _convolve_op* methods can work with indices.
+
+        See mixins.ConvolveMixin.convolve
+
+        Returns
+        -------
+        Array of shape `(T,)+self.S`, `T` is the number of time steps
+        If K kernel slices are specified, then returns an array of shape
+        `(K,T)+self.S`
         """
         # Run the convolution on a discretized kernel
         # TODO: allow 'kernel' to be a plain function
 
         if not isinstance(kernel_slice, slice):
             raise ValueError("Kernel bounds must be specified as a slice.")
-
-        discretized_kernel = self.discretize_kernel(kernel)
-        sinn.add_sibling_input(self, discretized_kernel)
-            # This adds the discretized_kernel as an input to any history
-            # which already has `self` as an input. It's a compromise solution,
-            # because these don't necessarily involve this convolution, but
-            # the overeager association avoids the complicated problem of
-            # tracking exactly which histories now need `discretized_kernel`
-            # as an input.
-
-        def get_start_idx(t):
-            return 0 if t is None else discretized_kernel.get_t_idx(t)
-        def get_stop_idx(t):
-            return len(discretized_kernel._tarr) if t is None else discretized_kernel.get_t_idx(t)
         try:
             len(kernel_slice)
         except TypeError:
@@ -4151,10 +4309,39 @@ class Series(ConvolveMixin, History):
         else:
             single_kernel = False
 
+        discretized_kernel = self.discretize_kernel(kernel)
+        if len(discretized_kernel) == 0:
+            shape = broadcast_shapes(self.shape, discretized_kernel.shape)
+            if not shim.isscalar(t):
+                if isinstance(t, np.ndarray):
+                    T = len(t)
+                else:
+                    slc, fltr = self._resolve_slice(t)
+                    if fltr is None:
+                        T = len(range(slc.start, slc.stop))
+                    else:
+                        T = len(range(slc.start, slc.stop)[fltr])
+                shape = (T,) + shape
+            if not single_kernel:
+                shape = (len(kernel_slice),) + shape
+            return np.zeros(shape)
+
+        def get_start_idx(t):
+            return 0 if t is None else discretized_kernel.get_t_idx(t)
+        def get_stop_idx(t):
+            return len(discretized_kernel._tarr) if t is None else discretized_kernel.get_t_idx(t)
+
         kernel_idx_slices = [ slice( get_start_idx(slc.start), get_stop_idx(slc.stop) )
                               for slc in kernel_slice ]
         tidx = self.get_t_idx(t)
 
+        sinn.add_sibling_input(self, discretized_kernel)
+            # This adds the discretized_kernel as an input to any history
+            # which already has `self` as an input. It's a compromise solution,
+            # because these don't necessarily involve this convolution, but
+            # the overeager association avoids the complicated problem of
+            # tracking exactly which histories now need `discretized_kernel`
+            # as an input.
         result = super().convolve(discretized_kernel,
                                   tidx, kernel_idx_slices, *args, **kwargs)
         if single_kernel:
@@ -4166,8 +4353,9 @@ class Series(ConvolveMixin, History):
         # When indexing data, make sure to use self[…] rather than self._data[…],
         # to trigger calculations if necessary
 
-        if kernel_slice.start == kernel_slice.stop:
-            return 0
+        if (kernel_slice.start == kernel_slice.stop
+            or len(discretized_kernel) == 0):
+            return shim.zeros(self.shape, dtype=self.dtype)
         else:
             kernel_slice = self.make_positive_slice(kernel_slice)
             # Algorithm assumes an increasing kernel_slice
@@ -4187,11 +4375,18 @@ class Series(ConvolveMixin, History):
                     .format(tidx))
             dim_diff = discretized_kernel.ndim - self.ndim
             dtype = np.result_type(discretized_kernel.dtype, self.dtype)
-            return shim.cast(self.dt64 * shim.sum(discretized_kernel[kernel_slice][::-1]
-                                                  * shim.add_axes(self[hist_slice], dim_diff,
-                                                                  -self.ndim),
-                                                  axis=0),
-                             dtype=dtype)
+            kinv = discretized_kernel[kernel_slice][::-1]
+            hist = shim.add_axes(self[hist_slice], dim_diff, -self.ndim)
+            if not (all(kinv.shape) and all(hist.shape)):
+                # If either the kernel or history slice is empty, its shape
+                # will contain 0 and we arrive here.
+                # In this case broadcasting won't work, but we know the result
+                # must be zero
+                shape = broadcast_shapes(self.shape, discretized_kernel.shape)
+                return np.zeros(shape, dtype=dtype)
+            else:
+                return shim.cast(self.dt64 * shim.sum(kinv * hist, axis=0),
+                                 dtype=dtype)
                 # history needs to be augmented by a dimension to match the kernel
                 # Since kernels are [to idx][from idx], the augmentation has to be on
                 # the second-last axis for broadcasting to be correct.
@@ -4202,8 +4397,9 @@ class Series(ConvolveMixin, History):
         # When indexing data, make sure to use self[…] rather than self._data[…],
         # to trigger calculations if necessary
 
-        if kernel_slice.start == kernel_slice.stop:
-            return 0
+        if (kernel_slice.start == kernel_slice.stop
+            or len(discretized_kernel) == 0):
+            return shim.zeros((1,)+self.shape, dtype=self.dtype)
         else:
             # Algorithm assumes an increasing kernel_slice
             shim.check(kernel_slice.stop > kernel_slice.start)

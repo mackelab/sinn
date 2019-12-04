@@ -22,13 +22,13 @@ logger = logging.getLogger('sinn.diskcache')
 
 import sinn
 import shelve
-import sinn.iotools as io
+import mackelab_toolbox.iotools as io
 
 
 def set_file(filename):
     if filename != "":
         try:
-            f, filename = io._get_free_file(filename)
+            f, filename = io.get_free_file(filename)
         except IOError:
             logger.warning("Unable to create '{}' for disk cache."
                         .format(filename))

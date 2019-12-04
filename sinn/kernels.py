@@ -465,10 +465,17 @@ class ExpKernel(Kernel):
                     reduced_cache = reduction_factor * self.last_conv
 
                 # Add the convolution over the new time interval which is not cached
+                # Index_interval will look at the dtype to determine the
+                # numerical rounding tolerance, so we must make sure we don't
+                # upcast a float32 to float64 (e.g. if blind_time is
+                # float64 but Δt is float32 )
+                t0 = self.memory_blind_time
+                tn = shim.cast(self.memory_blind_time + Δt,
+                               min(self.memory_blind_time.dtype, Δt.dtype))
                 result = ( reduced_cache
                            + hist.convolve(self, t,
-                                           slice(hist.index_interval(self.memory_blind_time),
-                                                 hist.index_interval(self.memory_blind_time + Δt))) )
+                                           slice(hist.index_interval(t0),
+                                                 hist.index_interval(tn))) )
                 self.last_conv = result
                     # We only cache the convolution up to the point at which every
                     # population "remembers" it.

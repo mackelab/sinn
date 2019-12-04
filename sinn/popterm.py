@@ -62,6 +62,22 @@ class PopTerm(np.ndarray):
     # shim_class = ShimmedPopTerm
 
     def __new__(cls, pop_sizes, values, block_types):
+        """
+
+        Parameters
+        ----------
+        pop_sizes:  (nested) tuple of ints
+            The size of each population. If there are multiple data dimensions,
+            use nested tuples.
+            E.g. `pop_sizes=((1,2),(3,4))` indicates that the data is 2D, and
+            organized into blocks of shape 1x3, 1x4, 2x3 and 2x4.
+        values: Iterable
+            Same argument as would be given to :func:np.array().
+        block_types: tuple of strings
+            One entry per dimension; indicates whether that dimension is treated
+            as macro, meso or micro.
+            Possible string values are 'macro', 'meso', 'micro'.
+        """
         expected_size = ( 1 if issubclass(cls, PopTermMacro)
                           else len(pop_sizes) if issubclass(cls, PopTermMeso)
                           else sum(pop_sizes) if issubclass(cls, PopTermMicro)

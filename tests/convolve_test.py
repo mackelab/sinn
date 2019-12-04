@@ -20,16 +20,16 @@ import sinn.diskcache
 
 sinn.diskcache.set_file("test_cache.db")
 
-def series():
+def series(τ=0.1, dt=0.001, L=4000, test_time_point=2.):
 
     # test convolution: ∫_a^b e^{-s/τ} * sin(t - s) ds
 
-    τ = 0.1
-    dt = 0.001
+    assert 0. < test_time_point < L*dt
 
+    data = histories.Series(t0=0, tn=L*dt, dt=dt, shape=(1,))
     def data_fn(t):
-        return np.sin(t)
-    data = histories.Series(t0=0, tn=4, dt=dt, shape=(1,), f=data_fn)
+        return np.sin(t).reshape((-1,1))
+    data.set_update_function(data_fn, inputs=[])
 
     params = kernels.ExpKernel.Parameters(
         height = 1,
@@ -47,19 +47,20 @@ def series():
                                    - np.exp(-a/τ)*(τ*np.cos(a-t) + np.sin(a-t))) )
 
 
-    convolve_test(data, data_fn, kernel, true_conv)
+    convolve_test(data, data_fn, kernel, true_conv, test_time_point)
 
     print("\n==========================")
     print("\nNon-iterative series (same data, but using scipy.signal.convolve)\n")
     data._iterative = True
-    convolve_test(data, data_fn, kernel, true_conv)
+    convolve_test(data, data_fn, kernel, true_conv, test_time_point)
 
     print("\n==========================")
     print("\n2 populations (2x2 kernel)\n")
     def data_fn2(t):
         axis = 0 if shim.isscalar(t) else 1
         return np.stack((np.sin(t), 2*np.sin(t)), axis=axis)
-    data2 = histories.Series(t0=0, tn=4, dt=dt, shape=(2,), f=data_fn2)
+    data2 = histories.Series(t0=0, tn=L*dt, dt=dt, shape=(2,))
+    data2.set_update_function(data_fn2, inputs=[])
     params2 = kernels.ExpKernel.Parameters(
         height = ((1,   0.3),
                   (0.7, 1.3)),
@@ -82,17 +83,25 @@ def series():
             return datamp * h2 * ( τ2 / (τ2**2 + 1) * (np.exp(-b/τ2)*(τ2*np.cos(b-t) + np.sin(b-t))
                                    - np.exp(-a/τ2)*(τ2*np.cos(a-t) + np.sin(a-t))) )
 
-    convolve_test(data2, data_fn2, kernel2, true_conv2)
+    convolve_test(data2, data_fn2, kernel2, true_conv2, test_time_point)
 
-def spiketimes():
+def spiketimes(τ=0.1, dt=0.001):
+    """
+    test convolution: ∫_a^b e^{-s/τ} * spiketimes ds,
+    where spiketimes is a uniformly sampled set of 50 spiketimes
+    between 0 and 4
 
-    # test convolution: ∫_a^b e^{-s/τ} * spiketimes ds,
-    # where spiketimes is a uniformly sampled set of 50 spiketimes between 0 and 4
-
-    dt = 0.001 # We need dt <= τ/1000 to have at least single digit
-                # precision on binned spiketrains, but of course that slows
-                # down computations substantially.
-    τ = 0.1
+    Remark
+    ------
+    We need dt <= τ/1000 to have at least single digit
+    precision on binned spiketrains, but of course that slows
+    down computations substantially.
+    """
+    """
+    test convolution: ∫_a^b e^{-s/τ} * spiketimes ds,
+    where spiketimes is a uniformly sampled set of 50 spiketimes
+    between 0 and 4
+    """
     np.set_printoptions(precision=8)
 
     np.random.seed(314)
@@ -122,21 +131,27 @@ def spiketimes():
     convolve_test(data, data_fn,
                   kernel, true_conv)
 
-def spiketrain():
+def spiketrain(τ=0.1, dt=0.001, L=4000,
+               test_time_point=2.0):
+    """
+    test convolution: ∫_a^b e^{-s/τ} * spiketimes ds,
+    where spiketimes is a uniformly sampled set of 50 spiketimes
+    between 0 and 4
 
-    # test convolution: ∫_a^b e^{-s/τ} * spiketimes ds,
-    # where spiketimes is a uniformly sampled set of 50 spiketimes between 0 and 4
+    Remark
+    ------
+    We need dt <= τ/1000 to have at least single digit
+    precision on binned spiketrains, but of course that slows
+    down computations substantially.
+    """
 
-    dt = 0.001 # We need dt <= τ/1000 to have at least single digit
-                # precision on binned spiketrains, but of course that slows
-                # down computations substantially.
-    τ = 0.1
     np.set_printoptions(precision=8)
 
     np.random.seed(314)
-    data = histories.Spiketrain(t0=0, tn=4, dt=dt, pop_sizes=(1,))
-    spiketrain_data = np.random.binomial(1, 25*dt, (len(data),1))
+    data = histories.Spiketrain(t0=0, tn=L*dt, dt=dt, pop_sizes=(1,))
+    spiketrain_data = np.random.binomial(1, np.clip(25*dt, 0., 1.), (len(data),1))
     data.set(spiketrain_data)
+    data.set_connectivity(np.ones((data.npops,)+data.shape))
 
     #def data_fn(t):
     #    return np.array([ True if t - (spike_list[np.searchsorted(spike_list, t)-1]) < dt else False
@@ -156,28 +171,40 @@ def spiketrain():
             [ np.sum(kernel.eval(t-s) for i, s in enumerate(data._tarr[data.t0idx:]) if spiketrain_data[i]) ] )
 
     convolve_test(data, None,#data_fn,
-                  kernel, true_conv)
+                  kernel, true_conv, test_time_point)
 
 
-def convolve_test(data, data_fn, kernel, true_conv):
+def convolve_test(data, data_fn, kernel, true_conv,
+                  test_time_point=2.0):
 
     np.set_printoptions(precision=8)
 
     config.integration_precision = 1
     dis_kernel = data.discretize_kernel(kernel)
     dis_kernel_test = histories.Series(t0=0, tn=kernel.memory_time,
-                                     dt=data.dt, shape=kernel.shape, f=kernel.eval)
+                                       dt=data.dt64, shape=kernel.shape)
+    ## Kernel functions can only be defined to take times, so we wrap
+    ## the function
+    def kernel_func(t):
+        return kernel.eval(dis_kernel_test.get_time(t))
+    dis_kernel_test.set_update_function(kernel_func, inputs=[])
 
-    print("\nMaximum difference between discretization method and manual discretization")
     memlen = min(len(dis_kernel), len(dis_kernel_test))
-    print(np.max(abs(dis_kernel[:memlen] - dis_kernel_test[:memlen])))
+    if memlen > 0:
+        print("\nMaximum difference between discretization method and manual discretization")
+        print(np.max(abs(dis_kernel[:memlen] - dis_kernel_test[:memlen])))
+        print("")
+    else:
+        print("\nAt least one kernel has zero length.")
+        print("len(discretized_kernel):          {}".format(len(dis_kernel)))
+        print("len(manually discretized kernel): {}\n".format(len(dis_kernel_test)))
 
     conv_len = len(dis_kernel._tarr)  # The 'valid' convolution will be
                                       # (conv_len-1) bins shorter than data._tarr
 
     data.pad(kernel.memory_time)
 
-    t = 2.0
+    t = test_time_point
     tidx = data.get_t_idx(t)
     dis_tidx = data.get_t_idx(t)
 
@@ -199,11 +226,16 @@ def convolve_test(data, data_fn, kernel, true_conv):
         else:
             #dt = data.dt
             return histdata[:][:,from_idx]
-    np_conv = np.array(
-        [ [ np.convolve(get_comp(data, from_idx)[dis_tidx - conv_len:dis_tidx],
-                        dis_kernel[:][:,to_idx,from_idx], 'valid')[0] * dis_kernel.dt
-            for from_idx in range(kernel.shape[1]) ]
-          for to_idx in range(kernel.shape[0]) ] )
+    if conv_len > 0:
+        np_conv = np.array(
+            [ [ np.convolve(
+                    get_comp(data, from_idx)[dis_tidx - conv_len:dis_tidx],
+                    dis_kernel[:][:,to_idx,from_idx], 'valid'
+                )[0] * dis_kernel.dt
+                for from_idx in range(kernel.shape[1]) ]
+              for to_idx in range(kernel.shape[0]) ] )
+    else:
+        np_conv = np.zeros(kernel.shape)
 
     print("single t, sinn (ExpKernel):                \n", sinn_conv)
     print("single t, manual numpy over discretized κ: \n", np_conv)
@@ -221,17 +253,25 @@ def convolve_test(data, data_fn, kernel, true_conv):
                          "different slice, still reuses previous calc\n"],
                         [tslice, tslice, tslice2]):
         t1 = time.perf_counter()
-        res = data.convolve(kernel, slc)[:,0,0]
+        res = data.convolve(kernel, slc)[:,0]
         t2 = time.perf_counter()
         print(txt, res, "\nCalculation took {}ms\n".format((t2-t1)*1000))
 
     t1 = time.perf_counter()
-    res = np.array([data.convolve(kernel, s) for s in data._tarr[tslice]])[:,0,0] # witout caching
+    res = np.array([data.convolve(kernel, s) for s in data._tarr[tslice]])[:,0] # without caching
     t2 = time.perf_counter()
     print("no slice (5 single t calls):       \n", res, "\nCalculation took {}ms\n".format((t2-t1)*1000))
 
     t1 = time.perf_counter()
-    res = np.array([kernel.convolve(data, s) for s in data._tarr[tslice]])[:,0,0] # with caching
+    # if data.shape == (2,):
+    #     for s in data._tarr[tslice]:
+    #         import pdb; pdb.set_trace()
+    #         print(kernel.convolve(data, s))
+    if data.shape == (2,):
+        kernel.debug = True
+    lst = [kernel.convolve(data, s) for s in data._tarr[tslice]]
+    print(np.array([kernel.convolve(data, s) for s in data._tarr[tslice]]))
+    res = np.array([kernel.convolve(data, s) for s in data._tarr[tslice]])[:,0] # with caching
     t2 = time.perf_counter()
     print("no slice, with special exponential optimization:  \n", res, "\nCalculation took {}ms\n".format((t2-t1)*1000))
 
@@ -348,7 +388,8 @@ kernel = kernels.ExpKernel('κ', 1, τ, 0)
     return uncached_timer, cached_timer
 
 if __name__ == '__main__':
-    spiketrain()
+    series(dt=4., test_time_point=8.)   # Test with a 0-length kernel
+    #series()
 
     # n=50
     # uncached_timer, cached_timer = get_timers()
