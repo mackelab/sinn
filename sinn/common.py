@@ -4,6 +4,7 @@ Created on Sat Feb 4 2017
 
 Author: Alexandre René
 """
+import abc
 import os
 import sys
 import logging
@@ -333,7 +334,7 @@ inputs = DependencyGraph('sinn.inputs')
 # type-checking (otherwise one needs to import e.g. histories.py, which can
 # lead to circular imports)
 
-class HistoryBase:
+class HistoryBase(abc.ABC):
 
     # TODO: Move setting of `name` attribute here
     def __init__(self, t0, tn):
@@ -341,10 +342,12 @@ class HistoryBase:
         self.tn = tn
         self._tarr = None # Implement in child classes
 
+    @abc.abstractmethod
     def get_time(self, t):
         raise NotImplementedError
 
-    def get_t_idx(self, t):
+    @abc.abstractmethod
+    def get_tidx(self, t):
         raise NotImplementedError
 
     def __str__(self):

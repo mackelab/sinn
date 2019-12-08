@@ -62,26 +62,13 @@ class PopTerm(np.ndarray):
     # shim_class = ShimmedPopTerm
 
     def __new__(cls, pop_sizes, values, block_types):
-        """
-
-        Parameters
-        ----------
-        pop_sizes:  (nested) tuple of ints
-            The size of each population. If there are multiple data dimensions,
-            use nested tuples.
-            E.g. `pop_sizes=((1,2),(3,4))` indicates that the data is 2D, and
-            organized into blocks of shape 1x3, 1x4, 2x3 and 2x4.
-        values: Iterable
-            Same argument as would be given to :func:np.array().
-        block_types: tuple of strings
-            One entry per dimension; indicates whether that dimension is treated
-            as macro, meso or micro.
-            Possible string values are 'macro', 'meso', 'micro'.
-        """
         expected_size = ( 1 if issubclass(cls, PopTermMacro)
                           else len(pop_sizes) if issubclass(cls, PopTermMeso)
                           else sum(pop_sizes) if issubclass(cls, PopTermMicro)
                           else None )
+        if shim.isshared(values):
+            raise TypeError("Use a `ShimmedPopTerm` to create popterm from "
+                            "a shared variable.")
         assert(len(block_types) == np.asarray(values).ndim)
         assert(issubclass(cls, cls.BlockTypes[block_types[0]]))
         if not issubclass(cls, PopTermPart):
@@ -99,8 +86,8 @@ class PopTerm(np.ndarray):
             NestedType = cls.BlockTypes[block_types[1]]
             try:
                 obj = np.asarray( [ NestedType(pop_sizes,
-                                               value,
-                                               block_types[1:])
+                                                 value,
+                                                 block_types[1:])
                                     for value in values ] )
             except ValueError:
                 raise ValueError("Tried to make a nested PopTerm, but the 2D dimension of "
@@ -186,7 +173,7 @@ class PopTerm(np.ndarray):
             else:
                 block_types = self.block_types
 
-            cls = PopTerm.BlockTypes[block_types[0]]
+            cls = self.BlockTypes[block_types[0]]
             res = res.view(cls)
             res.block_types = block_types
 
@@ -249,40 +236,40 @@ class PopTerm(np.ndarray):
                              .format(block_type))
 
     @staticmethod
-    def expand_block_types(popterm1, popterm2):
+    def expand_block_types(popterm1, popterm2, shape1=None, shape2=None):
         bts1 = popterm1.block_types
         bts2 = popterm2.block_types
+        if shape1 is None: shape1 = popterm1.shape
+        if shape2 is None: shape2 = popterm2.shape
 
         # Check that shapes are compatible
         # Iterating from the end ensures that we discard the extra
         # initial dimensions in popterm1 or popterm2
         for bt1, size1, bt2, size2 in zip(bts1[::-1],
-                                          popterm1.shape[::-1],
+                                          shape1[::-1],
                                           bts2[::-1],
-                                          popterm2.shape[::-1]):
+                                          shape2[::-1]):
             if ( ( (bt1 == 'Plain' or bt2 == 'Plain')
                    and (size1 != 1 and size2 != 1) )
                  and (size1 != size2) ) :
                 raise ShapeError("Plain array shapes are incompatible.\n "
-                                 + "  {} ({})\n".format(popterm1.shape,
+                                 + "  {} ({})\n".format(shape1,
                                                         popterm1.block_types)
-                                 + "  {} ({})\n".format(popterm2.shape,
+                                 + "  {} ({})\n".format(shape2,
                                                         popterm2.block_types))
 
         # If one term has more dimensions, split those off:
         # they don't need to be expanded
         Δi = len(bts1) - len(bts2)
-        shape1 = popterm1.shape
-        shape2 = popterm2.shape
         if Δi > 0:
             bts  = bts1[:Δi]
             bts1 = bts1[Δi:]
-            shape1 = popterm1.shape[Δi:]
+            shape1 = shape1[Δi:]
         elif Δi < 0:
             Δi = abs(Δi)
             bts  = bts2[:Δi]
             bts2 = bts2[Δi:]
-            shape2 = popterm2.shape[Δi:]
+            shape2 = shape2[Δi:]
         else:
             bts = ()
 
@@ -531,12 +518,12 @@ class PopTerm(np.ndarray):
             # Don't cast scalars as PopTerm
             return res
         else:
-            cls = PopTerm.BlockTypes[block_types[0]]
+            cls = self.BlockTypes[block_types[0]]
             return cls(self.pop_sizes, res, block_types)
     def flatten(self, *args, **kwargs):
         # FIXME Only make affected axes plain ?
         res = self.view(np.ndarray).flatten(*args, **kwargs)
-        return PopTermPart(self.pop_sizes, res, ('Plain',)*res.ndim)
+        return self.BlockTypes['Plain'](self.pop_sizes, res, ('Plain',)*res.ndim)
 
 
     # Operations
@@ -636,16 +623,79 @@ class PopTermMacro(PopTerm):
     """
     pass
 
-class ShimmedPopTerm(PopTerm, shim.ShimmedShared):
+class ShimmedPopTerm(object):
+    """
+    WIP This is a first attempt to get basic PopTerm functionality with
+    shared variables.
+    """
+    # The strategy is to multiply the inputs by an array of ones, broadcasting
+    # each dimension to the Micro size. The possibly large-dimensional array
+    # this defines should never actually be allocated, thanks to graph
+    # optimizations. Moreover, the symbolic values are untouched and should
+    # propagate correctly.
+    #
+    # **NOTE** Currently this is just a function return a Theano expression, and
+    # in particular it **will not** create a `ShimmedPopTerm` instance.
+    # So `isinstance()` checks on `PopTerm` will fail.
+    # """
+    def __new__(cls, pop_sizes, values, block_types):
+        # TODO: Reduce duplication with PopTerm.__new__
+        expected_size = ( 1 if issubclass(cls, ShimmedPopTermMacro)
+                          else len(pop_sizes) if issubclass(cls, ShimmedPopTermMeso)
+                          else sum(pop_sizes) if issubclass(cls, ShimmedPopTermMicro)
+                          else None )
+        assert shim.isshared(values)
+        sharedvar = values; values = sharedvar.get_value(borrow=True)
+        assert len(block_types) == shim.asarray(values).ndim
+        assert issubclass(cls, cls.BlockTypes[block_types[0]])
+        if not issubclass(cls, PopTermPart):
+            assert(expected_size is not None)
+            if len(values) != expected_size:
+                raise ValueError("Provided values (length {}) not commensurate with the "
+                                "expected number of elements ({})."
+                                .format(len(values), expected_size))
+
+        c = sharedvar
+        ndim = values.ndim
+        microsize = sum(pop_sizes)
+        for i, btype in enumerate(block_types):
+            if btype == 'Macro':
+                s = [1]*ndim; s[i] = microsize
+                c *= shim.ones(s)
+            elif btype == 'Meso':
+                s = [1]*ndim
+                k = [slice(None)]*ndim
+                subarrs = []
+                for j, popsize in enumerate(pop_sizes):
+                    s[i] = popsize
+                    k[i] = slice(j,j+1)
+                    subarrs.append(shim.tile(c[tuple(k)], s))
+                c = shim.concatenate(subarrs, axis=i)
+            else:
+                assert btype == 'Micro'
+                # Nothing to do: already expanded
+
+        # HACK ? A PopTerm is expected to have an 'expand' property
+        c.expand = c
+        c.expand_meso = NotImplemented
+        c.values = c
+        return c
+
+        # obj.pop_sizes = pop_sizes
+        # obj.pop_slices = PopTerm._get_pop_slices(pop_sizes)
+        # obj.block_types = tuple(block_types)
+        # return obj
+
+class ShimmedPopTermMicro(ShimmedPopTerm):
     pass
 
-class ShimmedPopTermMicro(PopTermMicro, shim.ShimmedShared):
+class ShimmedPopTermMeso(ShimmedPopTerm):
     pass
 
-class ShimmedPopTermMeso(PopTermMeso, shim.ShimmedShared):
+class ShimmedPopTermMacro(ShimmedPopTerm):
     pass
 
-class ShimmedPopTermMacro(PopTermMacro, shim.ShimmedShared):
+class ShimmedPopTermPart(ShimmedPopTerm):
     pass
 
 PopTerm.BlockTypes = {'Micro': PopTermMicro,
@@ -660,6 +710,15 @@ PopTerm.BlockLevels = {'Micro': 0,
                        'Meso' : 1,
                        'Macro': 2,
                        'Plain': None}
+
+ShimmedPopTerm.BlockTypes = {'Micro': ShimmedPopTermMicro,
+                             'Meso': ShimmedPopTermMeso,
+                             'Macro': ShimmedPopTermMacro,
+                             'Plain': ShimmedPopTermPart}
+ShimmedPopTerm.BlockNames = {ShimmedPopTermMicro: 'Micro',
+                             ShimmedPopTermMeso: 'Meso',
+                             ShimmedPopTermMacro: 'Macro',
+                             ShimmedPopTermPart: 'Plain'}
 
 PopTerm.shim_class = ShimmedPopTerm
 PopTermMicro.shim_class = ShimmedPopTermMicro

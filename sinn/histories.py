@@ -9,7 +9,7 @@ Author: Alexandre René
 import numpy as np
 import scipy as sp
 import collections
-from collections import deque, Iterable
+from collections import deque, Iterable, Sized
 from odictliteral import odict
 from copy import deepcopy
 import itertools
@@ -20,6 +20,7 @@ import hashlib
 import jsonpickle
 import jsonpickle.ext.numpy as jsonpickle_numpy
 jsonpickle_numpy.register_handlers()
+from functools import lru_cache
 
 import theano_shim as shim
 import theano_shim.sparse
@@ -2569,10 +2570,144 @@ class History(HistoryBase):
 class PopulationHistory(PopulationHistoryBase, History):
     """
     History where traces are organized into populations.
-    TODO: At moment just a placeholder history. Eventually the "population" stuff
-          (e.g. the redefinition of 'shape') should be moved here.
+    This is a base class collecting common functionality; in practice one
+    should use one of the derived classes, like SpikeTrain or PopulationSeries.
     """
-    pass
+    def __init__(self, hist=sinn._NoValue, *args, pop_sizes=sinn._NoValue, **kwargs):
+        self.PopTerm = self.get_popterm
+            # FIXME: At present self.PopTerm is not a classes, which
+            #        can be confusing. If PopTermMeso/PopTermMicro were implemented as metaclasses,
+            #        we could call the metaclass here instead, which would return a proper class
+
+        if hist is not sinn._NoValue and pop_sizes is sinn._NoValue:
+            pop_sizes = hist.pop_sizes
+        if pop_sizes is sinn._NoValue:
+            raise ValueError("'pop_sizes' is a required parameter.")
+        if not isinstance(pop_sizes, Sized):  # Tests if len() is valid
+            pop_sizes = (pop_sizes,)
+        if not all( shim.istype(s, 'int') for s in pop_sizes ):
+            raise ValueError("'pop_sizes' must be a tuple of integers.")
+        self.pop_sizes = pop_sizes
+
+        shape = (np.sum(pop_sizes),)
+        kwshape = kwargs.pop('shape', None)
+        # kwargs should not have shape, as it's calculated
+        # Return an error if it's different from the calculated value
+        if kwshape is not None and kwshape != shape:
+            raise ValueError("Specifying a shape to Spiketimes is "
+                             "unecessary, as it's calculated from pop_sizes")
+
+        # Force user to explicitly call `set_connectivity` before producing data.
+        # It's too easy otherwise to think that this has been correctly set automatically
+        self.conn_mat = None
+
+        super().__init__(hist, *args, shape=shape, **kwargs)
+
+    @property
+    @lru_cache(maxsize=1)
+    def pop_idcs(self):
+        """
+        self.pop_idcs is a 1D array with as many entries as there are units.
+        The value at each entry is that unit's population index, and so the
+        the result looks something like [0,0,0,...,1,1,1,...,2,2,2,...].
+        """
+        return np.concatenate(
+            [ [i]*size for i, size in enumerate(pop_sizes) ] )
+
+    @property
+    @lru_cache(maxsize=1)
+    def pop_slices(self):
+        """
+        self.pop_slices is a list of slices, such that
+        self.data[i][ self.pop_slices[j] ] returns the set of neurons corresponding
+        to population j at time bin i
+        """
+        pop_slices = []
+        i = 0
+        for pop_size in self.pop_sizes:
+            pop_slices.append(slice(i, i+pop_size))
+            i += pop_size
+        return pop_slices
+
+    @property
+    def npops(self):
+        """The number of populations."""
+        return len(self.pop_sizes)
+
+    def get_popterm(self, values):
+        if isinstance(values, popterm.PopTerm):
+            return values
+        else:
+            # TODO: Find a way w/out instantiating a PopTerm just for 'infer_block_type'
+            dummy_popterm = popterm.PopTermMacro(
+                self.pop_sizes, np.zeros(1), ('Macro',))
+            if shim.isshared(values):
+                shape = values.get_value().shape
+            else:
+                shape = values.shape
+            block_types = dummy_popterm.infer_block_types(
+                shape, allow_plain=False)
+            cls = popterm.PopTerm.BlockTypes[block_types[0]]
+            if shim.isshared(values):
+                cls = cls.shim_class
+            return cls(self.pop_sizes, values, block_types)
+
+    def set_connectivity(self, w):
+        """
+        Set the connectivity matrix between neurons. This
+        is required for convolutions.
+
+        Parameters
+        ----------
+        w: ndarray
+           Square connectivity matrix: Nneurons x Nneurons. If w[i,j]
+           is non zero, than neuron j projects to neuron i.
+        """
+        # TODO: Use popterm and allow MxM, NxM, MxN matrices, where M is npops
+        if shim.is_theano_object(w):
+            # Skip validation test
+            pass
+        elif not hasattr(w, 'shape') or w.shape != self.shape*2:
+            raise ValueError("Connectivity matrix must be an NxN array, where "
+                             "N is the number of units (here: {})."
+                             .format(self.shape[0]))
+        self.conn_mat = w
+
+    # TODO: Implement pop_xxx functions as operator methods
+    #       This would involve also implementing operators which return a Spiketrain
+    def pop_add(self, neuron_term, summand):
+        if not shim.is_theano_object(neuron_term, summand):
+            assert len(self.pop_slices) == len(summand)
+            return shim.concatenate([neuron_term[..., pop_slice] + sum_el
+                                     for pop_slice, sum_el in zip(self.pop_slices, summand)],
+                                    axis=-1)
+        else:
+            raise NotImplementedError
+
+    def pop_radd(self, summand, neuron_term):
+        return self.pop_add(neuron_term, summand)
+
+    def pop_mul(self, neuron_term, multiplier):
+        if not shim.is_theano_object(neuron_term, multiplier):
+            assert len(self.pop_slices) == len(multiplier)
+            return shim.concatenate([neuron_term[..., pop_slice] * mul_el
+                                     for pop_slice, mul_el in zip(self.pop_slices, multiplier)],
+                                    axis=-1)
+        else:
+            raise NotImplementedError
+
+    def pop_rmul(self, multiplier, neuron_term):
+        return self.pop_mul(neuron_term, multiplier)
+
+    def pop_div(self, neuron_term, divisor):
+        if not shim.is_theano_object(neuron_term, divisor):
+            assert len(self.pop_slices) == len(divisor)
+            return shim.concatenate( [ neuron_term[..., pop_slice] / div_el
+                                       for pop_slice, div_el in zip(self.pop_slices, divisor)],
+                                     axis = -1)
+        else:
+            raise NotImplementedError
+
 
 # Spiketimes is currently really slow for long data traces (> 5000 time bins)
 # Development efforts have been moved to Spiketrain; maybe in the future if we need
@@ -2591,7 +2726,7 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
 
     _strict_index_rounding = False
 
-    def __init__(self, hist=sinn._NoValue, name=None, *args, t0=sinn._NoValue, tn=sinn._NoValue, dt=sinn._NoValue,
+    def __init__(self, hist=sinn._NoValue, name=None, *args, time_array=sinn._NoValue,
                  pop_sizes=sinn._NoValue, dtype=sinn._NoValue, **kwargs):
         """
         All parameters except `hist` are keyword parameters
@@ -2615,35 +2750,36 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
         """
         if name is None:
             name = "spiketimes{}".format(self.instance_counter + 1)
-        try:
-            assert pop_sizes is not sinn._NoValue
-        except AssertionError:
-            raise ValueError("'pop_sizes' is a required parameter.")
-        try:
-            len(pop_sizes)
-        except TypeError:
-            pop_sizes = (pop_sizes,)
-        assert all( shim.istype(s, 'int') for s in pop_sizes )
-        self.pop_sizes = pop_sizes
+        # try:
+        #     assert pop_sizes is not sinn._NoValue
+        # except AssertionError:
+        #     raise ValueError("'pop_sizes' is a required parameter.")
+        # try:
+        #     len(pop_sizes)
+        # except TypeError:
+        #     pop_sizes = (pop_sizes,)
+        # assert all( shim.istype(s, 'int') for s in pop_sizes )
+        # self.pop_sizes = pop_sizes
+        #
+        # shape = (np.sum(pop_sizes),)
+        #
+        # kwshape = kwargs.pop('shape', None)
+        # # kwargs should not have shape, as it's calculated
+        # # Return an error if it's different from the calculated value
+        # if kwshape is not None and kwshape != shape:
+        #     raise ValueError("Specifying a shape to Spiketimes is "
+        #                      "unecessary, as it's calculated from pop_sizes")
+        #
+        # self.pop_idcs = np.concatenate( [ [i]*size
+        #                                   for i, size in enumerate(pop_sizes) ] )
+        # self.pop_slices = []
+        # i = 0
+        # for pop_size in pop_sizes:
+        #     self.pop_slices.append(slice(i, i+pop_size))
+        #     i += pop_size
 
-        shape = (np.sum(pop_sizes),)
-
-        kwshape = kwargs.pop('shape', None)
-        # kwargs should not have shape, as it's calculated
-        # Return an error if it's different from the calculated value
-        if kwshape is not None and kwshape != shape:
-            raise ValueError("Specifying a shape to Spiketimes is "
-                             "unecessary, as it's calculated from pop_sizes")
-
-        self.pop_idcs = np.concatenate( [ [i]*size
-                                          for i, size in enumerate(pop_sizes) ] )
-        self.pop_slices = []
-        i = 0
-        for pop_size in pop_sizes:
-            self.pop_slices.append(slice(i, i+pop_size))
-            i += pop_size
-
-        super().__init__(hist, name, t0=t0, tn=tn, dt=dt, shape=shape, **kwargs)
+        super().__init__(hist, name, time_array=time_array, pop_sizes=pop_sizes,
+                         dtype=dtype, **kwargs)
 
         if dtype is not None:
             logger.warning("Spiketimes class does not support 'dtype'")
@@ -3005,71 +3141,46 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         **kwargs:
             Extra keyword arguments are passed on to History's initializer
         """
-        self.PopTerm = self.get_popterm
-            # FIXME: At present self.PopTerm is not a classes, which
-            #        can be confusing. If PopTermMeso/PopTermMicro were implemented as metaclasses,
-            #        we could call the metaclass here instead, which would return a proper class
 
         if name is None:
             name = "spiketrain{}".format(self.instance_counter + 1)
-        if hist is not sinn._NoValue and pop_sizes is sinn._NoValue:
-            pop_sizes = hist.pop_sizes
-        if pop_sizes is sinn._NoValue:
-            raise ValueError("'pop_sizes' is a required parameter.")
-        try:
-            len(pop_sizes)
-        except TypeError:
-            pop_sizes = (pop_sizes,)
-        assert all( shim.istype(s, 'int') for s in pop_sizes )
-        self.pop_sizes = pop_sizes
-
-        shape = (np.sum(pop_sizes),)
-
-        kwshape = kwargs.pop('shape', None)
-        # kwargs should not have shape, as it's calculated
-        # Return an error if it's different from the calculated value
-        if kwshape is not None and kwshape != shape:
-            raise ValueError("Specifying a shape to Spiketimes is "
-                             "unecessary, as it's calculated from pop_sizes")
-
-        self._pop_idcs = None
-        self._pop_slices = None
+        # if hist is not sinn._NoValue and pop_sizes is sinn._NoValue:
+        #     pop_sizes = hist.pop_sizes
+        # if pop_sizes is sinn._NoValue:
+        #     raise ValueError("'pop_sizes' is a required parameter.")
+        # try:
+        #     len(pop_sizes)
+        # except TypeError:
+        #     pop_sizes = (pop_sizes,)
+        # assert all( shim.istype(s, 'int') for s in pop_sizes )
+        # self.pop_sizes = pop_sizes
+        #
+        # shape = (np.sum(pop_sizes),)
+        #
+        # kwshape = kwargs.pop('shape', None)
+        # # kwargs should not have shape, as it's calculated
+        # # Return an error if it's different from the calculated value
+        # if kwshape is not None and kwshape != shape:
+        #     raise ValueError("Specifying a shape to Spiketimes is "
+        #                      "unecessary, as it's calculated from pop_sizes")
+        #
+        # self._pop_idcs = None
+        # self._pop_slices = None
 
 
         # Force user to explicitly call `set_connectivity` before producing data.
         # It's too easy otherwise to think that this has been correctly set automatically
+        # TODO: conn_mats differs from PopulationHistory.conn_mat in that
+        #       it stores a nested list of block matrices, while the latter
+        #       stores connectivity as one big matrix.
+        #       With proper use of BroadcastBlock matrices, it should be
+        #       possible to always use a single matrix.
         self.conn_mats = None
 
         super().__init__(hist, name, t0=t0, tn=tn, dt=dt, time_array=time_array,
                          shape=shape, **kwargs)
 
         self.initialize(dtype=dtype)
-
-    @property
-    def pop_idcs(self):
-        """
-        self.pop_idcs is a 1D array with as many entries as there are units
-        The value at each entry is that neuron's population index
-        """
-        if getattr(self, '_pop_idcs', None) is None:
-            self._pop_idcs = np.concatenate(
-                [ [i]*size for i, size in enumerate(pop_sizes) ] )
-        return self._pop_idcs
-
-    @property
-    def pop_slices(self):
-        """
-        self.pop_slices is a list of slices, such that
-        self.data[i][ self.pop_slices[j] ] returns the set of neurons corresponding
-        to population j at time bin i
-        """
-        if getattr(self, '_pop_slices', None) is None:
-            self._pop_slices = []
-            i = 0
-            for pop_size in self.pop_sizes:
-                self._pop_slices.append(slice(i, i+pop_size))
-                i += pop_size
-        return self._pop_slices
 
     def raw(self):
         return super().raw(_data = self._data,
@@ -3085,49 +3196,21 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         retval.pop_sizes = raw['pop_sizes']
         return retval
 
-    @property
-    def npops(self):
-        """The number of populations."""
-        return len(self.pop_sizes)
-
-    def get_popterm(self, values):
-        if isinstance(values, popterm.PopTerm):
-            return values
-        else:
-            # TODO: Find a way not to instantiate a PopTerm just for 'infer_block_type'
-            dummy_popterm = popterm.PopTermMacro(self.pop_sizes, np.zeros(1), ('Macro',))
-            block_types = dummy_popterm.infer_block_types(values.shape,
-                                                          allow_plain=False)
-            cls = popterm.PopTerm.BlockTypes[block_types[0]]
-            return cls(self.pop_sizes, values, block_types)
-        #elif len(values) == 1:
-            #return popterm.PopTermMacro(self.pop_sizes, values)
-        #elif len(values) == len(self.pop_sizes):
-            #return popterm.PopTermMeso(self.pop_sizes, values)
-        #elif len(values) == sum(self.pop_sizes):
-            #return popterm.PopTermMicro(self.pop_sizes, values)
-        #else:
-            #raise ValueError("Provided values (length {}) neither match the number of "
-                             #"populations ({}) or of elements ({})."
-                             #.format(len(values), len(self.pop_sizes), sum(self.pop_sizes)))
-
     def set_connectivity(self, w):
         """
-        Set the connectivity matrix from neurons to populations. This
+        Set the connectivity matrix between neurons. This
         is required for convolutions.
 
         Parameters
         ----------
         w: ndarray
-           Rectangular connectivity matrix: Npops x Nneurons. If w[i,j]
-           is non zero, than neuron j projects to population i.
+           Square connectivity matrix: Nneurons x Nneurons. If w[i,j]
+           is non zero, than neuron j projects to neuron i.
         """
         # TODO: Combine connectivity matrices into a single BroadcastableBlockArray
         self.conn_mats = [ [ (w[to_pop_slice, from_pop_slice])
                              for from_pop_slice in self.pop_slices ]
                            for to_pop_slice in self.pop_slices ]
-            #nonzero returns a tuple (one element per dimension - here there is only one dimension)
-            #so we need to index with [0] to have just the array of non-zero columns
 
     def initialize(self, init_data=None, dtype=None):
         """
@@ -3675,50 +3758,11 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         else:
             return np.array(result)
 
-    # TODO: Implement pop_xxx functions as operator methods
-    #       This would involve also implementing operators which return a Spiketrain
-    def pop_add(self, neuron_term, summand):
-        if not shim.is_theano_object(neuron_term, summand):
-            assert len(self.pop_slices) == len(summand)
-            return shim.concatenate([neuron_term[..., pop_slice] + sum_el
-                                     for pop_slice, sum_el in zip(self.pop_slices, summand)],
-                                    axis=-1)
-        else:
-            raise NotImplementedError
-
-    def pop_radd(self, summand, neuron_term):
-        return self.pop_add(neuron_term, summand)
-
-    def pop_mul(self, neuron_term, multiplier):
-        if not shim.is_theano_object(neuron_term, multiplier):
-            assert len(self.pop_slices) == len(multiplier)
-            return shim.concatenate([neuron_term[..., pop_slice] * mul_el
-                                     for pop_slice, mul_el in zip(self.pop_slices, multiplier)],
-                                    axis=-1)
-        else:
-            raise NotImplementedError
-
-    def pop_rmul(self, multiplier, neuron_term):
-        return self.pop_mul(neuron_term, multiplier)
-
-    def pop_div(self, neuron_term, divisor):
-        if not shim.is_theano_object(neuron_term, divisor):
-            assert len(self.pop_slices) == len(divisor)
-            return shim.concatenate( [ neuron_term[..., pop_slice] / div_el
-                                       for pop_slice, div_el in zip(self.pop_slices, divisor)],
-                                     axis = -1)
-        else:
-            raise NotImplementedError
-
-
 
 class Series(ConvolveMixin, History):
     """
     Store history as a series, i.e. as an array of dimension T x (shape), where
     T is the number of bins and shape is this history's `shape` attribute.
-
-    (DEACTIVATED) Also provides an "infinity bin" – .inf_bin — in which to store the value
-    at t = -∞. (Not sure if this is useful after all.)
     """
 
     _strict_index_rounding = True
@@ -4375,9 +4419,18 @@ class Series(ConvolveMixin, History):
                     .format(tidx))
             dim_diff = discretized_kernel.ndim - self.ndim
             dtype = np.result_type(discretized_kernel.dtype, self.dtype)
-            kinv = discretized_kernel[kernel_slice][::-1]
+            kflipped = discretized_kernel[kernel_slice][::-1]
+            # Apply the connectivity matrix if this series defines one
+            if getattr(self, 'conn_mat', None) is not None:
+                # Connectivity matrix & kernel should only differ by time dim
+                assert self.conn_mat.ndim == kflipped.ndim - 1
+                assert self.conn_mat.shape == kflipped.shape[1:]
+                # A connectivity matrix is just another of specifying the kernel
+                # scaling, and must be aligned the same way (out, in)
+                # So we can combine them with element-wise multiplication
+                kflipped *= self.conn_mat
             hist = shim.add_axes(self[hist_slice], dim_diff, -self.ndim)
-            if not (all(kinv.shape) and all(hist.shape)):
+            if not (all(kflipped.shape) and all(hist.shape)):
                 # If either the kernel or history slice is empty, its shape
                 # will contain 0 and we arrive here.
                 # In this case broadcasting won't work, but we know the result
@@ -4385,7 +4438,7 @@ class Series(ConvolveMixin, History):
                 shape = broadcast_shapes(self.shape, discretized_kernel.shape)
                 return np.zeros(shape, dtype=dtype)
             else:
-                return shim.cast(self.dt64 * shim.sum(kinv * hist, axis=0),
+                return shim.cast(self.dt64 * shim.sum(kflipped * hist, axis=0),
                                  dtype=dtype)
                 # history needs to be augmented by a dimension to match the kernel
                 # Since kernels are [to idx][from idx], the augmentation has to be on
@@ -4403,6 +4456,16 @@ class Series(ConvolveMixin, History):
         else:
             # Algorithm assumes an increasing kernel_slice
             shim.check(kernel_slice.stop > kernel_slice.start)
+            disksliced = discretized_kernel[kernel_slice]
+            # Apply the connectivity matrix if this series defines one
+            if getattr(self, 'conn_mat', None) is not None:
+                # Connectivity matrix & kernel should only differ by time dim
+                assert self.conn_mat.ndim == disksliced.ndim - 1
+                assert self.conn_mat.shape == disksliced.shape[1:]
+                # A connectivity matrix is just another of specifying the kernel
+                # scaling, and must be aligned the same way (out, in)
+                # So we can combine them with element-wise multiplication
+                disksliced *= self.conn_mat
 
             # We compute the full 'valid' convolution, for all lags and then
             # return just the subarray corresponding to [t0:tn]
@@ -4424,7 +4487,7 @@ class Series(ConvolveMixin, History):
                     "possible you specified time as an integer rather than scalar ?")
             dis_kernel_shape = (kernel_slice.stop - kernel_slice.start,) + discretized_kernel.shape
             dtype = np.result_type(discretized_kernel.dtype, self.dtype)
-            retval = shim.cast(self.dt64 * shim.conv1d(self[:], discretized_kernel[kernel_slice],
+            retval = shim.cast(self.dt64 * shim.conv1d(self[:], disksliced,
                                                        len(self._tarr), dis_kernel_shape)[domain_slice],
                                dtype=dtype)
             shim.check(shim.eq(retval.shape[0], len(self)))
@@ -4526,6 +4589,21 @@ class Series(ConvolveMixin, History):
     def __mod__(self, other):
         return self._apply_op(operator.mod, other)
 
+class PopulationSeries(PopulationHistory, Series):
+    """
+    Similar to a Series, with the following differences:
+        - There is only one data dimension. Each position along that dimension
+          is referred to as a 'unit'.
+        - Units can be grouped into arbitrary sized populations, with the
+          constraint being that the sum of population sizes be the same as the
+          total number of units.
+    As for SpikeTrain, the `shape` argument is replaced by `pop_sizes`.
+    """
+    def convolve(*args, **kwars):
+        if self.conn_mat is None:
+            raise RuntimeError("You must set the population connectivity "
+                               "before performing a convolution.")
+        return super().convolve(*args, **kwargs)
 
 #######################################
 # Views
