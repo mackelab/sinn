@@ -1276,7 +1276,8 @@ class History(HistoryBase):
         self.set_range_update_function(range_update_function)
         if inputs is None and func is not None:
             logger.warning(
-                "You should specify the list of inputs with the function.")
+                "You should specify the list of inputs with the update "
+                "function of history {}.".format(self.name))
         if inputs is None: inputs = set()
         elif not isinstance(inputs, Iterable): inputs = [inputs]
         self.inputs = set(inputs)
@@ -2027,7 +2028,11 @@ class History(HistoryBase):
                                       "timestep 'dt'.")
         if self.t0idx != target_hist.t0idx:
             # `if` avoids adding unneeded cruft to the computational graph
-            tidx += target_hist.t0idx - self.t0idx
+            Δi = target_hist.t0idx - self.t0idx
+            if isinstance(tidx, slice):
+                tidx = slice(tidx.start+Δi, tidx.stop+Δi, tidx.step)
+            else:
+                tidx += Δi
         if not sinn.isclose(self.t0, target_hist.t0):
             Δt = self.index_interval(target_hist.t0 - self.t0,
                                      allow_fractional=allow_fractional)
@@ -2045,8 +2050,8 @@ class History(HistoryBase):
         (In fact, if `t` is a time, it is simply returned as is.)
         """
         if isinstance(t, slice):
-            start = None if t.start is None else self.get_t_for(t.start)
-            stop = None if t.stop is None else self.get_t_for(t.stop)
+            start = None if t.start is None else self.get_t_for(t.start, target_hist)
+            stop = None if t.stop is None else self.get_t_for(t.stop, target_hist)
             if self.dt != target_hist.dt:
                 raise NotImplementedError(
                     "Cannot convert time for history {} to {} because they "
@@ -2177,7 +2182,9 @@ class History(HistoryBase):
                 t = dis_kernel.get_time(t)
                 return _kernel_func(t)
 
-            dis_kernel.set_update_function(kernel_func)
+            dis_kernel.set_update_function(kernel_func, inputs=[])
+                # By definition, kernels don't depend on other histories,
+                # hence inputs=[]
 
             # Attach the discretization to the kernel instance
             setattr(kernel, dis_attr_name, dis_kernel)
@@ -4362,7 +4369,7 @@ class Series(ConvolveMixin, History):
                 else:
                     slc, fltr = self._resolve_slice(t)
                     if fltr is None:
-                        T = len(range(slc.start, slc.stop))
+                        T = slc.start - slc.stop
                     else:
                         T = len(range(slc.start, slc.stop)[fltr])
                 shape = (T,) + shape
@@ -4421,10 +4428,15 @@ class Series(ConvolveMixin, History):
             dtype = np.result_type(discretized_kernel.dtype, self.dtype)
             kflipped = discretized_kernel[kernel_slice][::-1]
             # Apply the connectivity matrix if this series defines one
-            if getattr(self, 'conn_mat', None) is not None:
+            if (getattr(self, 'conn_mat', None) is not None
+                and discretized_kernel.ndim > self.ndim):
+                # The second test is a heuristic: if the kernel has the same
+                # dimension as the history, then there should be no coupling
+                # between neurons involved, and thus no connectivity.
                 # Connectivity matrix & kernel should only differ by time dim
                 assert self.conn_mat.ndim == kflipped.ndim - 1
-                assert self.conn_mat.shape == kflipped.shape[1:]
+                if not shim.is_theano_object(self.conn_mat, kflipped):
+                    assert self.conn_mat.shape == kflipped.shape[1:]
                 # A connectivity matrix is just another of specifying the kernel
                 # scaling, and must be aligned the same way (out, in)
                 # So we can combine them with element-wise multiplication
@@ -4599,7 +4611,7 @@ class PopulationSeries(PopulationHistory, Series):
           total number of units.
     As for SpikeTrain, the `shape` argument is replaced by `pop_sizes`.
     """
-    def convolve(*args, **kwars):
+    def convolve(self, *args, **kwargs):
         if self.conn_mat is None:
             raise RuntimeError("You must set the population connectivity "
                                "before performing a convolution.")

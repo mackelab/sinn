@@ -138,7 +138,7 @@ def batch_function_scan(*inputs):
                 self.A.set_update_function(
                     lambda t: self.rndstream.normal(avg=self.θ))
 
-            @batch_function_scan('A', 'a')
+            @batch_function_scan('A')
             def logp(A):
                 # Squared error
                 return ((A - self.θ)**2).sum()
@@ -177,10 +177,25 @@ def batch_function_scan(*inputs):
 
             # Construct the initial values
             if not shim.is_theano_object(start):
-                assert all(h.cur_tidx >= self.get_tidx_for(start-1, h)
-                           for h in chain(nonstateinputs, statehists))
-                assert all(h.cur_tidx >= self.get_tidx_for(stop-1, h)
-                           for h in locked_statehists)
+                unupdatedhists = [h for h in chain(nonstateinputs, statehists)
+                                 if h.cur_tidx < self.get_tidx_for(start-1, h)]
+                unfilledhists = [h for h in locked_statehists
+                                 if h.cur_tidx < self.get_tidx_for(stop-1, h)]
+                if len(unupdatedhists) > 0:
+                    raise RuntimeError(
+                        "Use the `advance()` method to ensure all histories "
+                        "have been integrated up to the start of the batch. "
+                        "Offending histories are: {}."
+                        "If you are calling `advance()`, then it may be that "
+                        "the update functions for these histories are actually "
+                        "disconnected for those of the model."
+                        .format(', '.join([repr(h) for h in unupdatedhists])))
+                if len(unfilledhists) > 0:
+                    raise RuntimeError(
+                        "Locked histories must already be filled up to the end "
+                        "of the batch, since they cannot be updated."
+                        "Offending histories are: {}"
+                        .format(', '.join([repr(h) for h in unfilledhists])))
             initial_values = [h._data[self.get_tidx_for(start-1, h)]
                               for h in chain(nonstateinputs, statehists)]
 
@@ -198,13 +213,13 @@ def batch_function_scan(*inputs):
                         if getattr(x, 'name', None) is None:
                             x.name = name
                     m = len(nonstateinputs)
-                    _nonstateinputs = args[:m]
+                    _nonstate = args[:m]
                     _state = args[m:]
                     assert len(_state) == len(statehists)
                     _stateinputs = [_state[j] for i,j in stateinput_idcs]
                     state_outputs, updates = self.symbolic_update(tidx, *_state)
                     nonstate_outputs, nonstate_updates = self.nonstate_symbolic_update(
-                        tidx, nonstateinputs, _state, state_outputs)
+                        tidx, nonstateinputs, _state, _nonstate, state_outputs)
                     assert len(set(updates).intersection(nonstate_updates)) == 0
                     updates.update(nonstate_updates)
                     return nonstate_outputs + state_outputs, updates
@@ -417,6 +432,18 @@ class Model(com.ParameterMixin):
             len(self.State._fields) )
 
     @property
+    def unlocked_statehists(self):
+        return (h for h in self.statehists if not h.locked)
+
+    @property
+    def locked_statehists(self):
+        return (h for h in self.statehists if h.locked)
+
+    @property
+    def unlocked_histories(self):
+        return (h for h in self.history_set if not h.locked)
+
+    @property
     def nonstatehists(self):
         statehists = list(self.statehists)
         return utils.FixedGenerator(
@@ -424,12 +451,8 @@ class Model(com.ParameterMixin):
             len(self.history_set) - len(self.statehists) )
 
     @property
-    def unlocked_statehists(self):
-        return (h for h in self.statehists if not h.locked)
-
-    @property
-    def locked_statehists(self):
-        return (h for h in self.statehists if h.locked)
+    def unlocked_nonstatehists(self):
+        return (h for h in self.nonstatehists if not h.locked)
 
     @property
     def t0(self):
@@ -469,10 +492,6 @@ class Model(com.ParameterMixin):
             return self._refhist._cur_tidx - self._refhist.t0idx + self.t0idx
         else:
             raise AttributeError("Reference history for this model is not set.")
-
-    @property
-    def unlocked_histories(self):
-        return (h for h in self.history_set if not h.locked)
 
     @property
     def pymc(self, **kwargs):
@@ -1323,21 +1342,43 @@ class Model(com.ParameterMixin):
                                        for s, h in zip(self.State._fields,
                                                        self.statehists)
                                        if not h.locked]
+            unlocked_nonstate_names = [h.name + ' (scan)'
+                                       for h in self.unlocked_nonstatehists]
             for x, name in zip(
                 utils.flatten(tidx, *args, terminate=shim.cf._TerminatingTypes),
-                utils.flatten('tidx (scan)', unlocked_statevar_names,
+                utils.flatten('tidx (scan)',
+                              unlocked_nonstate_names,
+                              unlocked_statevar_names,
                               terminate=shim.cf._TerminatingTypes)):
                 if getattr(x, 'name', None) is None:
                     x.name = name
-            state_outputs, updates = self.symbolic_update(tidx, *args)
-            assert(len(state_outputs) == len(list(self.unlocked_statehists)))
+            m = len(unlocked_nonstate_names)
+            _nonstate = args[:m]
+            _state = args[m:]
+            assert len(_state) == len(unlocked_statevar_names)
+            state_outputs, updates = self.symbolic_update(tidx, *_state)
+            assert len(state_outputs) == len(list(self.unlocked_statehists))
+            nonstate_outputs, nonstate_updates = self.nonstate_symbolic_update(
+                tidx, list(self.unlocked_nonstatehists),
+                _state, _nonstate, state_outputs)
+            assert len(set(updates).intersection(nonstate_updates)) == 0
+            updates.update(nonstate_updates)
             for i, statehist in enumerate(self.unlocked_statehists):
                 state_outputs[i] = shim.cast(state_outputs[i],
                                              statehist.dtype)
-            return state_outputs, updates
+            for i, hist in enumerate(self.unlocked_nonstatehists):
+                nonstate_outputs[i] = shim.cast(nonstate_outputs[i],
+                                                hist.dtype)
+            return nonstate_outputs + state_outputs, updates
             #return list(state_outputs.values()), updates
 
         outputs_info = []
+        for hist in self.unlocked_nonstatehists:
+            tidx = curtidx - self.t0idx + hist.t0idx
+            outputs_info.append(sinn.upcast(hist._data[tidx],
+                                            to_dtype=hist.dtype,
+                                            same_kind=True,
+                                            disable_rounding=True))
         for hist in self.unlocked_statehists:
             # TODO: Generalize
             maxlag = hist.t0idx
@@ -1369,6 +1410,22 @@ class Model(com.ParameterMixin):
                                   sequences = shim.arange(curtidx+1, stoptidx),
                                   outputs_info = outputs_info,
                                   return_list = True)
+
+        # Remove histories from updates
+        # FIXME: For state histories this is don in _get_symbolic_update
+        # should we also remove the nonstate updates there instead ?
+        # if len(updates) > 0:
+        #     for h in self.history_set:
+        #         if h._original_data in updates:
+        #             assert not h.locked
+        #             del updates[h._original_data]
+        #         if h._original_tidx in updates:
+        #             assert not h.locked
+        #             del updates[h._original_tidx]
+
+        m = len(list(self.unlocked_nonstatehists))
+        nonstate_outputs = outputs[m:]
+        state_outputs = outputs[m:]
         # Ensure that all updates are of the right type
         # Theano can add updates for variables that don't have a dtype, e.g.
         # a RandomStateType variable, which is why we include the hasattr guard
@@ -1392,7 +1449,9 @@ class Model(com.ParameterMixin):
             h.stash()
         updates_stash = shim.get_updates()
         self.theano_reset()
-        for hist, output in zip(self.unlocked_statehists, outputs):
+        for hist, output in zip(chain(self.unlocked_nonstatehists,
+                                      self.unlocked_statehists),
+                                outputs):
             assert hist._original_data not in upds
             valslice = slice(curtidx - self.t0idx + hist.t0idx + 1,
                              stoptidx  - self.t0idx + hist.t0idx)
@@ -1465,7 +1524,7 @@ class Model(com.ParameterMixin):
                             "{} state variables were passed to "
                             "`symbolic_update`. Remember that variables should "
                             "not be passed for locked state histories."
-                            .format(len(statevars), l))
+                            .format(l, len(statevars)))
         return self._get_symbolic_update(tidx, *statevars)
         # if not hasattr(self, '_symbolic_update_graph'):
         # if True:
@@ -1515,7 +1574,9 @@ class Model(com.ParameterMixin):
 
         # Replace any PyMC3 prior by the corresponding shared variable
         prior_subs = {p.prior: p for p in self.params if hasattr(p, 'prior')}
-        St = [(shim.graph.clone(xt[0], replace=prior_subs), xt[1]) for xt in St]
+        if len(prior_subs) > 0:
+            St = [(shim.graph.clone(xt[0], replace=prior_subs), xt[1])
+                  for xt in St]
 
         # FIXME: Assumes no dependencies beyond a lag 1 for every one
         # Get S0 after St: don't need to update _data the second time, so it
@@ -1631,7 +1692,8 @@ class Model(com.ParameterMixin):
         # Return the new state
         return St_graphs, updates
 
-    def nonstate_symbolic_update(self, tidx, hists, curstatevars, newstatevars):
+    def nonstate_symbolic_update(self, tidx, hists, curstatevars,
+                                 curnonstatevars, newstatevars):
         # TODO: Combine more with _get_symbolic_update ?
 
         assert all(h not in self.statehists for h in hists)
@@ -1674,10 +1736,28 @@ class Model(com.ParameterMixin):
         statehists   = tuple(self.unlocked_statehists)
         assert len(curstatevars) == len(newstatevars) == len(statehists)
 
+        newnonstatevars = tuple(nsv for nsv,f in ht)
+
+        # First sub the state variables. This should work with a single pass.
         ht = [self.sub_states_into_graph(
-                xt[0], statehists, curstatevars, newstatevars,
+                xt[0], statehists,
+                curstatevars,
+                newstatevars,
                 tidx, ref_tidx, refhist)
               for xt in ht]
+        # Now sub the non-state variables. On every pass, the final one should
+        # not contain any more of the original variables.
+        for i in range(len(ht)):
+            for j in range(len(ht)-i):
+                _ht = [xt[0] for xt in ht]
+                ht[i] = self.sub_states_into_graph(
+                    _ht[j], hists,
+                    curnonstatevars,
+                    _ht,
+                    tidx, ref_tidx, refhist)
+                if all(xt[1] for xt in ht):
+                    break
+            assert ht[len(ht)-i-1][1]  # Check that the last one entry is substituted
         assert all(xt[1] for xt in ht)
             # All update graphs report as successfully substituted
         graphs = [xt[0] for xt in ht]
@@ -1740,7 +1820,8 @@ class Model(com.ParameterMixin):
 
         Parameters
         ----------
-
+        graph: computational graph
+            Computational graph we wish to traverse.
         hists: list of Histories
             The histories for which we want to replace references to their data
             by virtual variables.
@@ -1804,24 +1885,53 @@ class Model(com.ParameterMixin):
                 and shim.graph.is_same_graph(y, ref_tidx)):
                 # `is_same_graph` is expensive: avoid computing it when possible
                 replace[y] = shim.cast(new_tidx - 1, y.dtype)
-            elif y.owner is None:
+            elif (y.owner is None
+                  or (not any(odata in shim.graph.symbolic_inputs(y)
+                              for odata in odatas))):
+                  # Terminate recursion if at end, or if all remaining
+                  # variables are virtual variables added for the scan
                 continue
             elif isinstance(y.owner.op, theano.tensor.Subtensor):
                 if (y.owner.inputs[0].owner is not None
                     and isinstance(y.owner.inputs[0].owner.op,
                                    theano.tensor.IncSubtensor)):
-                    for xt2, odata, tival in zip(St, odatas, ref_tidxvals):
+                    for xs, xt2, odata, tival in zip(statevars, St, odatas, ref_tidxvals):
                         if y.owner.inputs[0].owner.inputs[0] is odata:
-                            if tival == 0 and expensive_asserts:
-                                iy = shim.graph.eval(y.owner.inputs[1],
-                                                    max_cost=50)
-                                assert(iy == tival+1)
+                            # if tival != 0:
+                            #     # I don't remember the logic for this condition,
+                            #     # but without it things don't work
+                            #     continue
+                            iy = shim.graph.eval(y.owner.inputs[1],
+                                                 max_cost=50)
+                            # Subtensor op corresponds to selecting the
+                            # updated state variable
+                            # odata is a shared variable attached to a hist
+                            # xs is the symbolic variable for the current state
+                            # xt2 is the symbolic variable for the once-updated
+                            # state
+                            if iy == tival:
+                                # Even though we are indexing the updated
+                                # variable, we are indexing it at the original
+                                # index value
+                                replace[y] = xs
+                            elif iy == tival+1:
+                                # Indexing 1 past the original index value
+                                # => use the updated state variable
+                                replace[y] = xt2
+                            else:
+                                raise RuntimeError(
+                                    "Graph substitution got confused. This may "
+                                    "be due to indexixng more than one time-"
+                                    "step in the past.")
+
+                            # if tival == 0 and expensive_asserts:
+                            #     assert(iy == tival+1)
                                 # assert(shim.graph.eval(
                                 #   y.owner.inputs[0].owner.inputs[1]-xt2,
                                 #   max_cost = 1000,
                                 #   givens={new_tidx:ref_tidx+1}) == 0 )
                                 #   # FIXME: `givens` assume lag of 1
-                            replace[y] = xt2
+                            # replace[y] = xt2
                             break
                 else:
                     for xs, xt2, odata, tival in zip(statevars, St,

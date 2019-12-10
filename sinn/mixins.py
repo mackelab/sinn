@@ -127,7 +127,7 @@ class ConvolveMixin(CachedOperation):
 
         # Hack to get single length time arrays to still return array
         t_is_scalar = shim.isscalar(t)
-        if shim.isarray(t):
+        if shim.isarray(t) and t.ndim > 0:
             # Convert time array to a scalar if possible, otherwise a slice
             assert(t.ndim == 1)
             if len(t) == 1:

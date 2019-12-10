@@ -67,6 +67,11 @@ class ConvergeStatus(OrderedEnum):
     # Specific errors we want to identify can be added with numbers > 20, and
     # a corresponding test added in the `fit()` function.
 
+raise_on_exception = False
+    # For server jobs, False is a preferable, as then the process will except
+    # and write stack trace to the log.
+    # For debugging however it may help to set this to True.
+
 ######################################
 #
 # General use functions
@@ -664,8 +669,11 @@ class SeriesSGD(SGDBase):
         # self.mode
 
         # Get time index dtype
-        assert(all(np.issubdtype(np.dtype(np.asarray(i).dtype), np.integer)
-                   for i in (start, burnin, datalen, batch_size)))
+        if not all(np.issubdtype(np.dtype(np.asarray(i).dtype),
+                                 np.integer)
+                   for i in (start, burnin, datalen, batch_size)):
+            raise TypeError("`start`, `burnin`, `datalen` and "
+                            "`batch_size` arguments must be integers.")
         # TODO: Upcast to most common type instad of forcing all to have same ?
         assert start_var.dtype == batch_size_var.dtype
         tidx_dtype = start_var.dtype
@@ -910,7 +918,8 @@ class SeriesSGD(SGDBase):
                             var.set_value(val)
                         _step()
                     self._step = step
-                    self.compile_cache.set([], optimizer_updates, self._step)
+                    self.compile_cache.set(
+                        [], optimizer_updates, self._step)
                 else:
                     logger.info("Compiled step function loaded from cache.")
             else:
@@ -1078,9 +1087,18 @@ class SeriesSGD(SGDBase):
 
     def step(self):
         self.reset_model(**self.optimize_vars_access)
+        # Maximum index value to start a batch
         end = max(0,
                   (self.start + self.datalen - self.batch_size
                    - (1+self.mode_params.burnin_factor)*self.burnin))
+        # Sample a random burnin
+        burninplus = int((1+self.mode_params.burnin_factor)*self.burnin)
+        if (self.mode_params.burnin_factor == 0 or self.burnin == 0
+            or self.burnin >= burninplus):
+            burnin = self.burnin
+        else:
+            burnin = np.random.randint(self.burnin, burninplus)
+
         if self.mode == 'sequential':
             if (self.curtidx < self.start
                 or self.curtidx > self.start + self.datalen
@@ -1101,22 +1119,21 @@ class SeriesSGD(SGDBase):
                 # This doesn't seem required anymore
                 # [model].clear_other_histories()
                 pass
+            self.curtidx += burnin
+            assert self.old_curtidx <= self.curtidx
+            if self.old_curtidx < self.curtidx:
+                self.advance(self.old_curtidx, self.curtidx+1)
 
         elif self.mode == 'random':
             self.curtidx = np.random.randint(self.start, end)
             self.initialize_model(self.curtidx)
+            if burnin > 0:
+                self.advance(self.curtidx, self.curtidx+burnin+1)
+            self.curtidx += burnin
 
         else:
             raise ValueError("Unrecognized fit mode '{}'".format(self.mode))
 
-        if self.mode_params.burnin_factor == 0 or self.burnin == 0:
-            burnin = self.burnin
-        else:
-            burnin = np.random.randint(self.burnin, (1+self.mode_params.burnin_factor)*self.burnin)
-        self.curtidx += burnin
-        assert self.old_curtidx <= self.curtidx
-        if self.old_curtidx < self.curtidx:
-            self.advance(self.old_curtidx, self.curtidx)
         self.old_curtidx = self.curtidx
         self._step(self.curtidx, self.batch_size)
 
@@ -1152,11 +1169,14 @@ class SeriesSGD(SGDBase):
                 # This isn't an error per se, but we want to make sure
                 # it is printed no matter what the logging level is
         except Exception as e:
-            # Catch errors, so we can save fit data before terminating.
-            # We may need this data to know why the error occured.
-            self.status = ConvergeStatus.ERROR
-            logger.exception(
-                "Fit terminated abnormally with the following error:")
+            if raise_on_exception:
+                raise e
+            else:
+                # Catch errors, so we can save fit data before terminating.
+                # We may need this data to know why the error occured.
+                self.status = ConvergeStatus.ERROR
+                logger.exception(
+                    "Fit terminated abnormally with the following error:")
 
         if self.status != ConvergeStatus.CONVERGED:
             print("Did not converge.")

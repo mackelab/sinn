@@ -422,12 +422,12 @@ class ExpKernel(Kernel):
         self.last_hist = None  # Keep track of the history object used for the last convolution
 
     def _eval_f(self, t, from_idx=slice(None,None)):
-        return shim.switch(shim.lt(t, self.params.t_offset[:,from_idx]),
+        return shim.switch(shim.lt(t, self.params.t_offset[...,from_idx]),
                            shim.cast(0, self.dtype, same_kind=False),
-                           self.params.height[:,from_idx]
+                           self.params.height[...,from_idx]
                              * shim.cast(
-                                shim.exp(-(t-self.params.t_offset[:,from_idx])
-                                           / self.params.decay_const[:,from_idx]),
+                                shim.exp(-(t-self.params.t_offset[...,from_idx])
+                                           / self.params.decay_const[...,from_idx]),
                                 self.dtype) )
             # We can use indexing because ParameterMixin ensures parameters are at least 2D
 

@@ -636,7 +636,8 @@ class ShimmedPopTerm(object):
     #
     # **NOTE** Currently this is just a function return a Theano expression, and
     # in particular it **will not** create a `ShimmedPopTerm` instance.
-    # So `isinstance()` checks on `PopTerm` will fail.
+    # So `isinstance()` checks on `PopTerm` will fail, as will operations
+    # like +,* which rely on recognizing a PopTerm for their broadcasting
     # """
     def __new__(cls, pop_sizes, values, block_types):
         # TODO: Reduce duplication with PopTerm.__new__
@@ -645,8 +646,6 @@ class ShimmedPopTerm(object):
                           else sum(pop_sizes) if issubclass(cls, ShimmedPopTermMicro)
                           else None )
         assert shim.isshared(values)
-        sharedvar = values; values = sharedvar.get_value(borrow=True)
-        assert len(block_types) == shim.asarray(values).ndim
         assert issubclass(cls, cls.BlockTypes[block_types[0]])
         if not issubclass(cls, PopTermPart):
             assert(expected_size is not None)
@@ -654,32 +653,41 @@ class ShimmedPopTerm(object):
                 raise ValueError("Provided values (length {}) not commensurate with the "
                                 "expected number of elements ({})."
                                 .format(len(values), expected_size))
+        return expand_array(pop_sizes, values, block_types)
 
-        c = sharedvar
-        ndim = values.ndim
-        microsize = sum(pop_sizes)
-        for i, btype in enumerate(block_types):
-            if btype == 'Macro':
-                s = [1]*ndim; s[i] = microsize
-                c *= shim.ones(s)
-            elif btype == 'Meso':
-                s = [1]*ndim
-                k = [slice(None)]*ndim
-                subarrs = []
-                for j, popsize in enumerate(pop_sizes):
-                    s[i] = popsize
-                    k[i] = slice(j,j+1)
-                    subarrs.append(shim.tile(c[tuple(k)], s))
-                c = shim.concatenate(subarrs, axis=i)
-            else:
-                assert btype == 'Micro'
-                # Nothing to do: already expanded
+def expand_array(pop_sizes, values, block_types):
+    """
+    Arrays are always expanded to the large 'Micro' size;
+    `block_types` corresponds to the input sizes.
+    """
+    sharedvar = values; values = sharedvar.get_value(borrow=True)
+    assert len(block_types) == shim.asarray(values).ndim
 
-        # HACK ? A PopTerm is expected to have an 'expand' property
-        c.expand = c
-        c.expand_meso = NotImplemented
-        c.values = c
-        return c
+    c = sharedvar
+    ndim = values.ndim
+    microsize = sum(pop_sizes)
+    for i, btype in enumerate(block_types):
+        if btype == 'Macro':
+            s = [1]*ndim; s[i] = microsize
+            c *= shim.ones(s)
+        elif btype == 'Meso':
+            s = [1]*ndim
+            k = [slice(None)]*ndim
+            subarrs = []
+            for j, popsize in enumerate(pop_sizes):
+                s[i] = int(popsize)  # It seems arrays of numpy ints don't work
+                k[i] = slice(j,j+1)
+                subarrs.append(shim.tile(c[tuple(k)], s))
+            c = shim.concatenate(subarrs, axis=i)
+        else:
+            assert btype == 'Micro'
+            # Nothing to do: already expanded
+
+    # HACK ? A PopTerm is expected to have an 'expand' property
+    c.expand = c
+    c.expand_meso = NotImplemented
+    c.values = c
+    return c
 
         # obj.pop_sizes = pop_sizes
         # obj.pop_slices = PopTerm._get_pop_slices(pop_sizes)
