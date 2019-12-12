@@ -663,13 +663,13 @@ def expand_array(pop_sizes, values, block_types):
     sharedvar = values; values = sharedvar.get_value(borrow=True)
     assert len(block_types) == shim.asarray(values).ndim
 
-    c = sharedvar
+    c_vals = sharedvar
     ndim = values.ndim
     microsize = sum(pop_sizes)
     for i, btype in enumerate(block_types):
         if btype == 'Macro':
             s = [1]*ndim; s[i] = microsize
-            c *= shim.ones(s)
+            c_vals = c_vals * shim.ones(s)
         elif btype == 'Meso':
             s = [1]*ndim
             k = [slice(None)]*ndim
@@ -677,16 +677,17 @@ def expand_array(pop_sizes, values, block_types):
             for j, popsize in enumerate(pop_sizes):
                 s[i] = int(popsize)  # It seems arrays of numpy ints don't work
                 k[i] = slice(j,j+1)
-                subarrs.append(shim.tile(c[tuple(k)], s))
-            c = shim.concatenate(subarrs, axis=i)
+                subarrs.append(shim.tile(c_vals[tuple(k)], s))
+            c_vals = shim.concatenate(subarrs, axis=i)
         else:
             assert btype == 'Micro'
             # Nothing to do: already expanded
 
     # HACK ? A PopTerm is expected to have an 'expand' property
-    c.expand = c
+    c = sharedvar
+    c.expand = c_vals
     c.expand_meso = NotImplemented
-    c.values = c
+    c.values = c_vals
     return c
 
         # obj.pop_sizes = pop_sizes
