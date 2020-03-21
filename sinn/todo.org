@@ -1,5 +1,13 @@
 * Priority 1
-** BUG [Analyze.plot] History names/labels with multiple underscores break if we try to plot legend
+** TODO Make history dependency resolution local
+   Don't search sinn.inputs for the list of inputs, but keep the list of inputs
+in the history itself.
+*** TODO Make HistoryBase derive from a Node class (or replace by?)
+   Then make the elements of _globals.inputs Node instances
+*** TODO Change sinn.inputs to sinn.histories
+** TODO Parameters -> Sumatra Parameters
+
+* Priority 2
 ** BUG [History] Compound operations don't work. E.g. : (A-a) * (B-b), with A,B histories.
 ** TODO Memory-less Series (i.e. variable)
    - Include 'get_value' method for easy sequential updating
@@ -20,15 +28,10 @@
    to which to assign traces, etc. This means we need to instantiate a model just to
    read the results of a fit.
    Search for 'name indexing' in gradient_descent.py
-** TODO Parameters -> Sumatra Parameters
 ** TODO [gradient descent] Don't save parameter evolutions for clamped parameters
-* Priority 2
-** TODO Make history dependency resolution local
-   Don't search sinn.inputs for the list of inputs, but keep the list of inputs
-in the history itself.
 
-** TODO Make HistoryBase derive from a Node class (or replace by?)
-   Then make the elements of _globals.inputs Node instances
+* Priority 3
+
 ** TODO Parameter replace function for models
    Would take graph, parameter, new name, "to" and "from" conversion functions (e.g. 10** and log)
    Would then take care of cloning the graph, replacing with the "to" converted new parameter
@@ -42,7 +45,6 @@ in the history itself.
    Should be possible to give to m the dependency m_lag1, while
    keeping m 'batch computable'.
 ** TODO Uniform kernel
-** TODO Don't allow negative integer indices for histories
 ** TODO [Spiketrain] Attach connectivity matrix to kernel, not spiketrain
 *** Will need to figure out how to expand the connectivity matrix
     Possibly something like the 'discretize' pattern, where it is attached to the kernel ?
@@ -55,12 +57,13 @@ in the history itself.
    So that when we delete them, they also remove histories from sinn.histories
    Ideally only if those histories don't appear anywhere else. Or at least a warning.
 org-todo-keywords
-** TODO Change sinn.inputs to sinn.histories
 ** TODO Allow History functions to deal with pure Python _data objects
    (Not just shared variables)
 
 ** TODO Catch when caught in a lookup loop (e.g. u[t] requires u[t] requires...)
    Raise an easier to understand error than "max recursion depth"
-* Priority 3
 
-** TODO Check that on disk caching is successfully loading
+** DONE Check that on disk caching is successfully loading
+** DONE Don't allow negative integer indices for histories
+
+* Priority 4
