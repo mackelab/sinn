@@ -1493,9 +1493,12 @@ class History(HistoryBase):
             hist._original_tidx.set_value(imax)
             hist._cur_tidx.set_value(imax)
         else:
-            hist._original_tidx.set_value(self._original_tidx.get_value() - imin)
-            hist._cur_tidx.set_value(self._cur_tidx.get_value() - imin)
-
+            # If truncation is done inplace, setting _original_tidx can
+            # change _cur_tidx  => Get indices first
+            oidx = self._original_tidx.get_value()
+            cidx = self._cur_tidx.get_value()
+            hist._original_tidx.set_value(oidx - imin)
+            hist._cur_tidx.set_value(cidx - imin)
 
         return hist
 
