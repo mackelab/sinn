@@ -4,7 +4,7 @@ from collections import namedtuple, Callable, Sequence
 import numbers
 import abc
 from mackelab_toolbox.utils import comparedicts
-from mackelab_toolbox.parameters import Transform
+from mackelab_toolbox.transform import Transform
 from sinn import config
 
 class Axis:
@@ -321,18 +321,21 @@ class IndexedMapping(Sequence):
         if not isinstance(index, Integral):
             raise TypeError("`index` must be in integer.")
         i0 = self.index_range[0]
-        in = self.index_range[-1]
+        ik = self.index_range[-1]
         if isinstance(index, slice):
-            step = index.step; if step is None: step = 1
-            start = index.start; if start is None: start = i0
-            stop = index.stop; if stop is None: stop = in
-            index = self.index_range[i0:in:step]
-        elif not shim.is_symbolic(index)
-            if shim.isscalar(index) and (index < io or in < index):
+            step = index.step;
+            if step is None: step = 1
+            start = index.start;
+            if start is None: start = i0
+            stop = index.stop;
+            if stop is None: stop = ik
+            index = self.index_range[i0:ik:step]
+        elif not shim.is_symbolic(index):
+            if shim.isscalar(index) and (index < io or ik < index):
                 raise IndexError("Provided index `{}` exceeds the mapping's "
                                  "range.".format(index))
         else:
-            if np.any(index < i0) or np.any(index > in):
+            if np.any(index < i0) or np.any(index > ik):
                 raise IndexError("Provided index `{}` exceeds the mapping's "
                                  "range.".format(index))
         return self.mapping(index)
@@ -466,7 +469,8 @@ class RegularIndexedMapping(IndexedMapping):
         return Δi if cast else di
 
 class DiscretizedAxis(abc.ABC, Axis):
-    transformed_type = DiscretizedAxis
+    # transformed_type = DiscretizedAxis
+        # Set below, because DiscretizedAxis class must be created first
     index_dtype = np.int32  # Default value to use for index.
     class BinAlign(Enum):
         """The interpretation of stops as either bin centers or bin edges."""
@@ -527,7 +531,7 @@ class DiscretizedAxis(abc.ABC, Axis):
         super().__init__(label=label, unit=unit, unit_label=unit_label,
                          min=min, max=max,
                          transformed=transformed,
-                         _transformed_axis=_transformed_axis):
+                         _transformed_axis=_transformed_axis)
 
         if min(stops) < self.min:
             logger.warning("Axis stops exceed its stated minimum")
@@ -576,7 +580,7 @@ class DiscretizedAxis(abc.ABC, Axis):
         if self.bin_ref is self.BinRef.SELF:
             desc['bin_ref'] = self.BinRef.TRANSFORMED
         else:
-            assert self.bin_ref is self.BinRef.TRANSFORMED:
+            assert self.bin_ref is self.BinRef.TRANSFORMED
             desc['bin_ref'] = self.BinRef.SELF
         return desc
 
@@ -599,8 +603,8 @@ class DiscretizedAxis(abc.ABC, Axis):
     #     """
     #     return self.edges.stops[-1]
 
-    @abc.abstractmethod
     @property
+    @abc.abstractmethod
     def transformed_stops(self):
         """Return the stops of the transformed axis."""
         raise NotImplementedError
@@ -685,7 +689,7 @@ class DiscretizedAxis(abc.ABC, Axis):
         BinRef   = DiscretizedAxis.BinRef
         try:
             return self._edge_axis
-        except AttributeError
+        except AttributeError:
             pass
         if self.bin_align is BinAlign.EDGES:
             self._edge_axis = self
@@ -727,7 +731,7 @@ class DiscretizedAxis(abc.ABC, Axis):
         BinRef   = DiscretizedAxis.BinRef
         try:
             return self._edge_axis
-        except AttributeError
+        except AttributeError:
             pass
         if self.bin_align is BinAlign.CENTERS:
             self._edge_axis = self
@@ -748,12 +752,15 @@ class DiscretizedAxis(abc.ABC, Axis):
             return axis
         return self._edge_axis
 
+DiscretizedAxis.transformed_type = DiscretizedAxis
+
 class MapAxis(DiscretizedAxis):
     """
     A memory-efficient axis which only stores a mapping between integers and
     stop values.
     """
-    transformed_type = MapAxis
+    # transformed_type = MapAxis
+        # Set below, because DiscretizedAxis class must be created first
 
     def __init__(self, label, mapping=None, index_range=None, stops=None,
                  format='centers', bin_ref=None,
@@ -832,6 +839,8 @@ class MapAxis(DiscretizedAxis):
             raise TypeError("Provided value ({}) does not have the expected "
                             "units ({}).".format(value, self.unit))
         return self.stops.index(self.unit_convert(value), **kwargs)
+
+MapAxis.transformed_type = MapAxis
 
 class RegularAxis(MapAxis):
     """
@@ -929,7 +938,9 @@ class ArrayAxis(DiscretizedAxis):
     """
     In contrast to MapAxis, stores all stops as an array.
     """
-    transformed_type = ArrayAxis
+    # transformed_type = ArrayAxis
+        # Set below, because ArrayAxis class must be created first
+
     def __init__(self, label, stops,
                  format='centers', bin_ref=None,
                  unit=None, unit_label=None, *args,
@@ -994,3 +1005,5 @@ class ArrayAxis(DiscretizedAxis):
         in **transformed** space.
         """
         return super().centers
+
+ArrayAxis.transformed_type = ArrayAxis
