@@ -1609,7 +1609,7 @@ class MarginalCollection:
             Keyword arguments to pass to self.plot_marginal1D
         kwargs2D: dict
             Keyword arguments to pass to self.plot_marginal2D
-        **kwargs: Keyword arguments passed on to self._plot_grid_layou
+        **kwargs: Keyword arguments passed on to self._plot_grid_layout
         """
         # def sanitize(s):
         #     # Ignore certain character

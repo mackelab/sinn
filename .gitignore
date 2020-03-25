@@ -21,3 +21,5 @@ _build
 *.html
 *.cache
 *.compilecache
+activate
+  # symbolic link to environment

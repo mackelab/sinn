@@ -501,6 +501,7 @@ def decimate(history, factor=None, target_dt=None, allow_rounding=False):
     In contrast to `subsample`, removed bins are simply discarded rather
     than averaged.
     TODO: add mode parameter to allow keeping the centre of a window.
+    TODO: allow applying to plain numpy arrays
 
     Parameters
     ----------

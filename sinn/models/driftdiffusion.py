@@ -130,7 +130,7 @@ class DriftDiffusion(Model):
         """
         Returns a step from a Wiener process. Specifically, samples from
         .. math::
-          dW \sim \mathcal{N}(0, dt^2)
+          dW \\sim \\mathcal{N}(0, dt^2)
         """
         # TODO: Allow noise to have different shape from X
         # TODO: Preevaluate arguments ? Something like

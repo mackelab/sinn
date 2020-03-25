@@ -23,11 +23,13 @@ setup(
 
       install_requires=['numpy >= 1.13',
                         'scipy',
-                        #'mackelab_toolbox',
+                        'mackelab_toolbox',
                         'theano_shim',
+                        'theano',
                         'tqdm',
                         'packaging',
-                        'jsonpickle']
+                        'jsonpickle',
+                        'odictliteral']
       # Add mackelab, theano as optional dependency
       # luigi is not included, since nothing imports luigi.py
       # A user importing sinn.models.luigi should expect to install luigi
