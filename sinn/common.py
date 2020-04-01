@@ -514,7 +514,7 @@ class OpCache:
         if None in data_keys:
             # There are operations with new arguments we need to compute
             new_data = shim.stack( [
-                #shim.lib.convolve(self[:], dis_kernel[slc], mode='valid')
+                #shim.convolve(self[:], dis_kernel[slc], mode='valid')
                 ###########################################
                 # CUSTOMIZATION: Here is the call to the custom operation we are caching
                 self.op(other, arg)

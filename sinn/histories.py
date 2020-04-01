@@ -3076,8 +3076,8 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
                 # scalar instead of a NumPy float
 
         elif kernel.ndim == 1 and kernel.shape[0] == len(self.pop_sizes):
-            return shim.lib.concatenate(
-                  [ shim.lib.stack( shim.asarray(shim.lib.sum( f(t-s, from_pop_idx) for s in spike_list ))
+            return shim.concatenate(
+                  [ shim.stack( shim.asarray(shim.sum( f(t-s, from_pop_idx) for s in spike_list ))
                                for spike_list in _data[self.pop_slices[from_pop_idx]] )
                     for from_pop_idx in range(len(self.pop_sizes)) ] )
 
@@ -3810,7 +3810,7 @@ class Series(ConvolveMixin, History):
         #                                            data_tensor_broadcast)
         #     #self._data = shim.T.zeros(self._tarr.shape + self.shape, dtype=config.floatX)
         #     self._data = self.DataType(self.name + ' data')
-        #     #self.inf_bin = shim.lib.zeros(self.shape, dtype=config.floatX)
+        #     #self.inf_bin = shim.zeros(self.shape, dtype=config.floatX)
         # else:
         if dtype is sinn._NoValue:
             if hist is not sinn._NoValue:
