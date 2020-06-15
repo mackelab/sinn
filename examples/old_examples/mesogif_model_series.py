@@ -272,7 +272,7 @@ class GIF(models.Model):
         #     u_r = self.expand_param(self.params.u_r, self.params.N)
         # )
 
-        #if self.s._original_tidx.get_value() < self.s.t0idx:
+        #if self.s._num_tidx.get_value() < self.s.t0idx:
         logger.info("Initializing model state variables...")
         self.init_state_vars(initializer)
         logger.info("Done.")
@@ -303,7 +303,7 @@ class GIF(models.Model):
 
         for varname in self.State._fields:
             hist = getattr(self, varname)
-            if hist._original_tidx.get_value() < hist.t0idx:
+            if hist._num_tidx.get_value() < hist.t0idx:
                 initval = getattr(init_state, varname)
                 hist.pad(1)
                 idx = hist.t0idx - 1; assert(idx >= 0)
@@ -311,7 +311,7 @@ class GIF(models.Model):
 
         # TODO: Combine the following into the loop above
         nbins = self.s.t0idx
-        if self.s._original_tidx.get_value() < nbins:
+        if self.s._num_tidx.get_value() < nbins:
             self.s[:nbins] = init_state.s
         #data = self.s._data
         #data[:nbins,:] = init_state.s
@@ -509,7 +509,7 @@ class GIF(models.Model):
             if h.name in ['θ_dis', 'θtilde_dis']:
                 continue
             if h.locked:
-                tn = h.get_time(h._original_tidx.get_value())
+                tn = h.get_time(h._num_tidx.get_value())
                 if tn < self._refhist.get_time(stoptidx):
                     logger.warning("Locked history '{}' is only provided "
                                    "up to t={}. Output will be truncated."
@@ -520,17 +520,17 @@ class GIF(models.Model):
             self._refhist[stoptidx - self.t0idx + self._refhist.t0idx]
             # We want to compute the whole model up to stoptidx, not just what is required for refhist
             for hist in self.statehists:
-                hist.compute_up_to(stoptidx - self.t0idx + hist.t0idx)
+                hist._compute_up_to(stoptidx - self.t0idx + hist.t0idx)
 
         else:
-            if not shim.graph.is_computable([hist._cur_tidx
+            if not shim.graph.is_computable([hist._sym_tidx
                                        for hist in self.statehists]):
                 raise TypeError("Advancing models is only implemented for "
                                 "histories with a computable current time "
-                                "index (i.e. the value of `hist._cur_tidx` "
+                                "index (i.e. the value of `hist._sym_tidx` "
                                 "must only depend on symbolic constants and "
                                 "shared vars).")
-            curtidx = min( shim.graph.eval(hist._cur_tidx, max_cost=50)
+            curtidx = min( shim.graph.eval(hist._sym_tidx, max_cost=50)
                            - hist.t0idx + self.t0idx
                            for hist in self.statehists )
             assert(curtidx >= -1)
@@ -670,10 +670,10 @@ class GIF(models.Model):
         # HACK θ_dis updates should not be part of the loglikelihood's computational graph
         #      but 'already there'
         if shim.is_theano_object(θ_dis._data):
-            if θ_dis._original_data in shim.config.theano_updates:
-                del shim.config.theano_updates[θ_dis._original_data]
-            if θ_dis._original_tidx in shim.config.theano_updates:
-                del shim.config.theano_updates[θ_dis._original_tidx]
+            if θ_dis._num_data in shim.config.symbolic_updates:
+                del shim.config.symbolic_updates[θ_dis._num_data]
+            if θ_dis._num_tidx in shim.config.symbolic_updates:
+                del shim.config.symbolic_updates[θ_dis._num_tidx]
 
         # TODO: Use operations
         θtilde_dis = Series(θ_dis, 'θtilde_dis', iterative=False)
@@ -688,10 +688,10 @@ class GIF(models.Model):
         # HACK θ_dis updates should not be part of the loglikelihood's computational graph
         #      but 'already there'
         if shim.is_theano_object(θtilde_dis._data):
-            if θtilde_dis._original_data in shim.config.theano_updates:
-                del shim.config.theano_updates[θtilde_dis._original_data]
-            if θtilde_dis._original_tidx in shim.config.theano_updates:
-                del shim.config.theano_updates[θtilde_dis._original_tidx]
+            if θtilde_dis._num_data in shim.config.symbolic_updates:
+                del shim.config.symbolic_updates[θtilde_dis._num_data]
+            if θtilde_dis._num_tidx in shim.config.symbolic_updates:
+                del shim.config.symbolic_updates[θtilde_dis._num_tidx]
 
         return θ_dis, θtilde_dis
 

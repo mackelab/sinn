@@ -17,6 +17,8 @@ Created Wed Feb 22 2017
 author: Alexandre René
 """
 
+import os
+import atexit
 import logging
 logger = logging.getLogger('sinn.diskcache')
 
@@ -26,6 +28,8 @@ import mackelab_toolbox.iotools as io
 
 
 def set_file(filename):
+    # Remove previous cache file from disk
+    unset_file()
     if filename != "":
         try:
             f, filename = io.get_free_file(filename)
@@ -42,6 +46,14 @@ def set_file(filename):
                 # expected format
                 pass
     sinn.config.disk_cache_file = filename
+
+def unset_file():
+    """Remove the cache file from disk."""
+    fname = sinn.config.disk_cache_file
+    if fname != "" and os.path.exists(fname):
+        os.remove(fname)
+    sinn.config.disk_cache_file = ""
+atexit.register(unset_file)
 
 # Set the file on first import. It can be changed later by calling set_file
 set_file(sinn.config.disk_cache_file)

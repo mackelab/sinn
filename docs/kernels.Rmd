@@ -1,0 +1,152 @@
+---
+title: "Sinn Kernels"
+author: "Alexandre René"
+date: "07/04/2020"
+output:
+  html_document:
+    includes:
+      in_header: mathjax_config.html
+    mathjax: https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js
+---
+
+## Generalities and caveats
+
+  Functionality very goal-oriented; if something wasn't needed at some point,
+  it wasn't implemented (example: batch op for ExpKernel). It can be however
+  that we later decided not to use the feature; in this case it remains, but
+  may be untested/subpar implementation (example: single t op for ExpKernel is
+  often slower than normal conv).
+
+## General definition of a kernel
+
+  - covariant/contravariant axes
+  - Fully defined by its parameters
+    => hashable
+    => exception: fully generic kernel defined by an arbitrary function. We have not used this
+
+## Types of kernels
+
+### Exponential kernel
+
+#### API summary
+  - name: `ExpKernel`
+
+  - Parameters:
+    + height
+    + decay_const
+    + t_offsetrs
+
+    [# TODO: plot with descs]
+
+  - single_t optimization
+    + (suffers when t_offset > 0)
+
+### (Left-)Factorized Kernel
+  Use case: Large, potentially sparse data (neuron resolution) with neuron-to-neuron coupling
+
+  - $N$ : Number of units / outer dimension
+  - $M$ : Number of populations (assumption: $M \ll N$) / inner dimension.
+
+  - $\outproj$: the (tall skinny) $N \times M$ projection matrix which projects the convolution result back to the data space.
+    \begin{equation}
+    \outproj = \begin{pmatrix}
+      1 &0&0&\dotsb \\ \vdots &&& \\ 0&1&0&\dotsb \\ &\vdots&&\ddots
+      \end{pmatrix}_{N\times M}
+    \end{equation}
+    Note that $\outproj$ does not have to be a binary matrix: entries can represent projection proabilities,
+    connection weights, etc.
+
+  - $\Fkern$: the $M \times M$ *inner kernel* defining the temporal component of the kernel.
+    $$\begin{alignedat}{2}
+    \Fkern:\; && \setR &\to \setM_{M,M}\\
+    && t &\mapsto \Fkern(t)
+    \end{alignedat}$$
+
+Then a *factored kernel* $\kappa$ is defined as
+
+$$\kappa(t) = \outproj \Fkern(t) \,.$$
+
+  *Advantage*: separate the large time ($T$) and unit ($N$) dimensions, such that we never have to allocate
+  a $T \times N$ array. \
+  *Disadvantage*: The kernel is $N\times M$ instead of $N\times N$, meaning that one will likely need to add length-1 dimensions to use NumPy's broadcasting; this is generally not possible with SciPy's sparse matrices. In the worse case one may need to resort to looping over kernel components.
+
+  Since we have
+  $$\int \outproj \Fkern(t-s) g(s) \, ds = \outproj \int \Fkern(t-s) g(s) ds \,,$$
+  we can implement the convolution by reusing the convolution defined for `inner_kernel`:
+
+  $$\verb!outproj.dot!\bigl( \verb!inner_kernel.convolve!(g) \bigr) \,.$$
+
+### Compressed kernel
+  A more restrictive form of the FactorizedKernel which is easier to implement efficiently, especially with the more limited and inconsistent support for sparse matrix operations.
+
+  Use case: Large, potentially sparse data (neuron resolution) with population-to-population coupling.
+
+  - $N$ : Number of units / outer dimension
+  - $M$ : Number of populations (assumption: $M \ll N$) / inner dimension.
+
+  The convolution is defined in a lower-dimensional *inner space*, and data are projected into and out of this space by linear operations. To be specific, define:
+
+  - $\inproj$: the (short fat) $M \times N$ projection matrix which
+  projects the data into the inner space.
+    \begin{equation}
+    \inproj = \begin{pmatrix}
+      1 &\dotsb &0&\dotsb \\ 0&\dotsb&1&\dotsb&0&\dotsb \\ &&&&&\ddots
+      \end{pmatrix}_{M\times N}
+    \end{equation}
+
+  - $\outproj$: the (tall skinny) $N \times M$ projection matrix which projects the convolution result back to the data space.
+    \begin{equation}
+    \outproj = \begin{pmatrix}
+      1 &0&0&\dotsb \\ \vdots &&& \\ 0&1&0&\dotsb \\ &\vdots&&\ddots
+      \end{pmatrix}_{N\times M}
+    \end{equation}
+    Note that $\inproj$ and $\outproj$ do not have to be a binary matrices: entries can represent projection proabilities,
+    connection weights, etc.
+
+  - $\Fkern$: the $M \times M$ *inner kernel* defining the temporal component of the kernel.
+    $$\begin{alignedat}{2}
+    \Fkern:\; && \setR &\to \setM_{M,M}\\
+    && t &\mapsto \Fkern(t)
+    \end{alignedat}$$
+
+Then a *compressed kernel* $\kappa$ is defined as
+
+$$\kappa(t) = \outproj \Fkern(t) \inproj \,.$$
+
+  Advantage: separate the large time ($T$) and unit ($N$) dimensions, such that we never have to allocate
+  a $T \times N$ array.
+
+  Since we have
+  $$\int \outproj \Fkern(t-s) \underbrace{\inproj g(s)}_{\tilde{g}(s)} \, ds = \outproj \int \Fkern(t-s) \tilde{g}(s) ds \,,$$
+  we can implement the convolution by reusing the convolution defined for `inner_kernel`:
+
+  $$\verb!outproj.dot!\bigl( \verb!inner_kernel.convolve!(\tilde{g}) \bigr) \,.$$
+
+
+#### Use for neuron populations
+
+  In this case each unit belongs to exactly one population, so $\inproj$ has exactly one non-zero entry per row, and $\outproj$ exactly one non-zero entry per column. In our case, $\inproj$ is binary and connection weights are absorbed into $\outproj$.
+
+
+#### API summary
+  - name: `FactoredKernel`
+  - Parameters:
+    + `inner_kernel`: The inner kernel $\Fkern$.
+    + `inproj`: The neuron $\rightarrow$ population projection matrix $\inproj$.
+    + `outproj`: The population $\rightarrow$ neuron projection matrix $\outproj$.
+
+## Adding custom kernels
+
+### From existing kernels
+  Kernels can be added
+
+      K = ExpKernel(**params1) + ExpKernel(**params2)
+
+  At present only addition is supported.
+
+### Custom class
+  - Derive from `Kernel`
+  - Provide `_convolve_single_t`\
+    + Don't flatten – return `TensorWrapper` with contraction axes \
+      We sometimes need the unflattened result (e.g. with `ExpKernel`).
+    + call other convolve ops at same level (so `hist._convolve_single_t` instead of `hist.convolve`)

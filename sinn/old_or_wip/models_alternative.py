@@ -3,35 +3,59 @@
 Created on Thu Jan 17 2017
 
 Author: Alexandre René
+
+DIFFERENCE WITH models.py IN THE MAIN CODE BASE:
+    In the `advance_updates` method, this module builds `scan` differently.
+    Instead of putting everything in shared variables, the history updates
+    are accumulated in the `outputs_info` argument (the "proper" Theano way).
+    This makes for a much more complicated algorithm, possibly less flexible
+    and robust, but also possibly more efficient with Theano.
 """
 
 # TODO
 #   - Remove any use of '_refhist'. Package the (t0, tn, dt) -> time_array
 #     code (which is in histories.History) into an Axis class, and then give
 #     a proper axis to Model.
+#   - Have one dictionary/SimpleNamespace storing all compilation variables.
+#     See comment under `class Model`
 
 import numpy as np
 import scipy as sp
 #from scipy.integrate import quad
 #from collections import namedtuple
+from warnings import warn
 import logging
 logger = logging.getLogger(__name__)
-from collections import OrderedDict, Sequence, Iterable, Callable
+import abc
+from collections import namedtuple, OrderedDict, ChainMap
+from collections.abc import Sequence, Iterable, Callable
 import inspect
 from inspect import isclass
 from itertools import chain
+from functools import partial
 import copy
 import sys
+
+import pydantic
+from pydantic import BaseModel, validator, root_validator
+from pydantic.typing import AnyCallable
+from typing import Any, Optional
+from inspect import signature
 
 import theano_shim as shim
 import mackelab_toolbox.utils as utils
 import mackelab_toolbox.theano
 from mackelab_toolbox.theano import GraphCache, CompiledGraphCache
 from mackelab_toolbox.utils import class_or_instance_method
+from mackelab_toolbox.cgshim import typing as cgtyping
+
+import sinn
 import sinn.config as config
 import sinn.common as com
-import sinn.histories
-import sinn.kernels
+from sinn.axis import DiscretizedAxis
+from sinn.histories import (
+    History, TimeAxis, AutoHist, HistoryUpdateFunction, Series, Spiketrain)
+from sinn.kernels import Kernel
 import sinn.diskcache as diskcache
 
 _models = {}
@@ -196,7 +220,7 @@ def batch_function_scan(*inputs):
                         "of the batch, since they cannot be updated."
                         "Offending histories are: {}"
                         .format(', '.join([repr(h) for h in unfilledhists])))
-            initial_values = [h._data[self.get_tidx_for(start-1, h)]
+            initial_values = [h._sym_data[self.get_tidx_for(start-1, h)]
                               for h in chain(nonstateinputs, statehists)]
 
             if shim.cf.use_theano:
@@ -250,7 +274,7 @@ def batch_function_scan(*inputs):
                 i = inputhists.index(h)
                 _start = self.get_tidx_for(start, h)
                 _stop = self.get_tidx_for(stop, h)
-                finputs[i] = h._data[_start:_stop]
+                finputs[i] = h._sym_data[_start:_stop]
             for h, o in zip(nonstateinputs, outputs[:m]):
                 i = inputhists.index(h)
                 finputs[i] = o
@@ -268,8 +292,362 @@ def batch_function_scan(*inputs):
         return wrapped_f
     return decorator
 
+# Model decorators
 
-class Model(com.ParameterMixin):
+## updatefunction decorator
+
+PendingUpdateFunction = namedtuple('PendingUpdateFunction',
+                                   ['hist_nm', 'inputs', 'upd_fn'])
+def updatefunction(hist_nm, inputs):
+    """
+    Decorator. Attaches the following function to the specified history,
+    once the model is initialized.
+    """
+    if not isinstance(hist_nm, str) or not isinstance(inputs, (list, tuple)):
+        raise ValueError("updatefunction decorator must be used as \n"
+                         "  @updatefunction('hist_nm', inputs=['hist1', hist2'])\n"
+                         "  def hist_update(self, tidx):\n""    …")
+    def dec(upd_fn):
+        return PendingUpdateFunction(hist_nm, inputs, upd_fn)
+    return dec
+
+## initializer decorator
+
+def initializer(*fields, unintialized=None, pre=True, always=True, **dec_kwargs):
+    """
+    Specialized validator for writing more complex default initializers with
+    less boilerplate. Does two things:
+
+    - Changes defaults for `pre` and `always` to ``True``.
+    - Allows model parameters to be specified as keyword arguments in the
+      validator signature. This works with both model-level parameters, and
+      the parameters defined in the `Parameters` subclass.
+
+    Example
+    -------
+
+    The following
+
+    >>> class Model(BaseModel):
+    >>>   a: float
+    >>>   t: float = None
+    >>>   @initializer('t'):
+    >>>   def set_t(t, a):
+    >>>     return a/4
+
+    is equivalent to
+
+    >>> class Model(BaseModel):
+    >>>   a: float
+    >>>   t: float = None
+    >>>   @validator('t', pre=True, always=True):
+    >>>   def set_t(t, values):
+    >>>     if t is not None:
+    >>>       return t
+    >>>     a = values.get('a', None)
+    >>>     if a is None:
+    >>>       raise AssertionError(
+    >>>         "'a' cannot be found within the model parameters. This may be "
+    >>>         "because it is defined after 't' in the list of parameters, "
+    >>>         "or because its own validation failed.")
+    >>>     return a/4
+
+    Parameters
+    ----------
+    *fields
+    pre (default: True)
+    always (default: True)
+    each_item
+    check_fields
+    allow_reuse: As in `pydantic.validator`, although some arguments may not
+        be so relevant.
+
+    uninitialized: Any (default: None)
+        The initializer is only executed when the parameter is equal to this
+        value.
+    """
+
+    val_fn = validator(*fields, pre=pre, always=always, **dec_kwargs)
+
+    # Refer to pydantic.class_validators.make_generic_validator
+    def dec(f: AnyCallable) -> classmethod:
+        sig = signature(f)
+        args = list(sig.parameters.keys())
+        # 'value' is the first argument != from 'self', 'cls'
+        # It is positional, and the only required argument
+        if args[0] in ('self', 'cls'):
+            req_val_args = args[:2]
+            opt_val_args = set(args[2:])  # Remove cls and value
+        else:
+            req_val_args = args[:1]
+            opt_val_args = set(args[1:])  # Remove value
+        # opt_validator_args will store the list of arguments recognized
+        # by pydantic.validator. Everything else is assumed to match an earlier
+        # parameter.
+        param_args = set()
+        for arg in opt_val_args:
+            if arg not in ('values', 'config', 'field', '**kwargs'):
+                param_args.add(arg)
+        for arg in param_args:
+            opt_val_args.remove(arg)
+        if len(param_args) == 0:
+            # No param args => nothing to do
+            new_f = f
+        else:
+            def new_f(cls, v, values, field, config):
+                if v is not unintialized:
+                    return v
+                param_kwargs = {}
+                params = values.get('params', None)
+                if not isinstance(params, BaseModel):
+                    params = None  # We must not be within a sinn Model => 'params' does not have special meaning
+                for p in param_args:
+                    pval = values.get(p, None)  # Try module-level param
+                    if pval is None and params is not None:
+                        pval = getattr(params, p, None)
+                    if pval is None:
+                        raise AssertionError(
+                          f"'{p}' cannot be found within the model parameters. "
+                          "This may be because it is defined after "
+                          f"'{field.name}' in the list of parameters, or "
+                          "because its own validation failed.")
+                    param_kwargs[p] = pval
+
+                # Now assemble the expected standard arguments
+                if len(req_val_args) == 2:
+                    val_args = (cls, v)
+                else:
+                    val_args = (v,)
+                val_kwargs = {}
+                if 'values' in opt_val_args: val_kwargs['values'] = values
+                if 'field' in opt_val_args: val_kwargs['field'] = field
+                if 'config' in opt_val_args: val_kwargs['config'] = config
+
+                return f(*val_args, **val_kwargs, **param_kwargs)
+
+            # Can't use @wraps because we changed the signature
+            new_f.__name__ = f.__name__
+            new_f.__doc__ = f.__doc__
+            return val_fn(new_f)
+
+    return dec
+
+class ModelMetaclass(pydantic.main.ModelMetaclass):
+    def __new__(metacls, cls, bases, namespace):
+        # MRO resolution
+        # We will need to retrieve attributes which may be anywhere in the MRO.
+        # USE: Sanity checks, retrieve `Parameters`, inherited annotations
+        # NOTE: type.mro(metacls) would return the MRO of the metaclass, while
+        #     we want that of the still uncreated class.
+        # Option 1: Create a new throwaway class, and use its `mro()` method
+        #     Implementation: type('temp', bases, namespace)
+        #     Problem: Infinite recursion if Model is within `bases`
+        # Option 2: Force `bases` to have one element, and call its `mro()`
+        #     Implementation: bases[0].mro()
+        #     Problem: Multiple inheritance of models is no longer possible.
+        # At the moment I begrudgingly went with Option 1, because I'm not sure
+        # of a use case for multiple inheritance.
+        nonabcbases = tuple(b for b in bases if b is not abc.ABC)
+        if len(nonabcbases) != 1:
+            from inspect import currentframe, getframeinfo
+            import pathlib
+            path = pathlib.Path(__file__).absolute()
+            frameinfo = getframeinfo(currentframe())
+            info = f"{path}::line {frameinfo.lineno}"
+            basesstr = ', '.join(str(b) for b in nonabcbases)
+            raise TypeError(
+                f"Model {cls} has either no or multiple parents: {basesstr}.\n"
+                "Models must inherit from exactly one class (eventually "
+                "`sinn.models.Model`). This is a technical limitation rather "
+                "than a fundamental one. If you need multiple inheritance for "
+                f"your model, have a look at the comments above {info}, and "
+                "see if you can contribute a better solution.")
+        mro = bases[0].mro()
+        Parameters = namespace.get('Parameters', None)  # First check namespace
+        Config = namespace.get('Config', None)
+        for C in mro:
+            if Parameters is not None and Config is not None:
+                break  # We've found both classes; no need to look further
+            if Parameters is None:
+                Parameters = getattr(C, 'Parameters', None)
+            if Config is None:
+                Config = getattr(C, 'Config', None)
+
+        # Existing attributes
+        # (ChainMap gives precedence to elements earlier in the list)
+        annotations = namespace.get('__annotations__', {})
+        inherited_annotations = ChainMap(*(getattr(b, '__annotations__', {})
+                                           for b in mro))
+        all_annotations = ChainMap(annotations, inherited_annotations)
+        # (We only iterate over immediate bases, since those already contain
+        #  the values for their parents)
+        inherited_kernel_identifiers = set(chain.from_iterable(
+            getattr(b, '_kernel_identifiers', []) for b in bases))
+        inherited_hist_identifiers = set(chain.from_iterable(
+            getattr(b, '_hist_identifiers', []) for b in bases))
+        inherited_pending_updates = dict(ChainMap(
+            *({obj.hist_nm: obj for obj in getattr(b, '_pending_update_functions', [])}
+              for b in bases)))
+
+        # Structures which accumulate the new class attributes
+        new_annotations = {}
+        _kernel_identifiers = inherited_kernel_identifiers
+        _hist_identifiers = inherited_hist_identifiers
+        _pending_update_functions = inherited_pending_updates
+            # pending updates use a dict to allow derived classes to override
+
+        # Model validation
+        ## `time` parameter
+        if 'time' not in annotations:
+            annotations['time'] = TimeAxis
+        else:
+            if (not isinstance(annotations['time'], type)
+                or not issubclass(annotations['time'], DiscretizedAxis)):
+                raise TypeError(
+                    "`time` attribute must be an instance of `DiscretizedAxis`; "
+                    "in general `histories.TimeAxis` is an appropriate type.")
+        # ## 'initialize' method
+        # if not isinstance(namespace.get('initialize', None), Callable):
+        #     raise TypeError(f"Model {cls} does not define an `initialize` "
+        #                     "method.")
+
+
+        # Sanity check Parameters subclass
+        # Parameters = namespace.get('Parameters', None)
+        if (not isinstance(Parameters, type)
+            or not issubclass(Parameters, BaseModel)):
+            raise TypeError(
+                f"Model {cls}: `Parameters` must inherit from pydantic."
+                f"BaseModel. `{cls}.Parameters.mro()`: {Parameters.mro()}.")
+
+        # Sanity check Config subclass, if present
+        # Config = namespace.get('Config', None)
+        # No warnings for Config: not required
+        if not isinstance(Config, type):
+            raise TypeError(f"Model {cls} `Config` must be a class, "
+                            f"not {type(Config)}.")
+
+        # Add 'params' variable if it isn't present, and place first in
+        # the list of variables so that initializers can find it.
+        if 'params' in annotations:
+            if annotations['params'] is not Parameters:
+                raise TypeError(f"Model {cls} defines `params` but it is not "
+                                f"of type `{cls}.Parameters`")
+            new_annotations['params'] = annotations.pop('params')
+        else:
+            new_annotations['params'] = Parameters
+
+        # TODO?: Allow derived classes to redefine histories ?
+        #        We would just need to add the inherited kernel/hists after this loop
+
+        # Add module-level annotations
+        for nm, T in annotations.items():
+            if nm in new_annotations:
+                raise TypeError("Name clash in {cls} definition: '{nm}'")
+            new_annotations[nm] = T
+            if isinstance(T, type) and issubclass(T, History):
+                _hist_identifiers.add(nm)
+            elif isinstance(T, type) and issubclass(T, Kernel):
+                _kernel_identifiers.add(nm)
+            elif isinstance(T, PendingUpdateFunction):
+                # FIXME: Remove. I don't remember why I originally put this branch
+                assert False
+                # _pending_update_functions.append(obj)
+
+        # Sanity check State subclass
+        State = namespace.get('State', None)
+        if abc.ABC in bases:
+            # Deactivate warnings for abstract models
+            pass
+        elif State is None:
+            warn(f"Model {cls} does not define a set of state variables.")
+        elif len(getattr(State, '__annotations__', {})) == 0:
+            warn(f"Model {cls} has an empty `State` class.")
+        else:
+            if issubclass(State, BaseModel):
+                raise TypeError(f"Model {cls} `State` must be a plain class, "
+                                f"not a Pydantic BaseModel.")
+            # if len(_hist_identifiers) == 0:
+            #     raise TypeError(
+            #         f"Model {cls}: Variables declared in `State` are not all "
+            #         "declared as histories in the model.")
+            for nm, T in State.__annotations__.items():
+                histT = all_annotations.get(nm, None)
+                if histT is None:
+                    raise TypeError(
+                        f"Model {cls}: `State` defines '{nm}', which is not "
+                        "defined in the model.")
+                if T is not Any:
+                    raise TypeError(
+                        "At the moment, all attributes of the `State` class "
+                        "should have type `Any`. In the future we may add "
+                        "the possibility to be more specific.")
+                # NOTE: If checking the type histT, remember that it may be
+                #       something else than a History (e.g. RNG).
+                # elif T is not histT:
+                #     raise TypeError(
+                #         f"Model {cls}: `State` defines '{nm}' with type '{T}', "
+                #         f"while the model defines it with type '{histT}'.")
+
+        # Add update functions to list
+        for obj in namespace.values():
+            if isinstance(obj, PendingUpdateFunction):
+                if obj.hist_nm not in _hist_identifiers:
+                    raise TypeError(
+                        f"Update function {obj.upd_fn} is intended for history "
+                        f"{obj.hist_nm}, but it is not defined in the model.")
+                _pending_update_functions[obj.hist_nm] = obj
+
+        # Add AutoHist validators
+        for nm, obj in list(namespace.items()):
+            if isinstance(obj, AutoHist):
+                T = annotations.get(nm, None)
+                # Determine a name for the initialization validator which
+                # doesn't match something already in `namespace`
+                fn_nm = f"autohist_{nm}"
+                if fn_nm in namespace:
+                    # I honestly don't know why someone would define a model
+                    # with clashing names, but just in case.
+                    for i in range(10):
+                        fn_nm = f"autohist_{nm}_{i}"
+                        if fn_nm not in namespace:
+                            break
+                    assert fn_nm not in namespace
+                if T is None:
+                    raise TypeError("`AutoHist` must follow a type annotation.")
+                if T is Series:
+                    namespace[fn_nm] = validator(
+                        nm, allow_reuse=True, always=True, pre=True)(
+                            init_autoseries)
+                elif T is Spiketrain:
+                    namespace[fn_nm] = validator(
+                        nm, allow_reuse=True, always=True, pre=True)(
+                            init_autospiketrain)
+                else:
+                    raise TypeError("Unrecognized history type; recognized "
+                        "types:\n\tSeries, Spiketrain")
+
+        # Update namespace
+        namespace['_kernel_identifiers'] = list(_kernel_identifiers)
+        namespace['_hist_identifiers'] = list(_hist_identifiers)
+        namespace['_pending_update_functions'] = list(_pending_update_functions.values())
+        namespace['__annotations__'] = new_annotations
+
+        return super().__new__(metacls, cls, bases, namespace)
+
+    # TODO: Recognize RNG as input
+
+def init_autospiketrain(cls, autohist: AutoHist, values) -> Spiketrain:
+    time = values.get('time', None)
+    if time is None: return autohist
+    return Spiketrain(time=time, **autohist.kwargs)
+
+def init_autoseries(cls, autohist: AutoHist, values) -> Series:
+    time = values.get('time', None)
+    if time is None: return autohist
+    return Series(time=time, **autohist.kwargs)
+
+class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     """Abstract model class.
 
     A model implementations should derive from this class.
@@ -289,90 +667,262 @@ class Model(com.ParameterMixin):
     If not provided, `likelihood_gradient` will be calculated by appyling theano's
     grad method to `likelihood`. (TODO)
     As class methods, these don't require an instance – they can be called on the class directly.
+
+    .. Hint::
+       If you are subclassing Model to create another abstract class (a class
+       meant to be subclassed rather than used on its own), add `abc.ABC` to
+       its parents – this will identify your model as abstract, and disable
+       warnings about missing attributes like `State`.
     """
-    def __init__(self, params, t0, tn, dt=None,
-                 public_histories=None, reference_history=None):
-        # History is optional because more complex models have multiple histories.
-        # They should keep track of them themselves.
-        # ParameterMixin requires params as a keyword parameter
-        """
-        Parameters
-        ----------
-        params: self.Parameters instance
+    # ALTERNATIVE: Have a SimpleNamespace attribute `priv` in which to place
+    #              private attributes, instead of listing them all here.
+    __slots__ = ('graph_cache', 'compile_cache', '_pymc', 'batch_start_var', 'batch_size_var',
+                 '_curtidx', '_stoptidx_var', '_advance_updates')
 
-        public_histories: Ordered iterable
-            List of histories that were explicitly passed to the model
-            initializer. This allows to recover the histories that were passed
-            (as usually they contain the desired output) without needing to
-            know their internal name.
+    class Config:
+        # Allow assigning other attributes during initialization.
+        extra = 'allow'
+        keep_untouched = (PendingUpdateFunction, class_or_instance_method)
 
-        reference_history: History instance
-            If provided, a reference is kept to this history: Model evaluation
-            may require querying some of its attributes, such as time step (dt).
-            These attributes are allowed not to be constant.
-            If no reference is given, the first history in `public_histories`
-            is used.
+    class Parameters(abc.ABC, BaseModel):
         """
-        self.graph_cache = GraphCache('sinn.models.cache', type(self),
-                                      modules=(sinn.models.common,))
-        self.compile_cache = CompiledGraphCache('sinn.models.compilecache')
+        Models must define a `Parameters` class within their namespace.
+        Don't inherit from this class, just `BaseModel`; i.e. do::
+
+            class MyModel(Model):
+                class Parameters(BaseModel):
+                    ...
+        """
+        pass
+
+    def __init__(self, initializer=None, **kwargs):
+        # Sanity check Parameters subclass
+        Parameters = type(self).Parameters  # `self` not properly initialized yet
+        assert isinstance(Parameters, type)  # Assured by metaclass
+        if issubclass(Parameters, abc.ABC):
+            # Most likely no Parameters class was defined, and we retrieved
+            # the abstract definition above.
+            raise ValueError(
+                f"Model {cls} does not define a `Parameters` class, or its "
+                "`Parameters` class inherits from `abc.ABC`.")
+        # Initialize attributes with Pydantic
+        super().__init__(**kwargs)
+        # Attach update functions to histories, and set up __slots__
+        self._base_initialize()
+        # Run the model initializer
+        self.initialize(initializer)
+
+    def copy(self, *args, **kwargs):
+        m = super().copy(*args, **kwargs)
+        m._base_initialize()
+        m.initialize()
+        return m
+
+    @classmethod
+    def parse_obj(cls, obj):
+        m = super().parse_obj(obj)
+        m._base_initialize()
+        m.initialize()
+        return m
+
+    def _base_initialize(self):
+        """
+        Collects initialization that should be done in __init__, copy & parse_obj.
+        """
+        # Attach history updates
+        HistoryUpdateFunction.namespace = self
+        for obj in self._pending_update_functions:
+            hist = getattr(self, obj.hist_nm)
+            hist.update_function = HistoryUpdateFunction(
+                func = partial(obj.upd_fn, self),  # Wrap history so `self` points to the model
+                inputs = obj.inputs,
+            )
+        object.__setattr__(self, 'graph_cache',
+                           GraphCache('sinn.models', type(self),
+                                      modules=('sinn.models',)))
+        object.__setattr__(self, 'compile_cache',
+                           CompiledGraphCache('sinn.models.compilecache'))
             # TODO: Add other dependencies within `sinn.models` ?
-
-        # Format checks
-        if not hasattr(self, 'requires_rng'):
-            raise SyntaxError("Models require a `requires_rng` bool attribute.")
-
-        super().__init__(params=params)
-        # Set time axis attributes
-        self._t0 = t0
-        self._tn = tn
-        self._dt = dt
-        self.kernel_list = []
-        self.history_set = set()
-        self.history_inputs = sinn.DependencyGraph('model.history_inputs')
-        self.compiled = {}  # DEPRECATED
-        self._pymc = None  # Initialized with `self.pymc` property
-
-        if public_histories is None: self.public_histories = []
-        else: self.public_histories = public_histories
-        if not isinstance(self.public_histories, (Sequence, OrderedDict)):
-            raise TypeError("`public_histories` (type: {}) must be an ordered "
-                            "container type. Recognized types: Sequence, "
-                            "OrderedDict.".format(type(public_histories)))
-
-        if reference_history is not None:
-            self.set_reference_history(reference_history)
-            #self.add_history(reference_history)  # TODO: Possible to remove ?
-        elif len(self.public_histories) > 0:
-            self.set_reference_history(self.public_histories[0])
-        else:
-            self.set_reference_history(None)
-        # Consistency check
-        assert self._t0 == self.t0  # Reads from _refhist if not None
-        assert self._tn == self.tn
-        assert self._dt == self.dt
-
-        # Ensure rng attribute exists
-        if not hasattr(self, 'rng'):
-            self.rng = None
-
         # Create symbolic variables for batches
         if shim.cf.use_theano:
             # # Any symbolic function on batches should use these, that way
             # # other functions can retrieve the symbolic input variables.
             start = np.array(1).astype(self.tidx_dtype)
-            self.batch_start_var = shim.shared(start, name='batch_start')
-            # self.batch_start_var = shim.symbolic.scalar('batch_start',
-            #                                             dtype=self.tidx_dtype)
-            # self.batch_start_var.tag.test_value = 1
+            object.__setattr__(self, 'batch_start_var',
+                               shim.shared(start, name='batch_start'))
             #     # Must be large enough so that test_value slices are not empty
             size = np.array(2).astype(self.tidx_dtype)
-            self.batch_size_var = shim.shared(size, name='batch_size')
-            # self.batch_size_var = shim.symbolic.scalar('batch_size',
-            #                                            dtype=self.tidx_dtype)
+            object.__setattr__(self, 'batch_size_var',
+                               shim.shared(size, name='batch_size'))
             #     # Must be large enough so that test_value slices are not empty
-            # self.batch_size_var.tag.test_value = 2
 
+    @abc.abstractmethod
+    def initialize(self, initializer :Any=None):
+        """
+        Models must define an `initialize` method. This is where you can add
+        padding to histories, pre-compute kernels, etc. – anything which should
+        be done whenever parameters changed.
+
+        It takes one optional keyword argument, `initializer`, which can be of
+        any form. This could be e.g. a string flag, to indicate one of multiple
+        initialization protocols, or a dictionary with multiple initialization
+        parameters.
+
+        Arguably this could be implemented as a `root_validator`, but for at
+        least for now having a method with exactly this name is required.
+        """
+        pass
+
+
+    # @root_validator
+    # def check_same_dt(cls, values):
+    #     hists = [h for h in values if isinstance(h, History)]
+    #     if any(h1.dt != h2.dt for h1,h2 in zip(hists[:-1], hists[1:])):
+    #         steps = ", ".join(f"{str(h)} (dt={h.dt})" for h in hists)
+    #         raise ValueError(
+    #             f"Histories do not all have the same time step.\n{steps}")
+    #     return values
+
+    @root_validator
+    def consistent_times(cls, values):
+        time = values.get('time', None)
+        hists = (v for v in values if isinstance(v, History))
+        if time is not None:
+            for hist in hists:
+                if not time.Index.is_compatible(hist.time.Index):
+                    raise ValueError(
+                        "History and model have incompatible time indexes.\n"
+                        f"History time index: {hist.time}\n"
+                        f"Model time index: {time}")
+        return values
+
+
+    # Called by validators in model implementations
+    @classmethod
+    def check_same_shape(cls, hists):
+        if any(h1.shape != h2.shape for h1,h2 in zip(hists[:-1], hists[1:])):
+            shapes = ", ".join(f"{str(h)} (dt={h.shape})" for h in hists)
+            raise ValueError(
+                f"Histories do not all have the same time shape.\n{shapes}")
+        return None
+
+    @root_validator
+    def sanity_rng(cls, values):
+        hists = values.get('histories', None)
+        if hists is None: return values
+        for h in hists:
+            input_rng = [inp for inp in h.update_function.inputs
+                         if isinstance(inp, cgshim.typing.RNG)]
+            if len(input_rng) > 0:
+                Model.output_rng(h, input_rng)
+        return values
+
+    @staticmethod
+    def output_rng(outputs, rngs):
+        """
+        Check that all required random number generators (rngs) are specified.
+        This function is just a sanity check: it only ensures that the RNGs
+        are not None, if any of the outputs are uncomputed.
+
+        Parameters
+        ----------
+        outputs: History
+            Can also be a list of Histories
+        rngs: random stream, or list of random streams
+            The random stream(s) required to generate the histories in
+            `outputs`
+
+        Raises
+        ------
+        ValueError:
+            If at least one RNG is `None` and at least one of the `outputs`
+            is both unlocked and not fully computed.
+
+        Warnings
+        -------
+        UserWarning:
+            If all histories are already computed but an RNG is specified,
+            since in this case the RNG is not used.
+        """
+        if isinstance(outputs, History):
+            outputs = [outputs]
+        else:
+            assert(all(isinstance(output, History) for output in outputs))
+        try:
+            len(rngs)
+        except TypeError:
+            rngs = [rngs]
+
+        # if any( not shim.isshared(outhist._sym_data) for outhist in outputs ):
+        #     # Bypass test for Theano data
+        #     return
+
+        unlocked_hists = [h for h in outputs if not h.locked]
+        hists_with_missing_rng = []
+        hists_with_useless_rng = []
+        for h in outputs:
+            hinputs = h.update_function.inputs
+            if not h.locked and h.cur_tidx < h.tnidx:
+                missing_inputs = ", ".join(
+                    nm for nm, inp in zip(
+                        h.update_function.input_names, hinputs)
+                    if inp is None)
+                if len(missing_inputs) > 0:
+                    hists_with_missing_rng.append(f"{h.name}: {missing_inputs}")
+            else:
+                useless_rng = ", ".join(
+                    nm for nm, inp in zip(
+                        h.update_function.input_names, hinputs)
+                    if inp is shim.config.RNGTypes)
+                if len(useless_rng) > 0:
+                    hists_with_useless_rng.append(f"{h.name}: {useless_rng}")
+        if len(hists_with_missing_rng):
+            missing = "\n".join(hists_with_missing_rng)
+            raise ValueError(
+                "The following histories are missing the following inputs:\n"
+                + missing)
+        if len(hists_with_useless_rng):
+            useless = "\n".join(hists_with_missing_rng)
+            warn("The random inputs to the following histories will be "
+                 "ignored, since the histories are already computed:\n"
+                 "(hist name: random input)\n" + useless)
+
+    # TODO: Some redundancy here, and we could probably store the
+    # hist & kernel lists after object creation – just ensure this is
+    # also done after copy() and parse_obj()
+    # FIXME: what to do with histories which aren't part of model (e.g.
+    #        returned from an operation between hists) ?
+    @property
+    def histories(self):
+        return {nm: getattr(self, nm) for nm in self._hist_identifiers}
+    @property
+    def history_set(self):
+        return {getattr(self, nm) for nm in self._hist_identifiers}
+    @property
+    def kernels(self):
+        return {nm: getattr(self, nm) for nm in self._kernel_identifiers}
+    @property
+    def kernel_list(self):
+        return [getattr(self, nm) for nm in self._kernel_identifiers]
+
+    @property
+    def t0(self):
+        return self.time.t0
+    @property
+    def tn(self):
+        return self.time.tn
+    @property
+    def t0idx(self):
+        return self.time.t0idx
+    @property
+    def tnidx(self):
+        return self.time.tnidx
+    @property
+    def tidx_dtype(self):
+        return self.time.Index.dtype
+    @property
+    def dt(self):
+        return self.time.dt
 
     def __getattribute__(self, attr):
         """
@@ -380,9 +930,11 @@ class Model(com.ParameterMixin):
         """
         # Use __getattribute__ to maintain current stack trace on exceptions
         # https://stackoverflow.com/q/36575068
-        if (attr != 'params' and hasattr(self, 'params')
-            and isinstance(self.params, Iterable)
-            and attr in self.params._fields):
+        # if (attr != 'params'
+        #     and attr in self.params.__fields__):
+        if (attr != 'params'              # Prevent infinite recursion
+            # and attr not in self.__dict__ # Prevent shadowing
+            and hasattr(self, 'params') and attr in self.params.__fields__):
             # Return either a PyMC3 prior (if in PyMC3 context) or shared var
             # Using sys.get() avoids the need to load pymc3 if it isn't already
             pymc3 = sys.modules.get('pymc3', None)
@@ -402,34 +954,35 @@ class Model(com.ParameterMixin):
         else:
             return super().__getattribute__(attr)
 
-    def set_reference_history(self, reference_history):
-        if (reference_history is not None
-            and getattr(self, '_refhist', None) is not None):
-            raise RuntimeError("Reference history for this model is already set.")
-        self._refhist = reference_history
+    # def set_reference_history(self, reference_history):
+    #     if (reference_history is not None
+    #         and getattr(self, '_refhist', None) is not None):
+    #         raise RuntimeError("Reference history for this model is already set.")
+    #     self._refhist = reference_history
 
     # Pickling infrastructure
     # Reference: https://docs.python.org/3/library/pickle.html#pickle-state
     def __getstate__(self):
-        # Clear the nonstate histories: by definition these aren't necessary
-        # to recover the state, but they could store huge intermediate date.
-        # Pickling only stores history data up to their `cur_tidx`, so by
-        # clearing them we store no data at all.
-        state = self.__dict__.copy()
-        for attr, val in state.items():
-            if val in self.nonstatehists:
-                # TODO: Find way to store an empty history without clearing
-                #       the one in memory. The following would work if it
-                #       didn't break all references in update functions.
-                # state[attr] = val.copy_empty()
-                val.clear()
-        return state
+        raise NotImplementedError
+        # # Clear the nonstate histories: by definition these aren't necessary
+        # # to recover the state, but they could store huge intermediate date.
+        # # Pickling only stores history data up to their `cur_tidx`, so by
+        # # clearing them we store no data at all.
+        # state = self.__dict__.copy()
+        # for attr, val in state.items():
+        #     if val in self.nonstatehists:
+        #         # TODO: Find way to store an empty history without clearing
+        #         #       the one in memory. The following would work if it
+        #         #       didn't break all references in update functions.
+        #         # state[attr] = val.copy_empty()
+        #         val.clear()
+        # return state
 
     @property
     def statehists(self):
         return utils.FixedGenerator(
-            (getattr(self, varname) for varname in self.State._fields),
-            len(self.State._fields) )
+            (getattr(self, varname) for varname in self.State.__annotations__),
+            len(self.State.__annotations__) )
 
     @property
     def unlocked_statehists(self):
@@ -455,75 +1008,54 @@ class Model(com.ParameterMixin):
         return (h for h in self.nonstatehists if not h.locked)
 
     @property
-    def t0(self):
-        return getattr(self._refhist, 't0', self._t0)
-
-    @property
-    def tn(self):
-        return getattr(self._refhist, 'tn', self._tn)
-
-    @property
-    def t0idx(self):
-        return 0
-        #return self._refhist.t0idx
-
-    @property
-    def tnidx(self):
-        return self._refhist.tnidx - self._refhist.t0idx + self.t0idx
-
-    @property
-    def tidx_dtype(self):
-        if self._refhist is not None:
-            return self._refhist.tidx_dtype
-        else:
-            tarr_len = int((self.tn - self.t0) / self.dt)
-            return np.min_scalar_type(-2*tarr_len)
-                # Leave enough space in time indices to double the time array
-                # Using a negative value forces the type to be 'int' and not
-                # 'uint', which we need to store -1
-
-    @property
-    def dt(self):
-        return getattr(self._refhist, 'dt', self._dt)
+    def rng_inputs(self):
+        all_input_names = set().union(*(set(h.update_function.input_names)
+                                        for h in self.unlocked_histories))
+        all_inputs = [getattr(self, nm) for nm in all_input_names]
+        return [inp for inp in all_inputs
+                if isinstance(inp, shim.config.RNGTypes)]
 
     @property
     def cur_tidx(self):
-        if self._refhist is not None:
-            return self._refhist._cur_tidx - self._refhist.t0idx + self.t0idx
-        else:
-            raise AttributeError("Reference history for this model is not set.")
+        """
+        Return the earliest time index for which all histories are computed.
+        """
+        return min(h.cur_tidx.convert(self.time.Index)
+                   for h in self.statehists)
 
     @property
-    def pymc(self, **kwargs):
+    def _num_tidx(self):
+        if not self.histories_are_synchronized():
+            raise RuntimeError(
+                f"Histories for the {type(self).__name__}) are not all "
+                "computed up to the same point. The compilation of the "
+                "model's integration function is ill-defined in this case.")
+        return shim.shared(np.array(self.cur_tidx, dtype=self.tidx_dtype),
+                           f"t_idx ({type(self).__name__})")
+
+    def histories_are_synchronized(self):
         """
-        The first access should be done as `model.pymc()` to instantiate the
-        model. Subsequent access, which retrieves the already instantiated
-        model, should use `model.pymc`.
+        Return True if all unlocked state hists are computed to the same time
+        point, and all locked histories at least up to that point.
         """
-        if getattr(self, '_pymc', None) is None:
-            # Don't require that PyMC3 be installed unless we need it
-            import sinn.models.pymc3
-            # Store kwargs so we can throw a warning if they change
-            self._pymc_kwargs = copy.deepcopy(kwargs)
-            # PyMC3ModelWrapper assigns the PyMC3 model to `self._pymc`
-            return sinn.models.pymc3.PyMC3ModelWrapper(self, **kwargs)
+        tidcs = [h.cur_tidx.convert(self.time.Index)
+                 for h in self.unlocked_statehists]
+        locked_tidcs = [h.cur_tidx.convert(self.time.Index)
+                        for h in self.locked_statehists]
+        earliest = min(tidcs)
+        latest = max(tidcs)
+        if earliest != latest:
+            return False
+        elif any(ti < earliest for ti in locked_tidcs):
+            return False
         else:
-            for key, val in kwargs.items():
-                if key not in self._pymc_kwargs:
-                    logger.warning(
-                        "Keyword parameter '{}' was not used when creating the "
-                        "model and will be ignored".format(key))
-                elif self._pymc_kwargs[key] != value:
-                    logger.warning(
-                        "Keyword parameter '{}' had a different value ({}) "
-                        "when creating the model.".format(key, value))
-        return self._pymc
+            return True
 
     @class_or_instance_method
     def summarize(self, hists=None):
         if isinstance(self, type):
             nameline = "Model '{}'".format(self.__name__)
-            paramline = "Parameters: " + ', '.join(self.Parameters._fields)
+            paramline = "Parameters: " + ', '.join(self.Parameters.__annotations__)
         else:
             assert isinstance(self, Model)
             name = getattr(self, '__name__', type(self).__name__)
@@ -531,57 +1063,63 @@ class Model(com.ParameterMixin):
                 .format(name, self.t0, self.tn, self.dt)
             paramline = str(self.params)
         nameline += '\n' + '-'*len(nameline)  # Add separating line under name
-        stateline = "State variables: " + ', '.join(self.State._fields)
+        stateline = "State variables: " + ', '.join(self.State.__annotations__)
         return (nameline + '\n' + stateline + '\n' + paramline + '\n\n'
                 + self.update_summary(hists))
 
     @class_or_instance_method
     def update_summary(self, hists=None):
         """
-        Return a string summarizes the update function. By default, returns those of `self.state`.
+        Return a string summarizing the update function. By default, returns those of `self.state`.
         May be called on the class itself, or an instance.
-        When called on the class without arguments or with history names, relies on the following
-        naming convention to find update functions: `[hist name]_fn`.
 
         Parameters
         ----------
-        hists: list|tuple of histories|functions|str
+        hists: list|tuple of histories|str
             List of histories for which to print the update.
             For each history given, retrieves its update function.
-            Alternatively, a history's name can be given as a string,
-            its update functions can be passed directly.
+            Alternatively, a history's name can be given as a string
         """
         # Default for when `hists=None`
         if hists is None:
-            if isinstance(self, Model):
-                # Just grab the histories from self.statehists
-                # Converted to functions below
-                hists = self.statehists
-            else:
-                # Rely on naming convention to find update function
-                hists = self.State._fields
+            hists = list(self.State.__annotations__.keys())
+        # Normalize to all strings
+        names = [h.name if isinstance(h, History) else h for h in hists]
+        if not all(isinstance(h, str) for h in hists):
+            raise ValueError(
+                "`hists` must be a list of histories or history names.")
+        funcs = [self._pending_update_functions[h] for h in statehists]
 
-        # Create list of update functions and their corresponding names
-        hists = list(hists)
-        funcs = []
-        names = []
-        for i, hist in enumerate(hists):
-            if isinstance(hist, sinn.histories.History):
-                funcs.append(hist._update_function_dict['func'])
-                names.append(hist.name)
-            elif isinstance(hist, str):
-                try:
-                    fn = getattr(self, hist + '_fn')
-                except AttributeError:
-                    raise AttributeError("Unable to find update function for `{}`. "
-                                         "Naming convention expects it to be `{}`."
-                                         .format(hist, hist + '_fn'))
-                funcs.append(fn)
-                names.append(hist)
-            else:
-                assert isintance(hist, Callable)
-                funcs.append(hist)
-                names.append(None)
+        # if hists is None:
+        #     if isinstance(self, Model):
+        #         # Just grab the histories from self.statehists
+        #         # Converted to functions below
+        #         hists = self.statehists
+        #     else:
+        #         # Get the hist names from the State class
+        #         hists = self.State.__annotations__.keys()
+        #
+        # # Create list of update functions and their corresponding names
+        # hists = list(hists)
+        # funcs = []
+        # names = []
+        # for i, hist in enumerate(hists):
+        #     if isinstance(hist, History):
+        #         funcs.append(hist._update_function_dict['func'])
+        #         names.append(hist.name)
+        #     elif isinstance(hist, str):
+        #         try:
+        #             fn = getattr(self, hist + '_fn')
+        #         except AttributeError:
+        #             raise AttributeError("Unable to find update function for `{}`. "
+        #                                  "Naming convention expects it to be `{}`."
+        #                                  .format(hist, hist + '_fn'))
+        #         funcs.append(fn)
+        #         names.append(hist)
+        #     else:
+        #         assert isintance(hist, Callable)
+        #         funcs.append(hist)
+        #         names.append(None)
 
         # For each function, retrieve its source
         srcs = []
@@ -602,175 +1140,156 @@ class Model(com.ParameterMixin):
         return '\n\n'.join(srcs)
 
     def get_tidx(self, t, allow_rounding=False):
-        """
-        Returns the time index corresponding to t, with 0 corresponding to t0.
-        """
-        if self._refhist is not None:
-            if shim.istype(t, 'int'):
-                return t
-            else:
-                return self._refhist.get_tidx(t, allow_rounding) - self._refhist.t0idx + self.t0idx
+        # Copied from History.get_tidx
+        if self.time.is_compatible_value(t):
+            return self.time.index(t, allow_rounding=allow_rounding)
         else:
-            raise AttributeError("The reference history for this model was not set.")
-    get_t_idx = get_tidx
+            assert self.time.is_compatible_index(t)
+            return self.time.Index(t)
+        # if self._refhist is not None:
+        #     if shim.istype(t, 'int'):
+        #         return t
+        #     else:
+        #         return self._refhist.get_tidx(t, allow_rounding) - self._refhist.t0idx + self.t0idx
+        # else:
+        #     raise AttributeError("The reference history for this model was not set.")
+    get_tidx.__doc__ = History.get_tidx.__doc__
 
     def get_tidx_for(self, t, target_hist, allow_fractional=False):
-        if self._refhist is not None:
-            ref_tidx = self.get_tidx(t) - self.t0idx + self._refhist.t0idx
-            return self._refhist.get_tidx_for(
-                ref_tidx, target_hist, allow_fractional=allow_fractional)
-        else:
-            raise AttributeError("Reference history for this model is not set.")
+        raise DeprecationWarning("Use the `convert` method attached to the AxisIndex.")
+        # if self._refhist is not None:
+        #     ref_tidx = self.get_tidx(t) - self.t0idx + self._refhist.t0idx
+        #     return self._refhist.get_tidx_for(
+        #         ref_tidx, target_hist, allow_fractional=allow_fractional)
+        # else:
+        #     raise AttributeError("Reference history for this model is not set.")
 
     def index_interval(self, Δt, allow_rounding=False):
-        if self._refhist is not None:
-            return self._refhist.index_interval(Δt, allow_rounding)
-        else:
-            raise AttributeError("The reference history for this model was not set.")
+        return self.time.index_interval(value, value2,
+                                        allow_rounding=allow_rounding,
+                                        cast=cast)
+        # if self._refhist is not None:
+        #     return self._refhist.index_interval(Δt, allow_rounding)
+        # else:
+        #     raise AttributeError("The reference history for this model was not set.")
+    index_interval.__doc__ = TimeAxis.index_interval.__doc__
 
     def get_time(self, t):
-        if self._refhist is not None:
-            if shim.istype(t, 'float'):
-                return t
-            else:
-                assert(shim.istype(t, 'int'))
-                tidx = t - self.t0idx + self._refhist.t0idx
-                return self._refhist.get_time(tidx)
+        # Copied from History
+        # TODO: Is it OK to enforce single precision ?
+        if self.time.is_compatible_index(t):
+            return self.time[t]
         else:
-            raise AttributeError("The reference history for this model was not set.")
+            assert self.time.is_compatible_value(t)
+            # `t` is already a time value -> just return it
+            return t
 
-    # Simple consistency check functions
-    @staticmethod
-    def same_shape(*args):
-        assert(all(arg1.shape == arg2.shape for arg1, arg2 in zip(args[:-1], args[1:])))
-    @staticmethod
-    def same_dt(*args):
-        assert(all(sinn.isclose(arg1.dt, arg2.dt) for arg1, arg2 in zip(args[:-1], args[1:])))
-    @staticmethod
-    def output_rng(outputs, rngs):
+        # if self._refhist is not None:
+        #     if shim.istype(t, 'float'):
+        #         return t
+        #     else:
+        #         assert(shim.istype(t, 'int'))
+        #         tidx = t - self.t0idx + self._refhist.t0idx
+        #         return self._refhist.get_time(tidx)
+        # else:
+        #     raise AttributeError("The reference history for this model was not set.")
+    get_time.__doc__ = History.get_time.__doc__
+
+    def eval(self, max_cost :Optional[int]=None, if_too_costly :str='raise'):
         """
         Parameters
         ----------
-        outputs: History
-            Can also be a list of Histories
-        rngs: random stream, or list of random streams
-            The random stream(s) required to generate the histories in
-            `outputs`
-        """
-        if isinstance(outputs, sinn.histories.History):
-            outputs = [outputs]
-        else:
-            assert(all(isinstance(output, sinn.histories.History) for output in outputs))
-        try:
-            len(rngs)
-        except TypeError:
-            rngs = [rngs]
+        max_cost: int | None (default: None)
+            Passed on to :func:`theano_shim.graph.eval`. This is a heuristic
+            to guard againts accidentally expensive function compilations.
+            Value corresponds to the maximum number of nodes in the
+            computational graph. With ``None``, any graph is evaluated.
+            The cost is evaluated per history.
 
-        if any( not shim.isshared(outhist._data) for outhist in outputs ):
-            # Bypass test for Theano data
-            return
+        if_too_costly: 'raise' | 'ignore'
+            Passed on to :func:`theano_shim.graph.eval`.
+            What to do if `max_cost` is exceeded.
 
-        if ( any( outhist._cur_tidx.get_value() < len(outhist) - 1 for outhist in outputs )
-             and any( rng is None for rng in rngs)
-             and not all( outhist.locked for outhist in outputs ) ) :
-            raise ValueError("Cannot generate {} without the required random number generator(s).".format(str([outhist.name for outhist in outputs])))
-        elif ( all( outhist._cur_tidx.get_value() >= len(outhist) - 1 for outhist in outputs )
-             and any( rng is not None for rng in rngs) ) :
-            logger.warning("Your random number generator(s) will be unused, "
-                           "since your data is already generated.")
-
-    def cache(self, obj):
-        """
-        Call this function on all Kernel and History objects that should be
-        saved to the disk cache.
-        This function is cheap to call: the object is only written out when
-        it's removed from program memory.
-        """
-
-        if isinstance(obj, sinn.kernels.Kernel):
-            logger.warning("Deprecated. Use add_kernel instead.")
-            self.kernel_list.append(obj)
-        else:
-            assert(isinstance(obj, sinn.histories.History))
-            logger.warning("Histories aren't written to disk. Use add_history instead")
-            self.history_inputs.add(obj)
-
-    def add_history(self, hist):
-        assert(isinstance(hist, sinn.histories.History))
-        self.history_set.add(hist)
-        if hist not in self.history_inputs:
-            self.history_inputs.add(hist)
-    def add_kernel(self, kernel):
-        assert(isinstance(kernel, sinn.kernels.Kernel))
-        if kernel not in self.kernel_list:
-            self.kernel_list.append(kernel)
-
-    def eval(self):
-        """
         Remove all symbolic dependencies by evaluating all ongoing updates.
         If the update is present in `shim`'s update dictionary, it's removed
         from there.
-        """
-        # Get the updates applied to the histories
-        tidx_updates = {h._original_tidx: (h, h._cur_tidx)
-                        for h in self.history_set
-                        if h._original_tidx is not h._cur_tidx}
-        data_updates = {h._original_data: (h, h._data)
-                        for h in self.history_set
-                        if h._original_data is not h._data}
-        updates = OrderedDict( (k, v[1])
-                               for k, v in chain(tidx_updates.items(),
-                                                 data_updates.items()) )
-        # Check that there are no dependencies
-        if not shim.graph.is_computable(updates.values()):
-            non_comp = [str(var) for var, upd in updates.items()
-                                 if not shim.graph.is_computable(upd)]
-            raise ValueError("A model can only be `eval`ed when all updates "
-                             "applied to its histories are computable.\n"
-                             "The updates to the following variables have "
-                             "symbolic dependencies: {}.".format(non_compu))
-        # Get the comp graph update dictionary
-        shimupdates = shim.get_updates()
-        for var, upd in updates.items():
-            logger.debug("Evaluating update applied to {}.".format(var))
-            if var in shimupdates:
-                if shimupdates[var] == upd:
-                    logger.debug("Removing update from CG update dictionary.")
-                    del shimupdates[var]
-                else:
-                    logger.debug("Update differs from the one in CG update "
-                                 "dictionary: leaving the latter untouched.")
-            var.set_value(shim.eval(shim.cast(upd, var.dtype)))
-        # Update the histories
-        for orig in tidx_updates.values():
-            h = orig[0]
-            h._cur_tidx = h._original_tidx
-        for orig in data_updates.values():
-            h = orig[0]
-            h._data = h._original_data
 
-        # Ensure that we actually removed updates from the update dictionary
-        assert len(shimupdates) == len(shim.get_updates())
+        Returns
+        -------
+        None
+            Updates are done in place.
+
+        **Side-effects**
+            Removes updates from :attr:`theano_shim.config.symbolic_updates`.
+
+        .. Todo:: Currently each symbolic variable is compiled and evaluated
+           separately with shim.eval(). Wouldn't it be better to compile a
+           single update function ?
+        """
+        for h in self.history_set:
+            h.eval(max_cost, if_too_costly)
+        # # Get the updates applied to the histories
+        # tidx_updates = {h._num_tidx: (h, h._sym_tidx)
+        #                 for h in self.history_set
+        #                 if h._num_tidx is not h._sym_tidx}
+        # data_updates = {h._num_data: (h, h._sym_data)
+        #                 for h in self.history_set
+        #                 if h._num_data is not h._sym_data}
+        # updates = OrderedDict( (k, v[1])
+        #                        for k, v in chain(tidx_updates.items(),
+        #                                          data_updates.items()) )
+        # # Check that there are no dependencies
+        # if not shim.graph.is_computable(updates.values()):
+        #     non_comp = [str(var) for var, upd in updates.items()
+        #                          if not shim.graph.is_computable(upd)]
+        #     raise ValueError("A model can only be `eval`ed when all updates "
+        #                      "applied to its histories are computable.\n"
+        #                      "The updates to the following variables have "
+        #                      "symbolic dependencies: {}.".format(non_compu))
+        # # Get the comp graph update dictionary
+        # shimupdates = shim.get_updates()
+        # for var, upd in updates.items():
+        #     logger.debug("Evaluating update applied to {}.".format(var))
+        #     if var in shimupdates:
+        #         if shimupdates[var] == upd:
+        #             logger.debug("Removing update from CG update dictionary.")
+        #             del shimupdates[var]
+        #         else:
+        #             logger.debug("Update differs from the one in CG update "
+        #                          "dictionary: leaving the latter untouched.")
+        #     var.set_value(shim.eval(shim.cast(upd, var.dtype)))
+        # # Update the histories
+        # for orig in tidx_updates.values():
+        #     h = orig[0]
+        #     h._sym_tidx = h._num_tidx
+        # for orig in data_updates.values():
+        #     h = orig[0]
+        #     h._sym_data = h._num_data
+        #
+        # # Ensure that we actually removed updates from the update dictionary
+        # assert len(shimupdates) == len(shim.get_updates())
 
     def theano_reset(self):
         """Put model back into a clean state, to allow building a new Theano graph."""
-        for hist in self.history_inputs:
-            if not hist.locked:
-                hist.theano_reset()
+        for hist in self.unlocked_histories:
+            hist.theano_reset()
         for kernel in self.kernel_list:
             kernel.theano_reset()
 
-        if self.rng is not None and len(self.rng.state_updates) > 0:
-            logger.warning("Erasing random number generator updates. Any "
-                           "other graphs using this generator are likely "
-                           "invalidated.\n"
-                           "RNG: {}".format(self.rng))
-            self.rng.state_updates = []
+        for rng in self.rng_inputs:
+            # FIXME: `.state_updates` is Theano-only
+            if (isinstance(rng, shim.config.SymbolicRNGType)
+                and len(self.rng.state_updates) > 0):
+                logger.warning("Erasing random number generator updates. Any "
+                               "other graphs using this generator are likely "
+                               "invalidated.\n"
+                               "RNG: {}".format(self.rng))
+            rng.state_updates = []
         #sinn.theano_reset() # theano_reset on histories will be called twice,
                             # but there's not much harm
         shim.reset_updates()
 
-    def update_params(self, new_params):
+    def update_params(self, new_params, **kwargs):
         """
         Update model parameters. Clears all histories except those whose `locked`
         attribute is True, as well as any kernel which depends on these parameters.
@@ -779,54 +1298,74 @@ class Model(com.ParameterMixin):
 
         Parameters
         ----------
-        new_params: same type as model.params | dict
-            # TODO: Allow also **kwargs
+        new_params: self.Parameters | dict
+            New parameter values.
+        **kwargs:
+            Alternative to specifying parameters with `new_params`
+            Keyword arguments take precedence over values in `new_params`.
         """
-        def gettype(param):
-            return type(param.get_value()) if shim.isshared(param) else type(param)
         if isinstance(new_params, self.Parameters):
-            assert(all( gettype(param) == gettype(new_param)
-                        for param, new_param in zip(self.params, new_params) ))
-        elif isinstance(new_params, dict):
-            assert(all( gettype(val) == gettype(getattr(self.params, name))
-                        for name, val in new_params.items() ))
-        else:
-            raise NotImplementedError
-        logger.monitor("Model params are now {}. Updating kernels...".format(self.params))
+            new_params = new_params.dict()
+        if len(kwargs) > 0:
+            new_params = {**new_params, **kwargs}
+        pending_params = self.Parameters.parse_obj(
+            {**self.params.dict(), **new_params})
+            # Calling `Parameters` validates all new parameters
+            # Wait until kernels have been cached before updating model params
 
-        # HACK Make sure sinn.inputs and models.history_inputs coincide
-        sinn.inputs.union(self.history_inputs)
-        self.history_inputs.union(sinn.inputs)
+        # We don't need to clear the advance function if all new parameters
+        # are just the same Theano objects with new values.
+        clear_advance_fn = any(id(getattr(self.params, p)) != id(newp)
+                               for p, newp in pending_params.dict().items())
+
+        # def gettype(param):
+        #     return type(param.get_value()) if shim.isshared(param) else type(param)
+        # if isinstance(new_params, self.Parameters):
+        #     assert(all( gettype(param) == gettype(new_param)
+        #                 for param, new_param in zip(self.params, new_params) ))
+        # elif isinstance(new_params, dict):
+        #     assert(all( gettype(val) == gettype(getattr(self.params, name))
+        #                 for name, val in new_params.items() ))
+        # else:
+        #     raise NotImplementedError
+
+        # # HACK Make sure sinn.inputs and models.history_inputs coincide
+        # sinn.inputs.union(self.history_inputs)
+        # self.history_inputs.union(sinn.inputs)
 
         # Determine the kernels for which parameters have changed
         kernels_to_update = []
-        if isinstance(new_params, self.Parameters):
-            for kernel in self.kernel_list:
-                if not sinn.params_are_equal(
-                        kernel.get_parameter_subset(new_params), kernel.params):
-                    # Grab the subset of the new parameters relevant to this kernel,
-                    # and compare to the kernel's current parameters. If any of
-                    # them differ, add the kernel to the list of kernels to update.
-                    kernels_to_update.append(kernel)
-        else:
-            assert(isinstance(new_params, dict))
-            for kernel in self.kernel_list:
-                if any(param_name in kernel.Parameters._fields
-                       for param_name in new_params):
-                    kernels_to_update.append(kernel)
+        for kernel in self.kernel_list:
+            if set(kernel.__fields__) & set(new_params.keys()):
+                kernels_to_update.append(kernel)
 
-        # Now update parameters. This must be done after the check above,
-        # because Theano parameters automatically propagate to the kernels.
-        sinn.set_parameters(self.params, new_params)
+        # if isinstance(new_params, self.Parameters):
+        #     for kernel in self.kernel_list:
+        #         if not sinn.params_are_equal(
+        #                 kernel.get_parameter_subset(new_params), kernel.params):
+        #             # Grab the subset of the new parameters relevant to this kernel,
+        #             # and compare to the kernel's current parameters. If any of
+        #             # them differ, add the kernel to the list of kernels to update.
+        #             kernels_to_update.append(kernel)
+        # else:
+        #     assert(isinstance(new_params, dict))
+        #     for kernel in self.kernel_list:
+        #         if any(param_name in kernel.Parameters._fields
+        #                for param_name in new_params):
+        #             kernels_to_update.append(kernel)
 
-        # Loop over the list of kernels whose parameters have changed to do
-        # two things:
-        # - Remove any cached binary op that involves this kernel.
-        #   (And write it to disk for later retrievel if these parameters
-        #    are reused.)
-        # - Update the kernel itself to the new parameters.
-        for obj in list(self.history_inputs) + self.kernel_list:
-            if obj not in kernels_to_update:
+        # # Now update parameters. This must be done after the check above,
+        # # because Theano parameters automatically propagate to the kernels.
+        # sinn.set_parameters(self.params, new_params)
+
+        # Loop over the list of kernels and do the following:
+        # - Remove any cached binary op that involves a kernel whose parameters
+        #   have changed (And write it to disk for later retrieval if these
+        #   parameters are reused.)
+        # Once this is done, go through the list of kernels to update and
+        # update them
+        for obj in self.kernel_list:
+            if obj not in kernels_to_update:  # Updated kernels cached below
                 for op in obj.cached_ops:
                     for kernel in kernels_to_update:
                         if hash(kernel) in op.cache:
@@ -838,15 +1377,18 @@ class Model(com.ParameterMixin):
 
         for kernel in kernels_to_update:
             diskcache.save(kernel)
-            logger.monitor("Updating kernel {}.".format(kernel.name))
-            kernel.update_params(self.params)
+            kernel.update_params(**pending_params.dict())
+
+        # Update self.params in place; TODO: there's likely a cleaner way
+        for nm in pending_params.__fields__:
+            setattr(self.params, getattr(pending_params, nm))
+        logger.monitor("Model params are now {}.".format(self.params))
 
         self.clear_unlocked_histories()
-        # TODO: If parameters change value but all keep their id (same shared
-        #       variable), we don't need to call `clear_advance_function`.
-        #       We should only call it when necessary, since it forces a
-        #       recompilation of the graph.
-        self.clear_advance_function()
+        if clear_advance_fn:
+            # Only clear advance functio when necessary, since it forces a
+            # recompilation of the graph.
+            self.clear_advance_function()
 
     def clear_unlocked_histories(self):
         """Clear all histories that have not been explicitly locked."""
@@ -908,35 +1450,35 @@ class Model(com.ParameterMixin):
                                      "op {}. This may indicate a memory leak."
                                      .format(history.name, str(op)))
 
-    def remove_other_histories(self):
-        """HACK: Remove histories from sinn.inputs that are not in this model.
-        Can remove this once we store dependencies in histories rather than in
-        sinn.inputs."""
-        histnames = [h.name for h in self.history_set]
-        dellist = []
-        for h in sinn.inputs:
-            if h.name not in histnames:
-                dellist.append(h)
-        for h in dellist:
-            del sinn.inputs[h]
+    # def remove_other_histories(self):
+    #     """HACK: Remove histories from sinn.inputs that are not in this model.
+    #     Can remove this once we store dependencies in histories rather than in
+    #     sinn.inputs."""
+    #     histnames = [h.name for h in self.history_set]
+    #     dellist = []
+    #     for h in sinn.inputs:
+    #         if h.name not in histnames:
+    #             dellist.append(h)
+    #     for h in dellist:
+    #         del sinn.inputs[h]
 
     def apply_updates(self, update_dict):
         """
         Theano functions which produce updates (like scan) naturally will not
         update the history data structures. This method applies those updates
-        by replacing the internal _data and _cur_tidx attributes of the history
+        by replacing the internal _sym_data and _sym_tidx attributes of the history
         with the symbolic expression of the updates, allowing histories to be
         used in subsequent calculations.
         """
         # Update the history data
         for history in self.history_set:
-            if history._original_tidx in update_dict:
-                assert(history._original_data in update_dict)
-                    # If you are changing tidx, then surely you must change _data as well
-                history._cur_tidx = update_dict[history._original_tidx]
-                history._data = update_dict[history._original_data]
-            elif history._original_data in update_dict:
-                history._data = update_dict[history._original_data]
+            if history._num_tidx in update_dict:
+                assert(history._num_data in update_dict)
+                    # If you are changing tidx, then surely you must change _sym_data as well
+                object.__setattr__(history, '_sym_tidx', update_dict[history._num_tidx])
+                object.__setattr__(history, '_sym_data', update_dict[history._num_data])
+            elif history._num_data in update_dict:
+                object.__setattr__(history, '_sym_data', update_dict[history._num_data])
 
         # Update the shim update dictionary
         shim.add_updates(update_dict)
@@ -944,8 +1486,8 @@ class Model(com.ParameterMixin):
     def eval_updates(self, givens=None):
         """
         Compile and evaluate a function evaluating the `shim` update
-        dictionary. Histories' internal _data and _cur_tidx are reset
-        to be equal to _original_tidx and _original_data.
+        dictionary. Histories' internal _sym_data and _sym_tidx are reset
+        to be equal to _num_tidx and _num_data.
         If the updates have symbolic inputs, provide values for them through
         the `givens` argument.
         If there are no updates, no function is compiled, so you can use this
@@ -957,137 +1499,56 @@ class Model(com.ParameterMixin):
             f = shim.graph.compile([], [], updates=upds, givens=givens)
             f()
             for h in self.history_set:
-                if h._cur_tidx != h._original_tidx:
-                    h._cur_tidx = h._original_tidx
-                if h._data != h._original_data:
-                    h._data = h._original_data
+                if h._sym_tidx != h._num_tidx:
+                    h._sym_tidx = h._num_tidx
+                if h._sym_data != h._num_data:
+                    h._sym_data = h._num_data
 
-    def get_loglikelihood(self, *args, **kwargs):
-
-        # Sanity check – it's easy to forget to clear histories in an interactive session
-        uncleared_histories = []
-        # HACK Shouldn't need to combine sinn.inputs
-        # TODO Make separate function, so that it can be called within loglikelihood instead
-        for hist in self.history_inputs.union(sinn.inputs):
-            if ( not hist.locked and ( ( hist.use_theano and hist.compiled_history is not None
-                                         and hist.compiled_history._cur_tidx.get_value() >= hist.t0idx )
-                                       or (not hist.use_theano and hist._cur_tidx.get_value() >= hist.t0idx) ) ):
-                uncleared_histories.append(hist)
-        if len(uncleared_histories) > 0:
-            raise RuntimeError("You are trying to produce a cost function graph, but have "
-                               "uncleared histories. Either lock them (with their .lock() "
-                               "method) or clear them (with their individual .clear() method "
-                               "or the model's .clear_unlocked_histories() method). The latter "
-                               "will delete data.\nUncleared histories: "
-                               + str([hist.name for hist in uncleared_histories]))
-
-        if sinn.config.use_theano():
-            # TODO Precompile function
-            def likelihood_f(model):
-                if 'loglikelihood' not in self.compiled:
-                    self.theano()
-                        # Make clean slate (in particular, clear the list of inputs)
-                    logL = model.loglikelihood(*args, **kwargs)
-                        # Calling logL sets the sinn.inputs, which we need
-                        # before calling get_input_list
-                    # DEBUG
-                    # with open("logL_graph", 'w') as f:
-                    #     theano.printing.debugprint(logL, file=f)
-                    input_list, input_vals = self.get_input_list()
-                    self.compiled['loglikelihood'] = {
-                        'function': theano.function(input_list, logL,
-                                                    on_unused_input='warn'),
-                        'inputs'  : input_vals }
-                    self.theano_reset()
-
-                return self.compiled['loglikelihood']['function'](
-                    *self.compiled['loglikelihood']['inputs'] )
-                    # * is there to expand the list of inputs
-        else:
-            def likelihood_f(model):
-                return model.loglikelihood(*args, **kwargs)
-        return likelihood_f
-
-    def make_binomial_loglikelihood(self, n, N, p, approx=None):
-        """
-        Parameters
-        ----------
-        n: History
-            Number of successful samples
-        N: array of ints:
-            Total number of samples.
-            Must have n.shape == N.shape
-        p: History
-            Probability of success; first dimension is time.
-            Must have n.shape == p.shape and len(n) == len(p).
-        approx: str
-            (Optional) If specified, one of:
-            - 'low p': The probability is always very low; the Stirling approximation
-              is used for the contribution from (1-p) to ensure numerical stability
-            - 'high p': The probability is always very high; the Stirling approximation
-              is used for the contribution from (p) to ensure numerical stability
-            - 'Stirling': Use the Stirling approximation for both the contribution from
-              (p) and (1-p) to ensure numerical stability.
-            - 'low n' or `None`: Don't use any approximation. Make sure `n` is really low
-              (n < 20) to avoid numerical issues.
-        """
-
-        def loglikelihood(start=None, stop=None):
-
-            hist_type_msg = ("To compute the loglikelihood, you need to use a NumPy "
-                             "history for the {}, or compile the history beforehand.")
-            if n.use_theano:
-                if n.compiled_history is None:
-                    raise RuntimeError(hist_type_msg.format("events"))
-                else:
-                    nhist = n.compiled_history
-            else:
-                nhist = n
-
-            phist = p
-            # We deliberately use times here (instead of indices) for start/
-            # stop so that they remain consistent across different histories
-            if start is None:
-                start = nhist.t0
-            else:
-                start = nhist.get_time(start)
-            if stop is None:
-                stop = nhist.tn
-            else:
-                stop = nhist.get_time(stop)
-
-            n_arr_floats = nhist[start:stop]
-            p_arr = phist[start:stop]
-
-            # FIXME: This would break the Theano graph, no ?
-            if shim.isshared(n_arr_floats):
-                n_arr_floats = n_arr_floats.get_value()
-            if shim.isshared(p_arr):
-                p_arr = p_arr.get_value()
-
-            p_arr = sinn.clip_probabilities(p_arr)
-
-            if not shim.is_theano_object(n_arr_floats):
-                assert(sinn.ismultiple(n_arr_floats, 1).all())
-            n_arr = shim.cast(n_arr_floats, 'int32')
-
-            #loglikelihood: -log n! - log (N-n)! + n log p + (N-n) log (1-p) + cst
-
-            if approx == 'low p':
-                # We use the Stirling approximation for the second log
-                l = shim.sum( -shim.log(shim.factorial(n_arr, exact=False))
-                              -(N-n_arr)*shim.log(N - n_arr) + N-n_arr + n_arr*shim.log(p_arr)
-                              + (N-n_arr)*shim.log(1-p_arr) )
-                    # with exact=True, factorial is computed only once for whole array
-                    # but n_arr must not contain any elements greater than 20, as
-                    # 21! > int64 (NumPy is then forced to cast to 'object', which
-                    # does not play nice with numerical ops)
-            else:
-                raise NotImplementedError
-
-            return l
-
-        return loglikelihood
+    # def get_loglikelihood(self, *args, **kwargs):
+    #
+    #     # Sanity check – it's easy to forget to clear histories in an interactive session
+    #     uncleared_histories = []
+    #     # HACK Shouldn't need to combine sinn.inputs
+    #     # TODO Make separate function, so that it can be called within loglikelihood instead
+    #     for hist in self.history_inputs.union(sinn.inputs):
+    #         if ( not hist.locked and ( ( hist.use_theano and hist.compiled_history is not None
+    #                                      and hist.compiled_history._sym_tidx.get_value() >= hist.t0idx )
+    #                                    or (not hist.use_theano and hist._sym_tidx.get_value() >= hist.t0idx) ) ):
+    #             uncleared_histories.append(hist)
+    #     if len(uncleared_histories) > 0:
+    #         raise RuntimeError("You are trying to produce a cost function graph, but have "
+    #                            "uncleared histories. Either lock them (with their .lock() "
+    #                            "method) or clear them (with their individual .clear() method "
+    #                            "or the model's .clear_unlocked_histories() method). The latter "
+    #                            "will delete data.\nUncleared histories: "
+    #                            + str([hist.name for hist in uncleared_histories]))
+    #
+    #     if sinn.config.use_theano():
+    #         # TODO Precompile function
+    #         def likelihood_f(model):
+    #             if 'loglikelihood' not in self.compiled:
+    #                 self.theano()
+    #                     # Make clean slate (in particular, clear the list of inputs)
+    #                 logL = model.loglikelihood(*args, **kwargs)
+    #                     # Calling logL sets the sinn.inputs, which we need
+    #                     # before calling get_input_list
+    #                 # DEBUG
+    #                 # with open("logL_graph", 'w') as f:
+    #                 #     theano.printing.debugprint(logL, file=f)
+    #                 input_list, input_vals = self.get_input_list()
+    #                 self.compiled['loglikelihood'] = {
+    #                     'function': theano.function(input_list, logL,
+    #                                                 on_unused_input='warn'),
+    #                     'inputs'  : input_vals }
+    #                 self.theano_reset()
+    #
+    #             return self.compiled['loglikelihood']['function'](
+    #                 *self.compiled['loglikelihood']['inputs'] )
+    #                 # * is there to expand the list of inputs
+    #     else:
+    #         def likelihood_f(model):
+    #             return model.loglikelihood(*args, **kwargs)
+    #     return likelihood_f
 
     # ==============================================
     # Model advancing code
@@ -1124,11 +1585,11 @@ class Model(com.ParameterMixin):
 
     def advance(self, stop):
         """
-        Advance (aka integrate) a model.
+        Advance (i.e. integrate) a model.
         For a non-symbolic model the usual recursion is used – it's the
         same as calling `hist[stop]` on each history in the model.
         For a symbolic model, the function constructs the symbolic update
-        function, compiles it, and than evaluates it with `stop` as argument.
+        function, compiles it, and then evaluates it with `stop` as argument.
         The update function is compiled only once, so subsequent calls to
         `advance` are much faster and benefit from the acceleration of running
         on compiled code.
@@ -1148,25 +1609,23 @@ class Model(com.ParameterMixin):
         # Make sure we don't go beyond given data
         for hist in self.history_set:
             if hist.locked:
-                tnidx = hist._original_tidx.get_value()
-                if tnidx < stoptidx - self.t0idx + hist.t0idx:
+                tnidx = hist._num_tidx.get_value()
+                if tnidx < stoptidx.convert(hist.time):
+                    stoptidx = tnidx.convert(self.time)
                     logger.warning("Locked history '{}' is only provided "
                                    "up to t={}. Output will be truncated."
-                                   .format(hist.name, hist.get_time(tnidx)))
-                    stoptidx = tnidx - hist.t0idx + self.t0idx
+                                   .format(hist.name, self.get_time(stoptidx)))
 
         if not shim.config.use_theano:
-            self._refhist[stoptidx - self.t0idx + self._refhist.t0idx]
-            # We want to compute the whole model up to stoptidx, not just what is required for refhist
             for hist in self.statehists:
-                hist.compute_up_to(stoptidx - self.t0idx + hist.t0idx)
+                hist._compute_up_to(stoptidx.convert(hist.time))
 
         else:
-            if not shim.graph.is_computable([hist._cur_tidx
-                                       for hist in self.statehists]):
+            if not shim.graph.is_computable(
+                [hist._sym_tidx for hist in self.statehists]):
                 raise TypeError("Advancing models is only implemented for "
                                 "histories with a computable current time "
-                                "index (i.e. the value of `hist._cur_tidx` "
+                                "index (i.e. the value of `hist._sym_tidx` "
                                 "must only depend on symbolic constants and "
                                 "shared vars).")
             # try:
@@ -1178,8 +1637,9 @@ class Model(com.ParameterMixin):
             #         "evaluate them with `eval_updates` (providing values "
             #         "with the `givens` argument) before advancing the model."
             #         .format(shim.graph.inputs(shim.get_updates().values())))
-            curtidx = min( shim.graph.eval(hist._cur_tidx, max_cost=50)
-                           - hist.t0idx + self.t0idx
+            curtidx = min( hist.time.Index(
+                               shim.graph.eval(hist._sym_tidx, max_cost=50)
+                           ).convert(self.time)
                            for hist in self.statehists )
             assert(curtidx >= -1)
 
@@ -1194,9 +1654,11 @@ class Model(com.ParameterMixin):
         """
         Return `True` if none of the model's histories have unevaluated
         symbolic updates.
+
+        Deprecated ? Should be replaceable by `theano_shim.pending_updates()`.
         """
-        no_updates = all(h._cur_tidx is h._original_tidx
-                         and h._data is h._original_data
+        no_updates = all(h._sym_tidx is h._num_tidx
+                         and h._sym_data is h._num_data
                          for h in self.history_set)
         if no_updates and len(shim.get_updates()) > 0:
             raise RuntimeError(
@@ -1204,9 +1666,9 @@ class Model(com.ParameterMixin):
                 " (`shim.get_updates()`) but none of the model's histories "
                 "has a symbolic update.")
         elif not no_updates and len(shim.get_updates()) == 0:
-            hlist = {h.name: (h._cur_tidx, h._data) for h in self.history_set
-                     if h._cur_tidx is not h._original_tidx
-                        and h._data is not h._original_data}
+            hlist = {h.name: (h._sym_tidx, h._sym_data) for h in self.history_set
+                     if h._sym_tidx is not h._num_tidx
+                        and h._sym_data is not h._num_data}
             raise RuntimeError(
                 "Unconsistent state: some histories have a symbolic update "
                 "({}), but there are none in the update dictionary "
@@ -1219,14 +1681,15 @@ class Model(com.ParameterMixin):
         Attribute which caches the compilation of the advance function.
         """
         if not hasattr(self, '_advance_updates'):
-            self._advance_updates = self.get_advance_updates()
+            object.__setattr__(self, '_advance_updates',
+                               self.get_advance_updates())
             # DEBUG
             # for i, s in enumerate(['base', 'value', 'start', 'stop']):
-            #     self._advance_updates[self.V._original_data].owner.inputs[i] = \
-            #         shim.print(self._advance_updates[self.V._original_data]
+            #     self._advance_updates[self.V._num_data].owner.inputs[i] = \
+            #         shim.print(self._advance_updates[self.V._num_data]
             #                    .owner.inputs[i], s + ' V')
-            #     self._advance_updates[self.n._original_data].owner.inputs[i] = \
-            #         shim.print(self._advance_updates[self.n._original_data]
+            #     self._advance_updates[self.n._num_data].owner.inputs[i] = \
+            #         shim.print(self._advance_updates[self.n._num_data]
             #                    .owner.inputs[i], s + ' n')
         if self.no_updates:
             if not hasattr(self, '_advance_fn'):
@@ -1255,14 +1718,23 @@ class Model(com.ParameterMixin):
         any dependencies from the current state, such as symbolic/transformed
         initial conditions.
         """
+        cur_tidx = self.cur_tidx
         if not hasattr(self, '_curtidx_var'):
-            self._curtidx_var = shim.getT().scalar('curtidx (model)',
-                                              dtype=self.tidx_dtype)
-            self._curtidx_var.tag.test_value = 1
+            object.__setattr__(self, '_curtidx_var',
+                               shim.tensor(np.array(1, dtype=scs.tidx_dtype),
+                                           name='curtidx (model)'))
+            #                   shim.shared(np.array(cur_tidx+1, dtype=self.tidx_dtype)))
+                                # shim.getT().scalar('curtidx (model)',
+                                #                    dtype=self.tidx_dtype))
+            # self._curtidx_var.tag.test_value = 1
         if not hasattr(self, '_stoptidx_var'):
-            self._stoptidx_var = shim.getT().scalar('stoptidx (model)',
-                                             dtype=self.tidx_dtype)
-            self._stoptidx_var.tag.test_value = 3
+            object.__setattr__(self, '_stoptidx_var',
+                               shim.tensor(np.array(3, dtype=scs.tidx_dtype),
+                                           name='curtidx (model)'))
+            #                   shim.shared(np.array(cur_tidx+3, dtype=self.tidx_dtype)))
+                                # shim.getT().scalar('stoptidx (model)',
+                                #                    dtype=self.tidx_dtype))
+            # self._stoptidx_var.tag.test_value = 3
                 # Allow model to work with compute_test_value != 'ignore'
                 # Should be at least 2 more than _curtidx, because scan runs
                 # from `_curtidx + 1` to `stoptidx`.
@@ -1279,7 +1751,7 @@ class Model(com.ParameterMixin):
         self.theano_reset()
         for h in self.statehists:
             h.stash.pop()
-        shim.config.theano_updates = updates_stash
+        shim.config.symbolic_updates = updates_stash
         logger.info("Done.")
         return updates
 
@@ -1311,7 +1783,7 @@ class Model(com.ParameterMixin):
             Compiling a function and providing this dictionary as 'updates' will return a function
             which fills in the histories up to `stoptidx`.
         """
-        self.remove_other_histories()  # HACK
+        # self.remove_other_histories()  # HACK
         # self.clear_unlocked_histories()
         # self.theano_reset()
         if not all(np.can_cast(stoptidx.dtype, hist.tidx_dtype)
@@ -1324,9 +1796,9 @@ class Model(com.ParameterMixin):
             raise NotImplementedError
         # elif len(self.statehists) == 1:
         #     hist = next(iter(self.statehists))
-        #     startidx = hist._original_tidx - hist.t0idx + self.t0idx
+        #     startidx = hist._num_tidx - hist.t0idx + self.t0idx
         # else:
-        #     startidx = shim.smallest( *( hist._original_tidx - hist.t0idx + self.t0idx
+        #     startidx = shim.smallest( *( hist._num_tidx - hist.t0idx + self.t0idx
         #                                 for hist in self.statehists ) )
         try:
             assert( shim.get_test_value(curtidx) >= -1 )
@@ -1335,13 +1807,17 @@ class Model(com.ParameterMixin):
             # Unable to find test value; just skip check
             pass
 
+        # `onestep` is the function that will be passed to `scan`.
+        # The signature is determined by Theano:
+        # first the time indices, then the output variables.
+        # We add the convention that within th output variables, nonstate
+        # histories appear before state histories.
         def onestep(tidx, *args):
             # To help with debugging, assign a name to the symbolic variables
             # created by `scan`
             unlocked_statevar_names = [s + ' (scan)'
-                                       for s, h in zip(self.State._fields,
-                                                       self.statehists)
-                                       if not h.locked]
+                                       for s, h in zip(self.State.__annotations__,
+                                                       self.unlocked_statehists)]
             unlocked_nonstate_names = [h.name + ' (scan)'
                                        for h in self.unlocked_nonstatehists]
             for x, name in zip(
@@ -1352,54 +1828,64 @@ class Model(com.ParameterMixin):
                               terminate=shim.cf._TerminatingTypes)):
                 if getattr(x, 'name', None) is None:
                     x.name = name
+            # Decompose the scan argument. Following our chosen convention,
+            # all non state variables come first.
             m = len(unlocked_nonstate_names)
             _nonstate = args[:m]
             _state = args[m:]
             assert len(_state) == len(unlocked_statevar_names)
+            # Now call the method which, starting from a symbolic current
+            # state, builds the graph for the state at the next time point.
             state_outputs, updates = self.symbolic_update(tidx, *_state)
             assert len(state_outputs) == len(list(self.unlocked_statehists))
+            # Once the state variables are updated, non-state variables
+            # should be simple derived quantities
             nonstate_outputs, nonstate_updates = self.nonstate_symbolic_update(
                 tidx, list(self.unlocked_nonstatehists),
                 _state, _nonstate, state_outputs)
             assert len(set(updates).intersection(nonstate_updates)) == 0
+            # Add the nonstate updates to the state updates
             updates.update(nonstate_updates)
+            # Cast the outputs so they are of the expected type
+            # TODO: Is this still necessary ? History already casts function results
             for i, statehist in enumerate(self.unlocked_statehists):
                 state_outputs[i] = shim.cast(state_outputs[i],
                                              statehist.dtype)
             for i, hist in enumerate(self.unlocked_nonstatehists):
                 nonstate_outputs[i] = shim.cast(nonstate_outputs[i],
                                                 hist.dtype)
+            # Finally, return all the outputs following the convention:
+            # nonstate before state outputs
             return nonstate_outputs + state_outputs, updates
             #return list(state_outputs.values()), updates
 
         outputs_info = []
         for hist in self.unlocked_nonstatehists:
-            tidx = curtidx - self.t0idx + hist.t0idx
-            outputs_info.append(sinn.upcast(hist._data[tidx],
+            tidx = hist.time.Index(curtidx).convert(hist.time)
+            outputs_info.append(sinn.upcast(hist._sym_data[tidx],
                                             to_dtype=hist.dtype,
                                             same_kind=True,
                                             disable_rounding=True))
         for hist in self.unlocked_statehists:
             # TODO: Generalize
-            maxlag = hist.t0idx
-            # maxlag = hist.index_interval(self.params.Δ.get_value())
+            maxlag = hist.pad_left.plain
             # HACK/FIXME: We should query history for its lags
             if maxlag > 1:
                 lags = [-maxlag, -1]
             else:
                 lags = [-1]
-            tidx = curtidx - self.t0idx + hist.t0idx
-            assert(maxlag <= hist.t0idx)
-                # FIXME Maybe not necessary if built into lag history
+            tidx = curtidx.convert(hist.time)
+            # assert(maxlag <= hist.t0idx)
+            #     # FIXME Maybe not necessary if built into lag history
             if len(lags) == 1:
                 assert(maxlag == 1)
-                outputs_info.append( sinn.upcast(hist._data[tidx],
+                outputs_info.append( sinn.upcast(hist._sym_data[tidx],
                                                  to_dtype=hist.dtype,
                                                  same_kind=True,
                                                  disable_rounding=True))
             else:
                 outputs_info.append(
-                    {'initial': sinn.upcast(hist._data[tidx+1-maxlag:tidx+1],
+                    {'initial': sinn.upcast(hist._sym_data[tidx+1-maxlag:tidx+1],
                                             to_dtype=hist.dtype,
                                             same_kind=True,
                                             disable_rounding=True),
@@ -1416,12 +1902,12 @@ class Model(com.ParameterMixin):
         # should we also remove the nonstate updates there instead ?
         # if len(updates) > 0:
         #     for h in self.history_set:
-        #         if h._original_data in updates:
+        #         if h._num_data in updates:
         #             assert not h.locked
-        #             del updates[h._original_data]
-        #         if h._original_tidx in updates:
+        #             del updates[h._num_data]
+        #         if h._num_tidx in updates:
         #             assert not h.locked
-        #             del updates[h._original_tidx]
+        #             del updates[h._num_tidx]
 
         m = len(list(self.unlocked_nonstatehists))
         nonstate_outputs = outputs[m:]
@@ -1452,11 +1938,11 @@ class Model(com.ParameterMixin):
         for hist, output in zip(chain(self.unlocked_nonstatehists,
                                       self.unlocked_statehists),
                                 outputs):
-            assert hist._original_data not in upds
-            valslice = slice(curtidx - self.t0idx + hist.t0idx + 1,
-                             stoptidx  - self.t0idx + hist.t0idx)
-            # odata = hist._original_data
-            # upd = shim.set_subtensor(hist._data[valslice], output)
+            assert hist._num_data not in upds
+            valslice = slice(curtidx.convert(hist.time) + 1,
+                             stoptidx.convert(hist.time))
+            # odata = hist._num_data
+            # upd = shim.set_subtensor(hist._sym_data[valslice], output)
             upd = sinn.upcast(output, to_dtype=hist.dtype,
                               same_kind=True, disable_rounding=True)
             hist.update(valslice, upd)
@@ -1464,7 +1950,7 @@ class Model(com.ParameterMixin):
         hist_upds = shim.get_updates()
         for h in self.history_set:
             h.stash.pop()
-        shim.config.theano_updates = updates_stash
+        shim.config.symbolic_updates = updates_stash
 
         # hist_upds = shim.get_updates()
         # # Ensure that all updates are of the right type
@@ -1487,7 +1973,7 @@ class Model(com.ParameterMixin):
         An error is thrown if the function suspects the output to be wrong.
         For more complicated models you can define the `symbolic_update`
         method yourself in the model's class.
-        Creating the graph is quite slow, but the result is cached, so
+        Creating the graph is quite slow, but the result is cached to disk, so
         subsequent calls don't need to recreate it.
 
         Parameters
@@ -1551,7 +2037,7 @@ class Model(com.ParameterMixin):
 
         # It doesn't really matter which time point we use, we just want the
         # t -> t+1 update. But a graph update will be created for every time
-        # point between _original_tidx and the chosen _tidx, so making it
+        # point between _num_tidx and the chosen _tidx, so making it
         # large can be really costly.
         # Can't just use self._refhist because it could filled while
         # others are empty (e.g. if it is filled with data)
@@ -1559,7 +2045,7 @@ class Model(com.ParameterMixin):
         refhist_idx =  np.argmax([h.cur_tidx - h.t0idx + self._refhist.t0idx
                                   for h in ush])
         refhist = ush[refhist_idx]
-        ref_tidx = refhist._original_tidx
+        ref_tidx = refhist._num_tidx
         tidcs = [ref_tidx - refhist.t0idx + h.t0idx
                  for h in self.unlocked_statehists]
         # tidxvals = [shim.graph.eval(ti) for ti in tidcs]
@@ -1601,13 +2087,13 @@ class Model(com.ParameterMixin):
                 # # ---------------------------
                 # # Debugging code
                 # # Update variables which still have symbolic inputs
-                # odatas = [h._original_data for h in self.statehists]
+                # odatas = [h._num_data for h in self.statehists]
                 # xvars = [(h.name, xt[0]) for h, xt in zip(self.statehists, St)
                 #          if any(y in shim.graph.variables([xt[0]])
                 #                 for y in odatas + [ref_tidx])]
                 # # The unsubstituted symbolic inputs to the above update variables
-                # ivars = [[(h.name, h._original_data) for h in self.statehists
-                #             if h._original_data in shim.graph.variables([xt])]
+                # ivars = [[(h.name, h._num_data) for h in self.statehists
+                #             if h._num_data in shim.graph.variables([xt])]
                 #          for _, xt in xvars]
                 # if len(xvars) > 0:
                 #     # Locating the first unsubstituted symbolic input in the graph
@@ -1643,12 +2129,12 @@ class Model(com.ParameterMixin):
             # the St graphs
             if len(updates) > 0:
                 for h in self.statehists:
-                    if h._original_data in updates:
+                    if h._num_data in updates:
                         assert not h.locked
-                        del updates[h._original_data]
-                    if h._original_tidx in updates:
+                        del updates[h._num_data]
+                    if h._num_tidx in updates:
                         assert not h.locked
-                        del updates[h._original_tidx]
+                        del updates[h._num_tidx]
                 subbed_updates = [self.sub_states_into_graph(
                                     upd, self.unlocked_statehists,
                                     statevars, _St, tidx, ref_tidx, refhist)
@@ -1674,7 +2160,7 @@ class Model(com.ParameterMixin):
                 assert(ref_tidx not in inputs)
                     # Still test this: if ref_tidx is shared, it's computable
                 # assert(not any(x0 in inputs for x0 in S0))
-                assert not any(h._original_data in inputs
+                assert not any(h._num_data in inputs
                                for h in self.unlocked_statehists)
                     # Symbolic update should only depend on `statevars` and `tidx`
             except AssertionError as e:
@@ -1687,7 +2173,7 @@ class Model(com.ParameterMixin):
         # Reset symbolic updates to their previous state
         for h in self.history_set:
             h.stash.pop()
-        shim.config.theano_updates = updates_stash
+        shim.config.symbolic_updates = updates_stash
 
         # Return the new state
         return St_graphs, updates
@@ -1711,7 +2197,7 @@ class Model(com.ParameterMixin):
         refhist_idx =  np.argmax([h.cur_tidx - h.t0idx + self._refhist.t0idx
                                   for h in hists])
         refhist = hists[refhist_idx]
-        ref_tidx = refhist._original_tidx
+        ref_tidx = refhist._num_tidx
         tidcs = [ref_tidx - refhist.t0idx + h.t0idx
                   for h in hists]
         # statetidcs = [ref_tidx - self._refhist.t0idx + h.t0idx
@@ -1770,8 +2256,8 @@ class Model(com.ParameterMixin):
         # # Ensure that we are not updating histories outside of `hists`
         # if len(updates) > 0:
         #     for h in self.history_set.difference(hists):
-        #         assert h._original_data not in updates
-        #         assert h._original_tidx not in updates
+        #         assert h._num_data not in updates
+        #         assert h._num_tidx not in updates
         #     subbed_updates = [self.sub_states_into_graph(
         #                         upd, statehists, curstatevars, newstatevars, tidx)
         #                       for upd in updates.values()]
@@ -1794,8 +2280,8 @@ class Model(com.ParameterMixin):
             assert ref_tidx not in inputs
                 # Still test this: if ref_tidx is shared, it's computable
             # assert(not any(x0 in inputs for x0 in S0))
-            assert not any(h._original_data in inputs for h in statehists)
-            assert not any(h._original_data in inputs for h in hists)
+            assert not any(h._num_data in inputs for h in statehists)
+            assert not any(h._num_data in inputs for h in hists)
                 # Symbolic update should only depend on `statevars` and `tidx`
         except AssertionError as e:
             raise (AssertionError(failed_build_msg)
@@ -1804,7 +2290,7 @@ class Model(com.ParameterMixin):
         # Reset symbolic updates to their previous state
         for h in self.history_set:
             h.stash.pop()
-        shim.config.theano_updates = updates_stash
+        shim.config.symbolic_updates = updates_stash
 
         # Return the new values
         return graphs, updates
@@ -1858,7 +2344,7 @@ class Model(com.ParameterMixin):
         # refhist_idx =  np.argmax([h.cur_tidx - h.t0idx + self._refhist.t0idx
         #                           for h in hists])
         # refhist = hists[refhist_idx]
-        # ref_tidx = refhist._original_tidx
+        # ref_tidx = refhist._num_tidx
         new_tidx = new_tidx - self.t0idx + refhist.t0idx
             # Convert time index to be relative to reference history
         _tidcs = [ref_tidx - refhist.t0idx + h.t0idx
@@ -1866,7 +2352,7 @@ class Model(com.ParameterMixin):
         ref_tidxvals = [shim.graph.eval(ti) for ti in _tidcs]
         inputs = shim.graph.inputs([graph])
         variables = shim.graph.variables([graph])
-        odatas = [h._original_data for h in hists]
+        odatas = [h._num_data for h in hists]
         statevars = cur_statevars
         St = new_statevars
 
@@ -1879,7 +2365,7 @@ class Model(com.ParameterMixin):
         # Proceed with substitution
         replace = {}
         # Loop over graph nodes, replacing any instance where we index
-        # into _original_data by the appropriate virtual state variable
+        # into _num_data by the appropriate virtual state variable
         for y in variables:
             if (shim.graph.symbolic_inputs(y) == [ref_tidx]
                 and shim.graph.is_same_graph(y, ref_tidx)):
@@ -1974,157 +2460,124 @@ class Model(com.ParameterMixin):
 
         return new_graph, fully_substituted
 
-# DEPRECATED ?
-# Surrogate models date from a time where I needed to initialize models
-# that would never be run (e.g. to build parameters or access member functions)
-# I don't need to this anymore, so maybe we could get rid of them ?
-def Surrogate(model):
+class BinomialLogpMixin:
     """
-    Execute `Surrogate(MyModel)` to get a class which can serve as a viable
-    stand-in for `MyModel`.
+    Mixin class for models with binomial likelihoods.
 
-    The surrogate model completely hides the model's __init__    method,
-    avoiding the instantiation of potentially large data. If there is
-    some initialization you do need, you can add attributes after
-    instantiation, or subclass Surrogate(MyModel).
-
-    Parameters
-    ----------
-    model: class
-        Class the surrogate should mirror
+    .. Note::
+       Not yet tested with v0.2.
     """
-    if not issubclass(model, Model):
-        raise ValueError("Can only create surrogates for subclasses of sinn.models.Model.")
-
-    class SurrogateModel(model):
-
-        def __init__(self, params, t0=0, dt=None):
-            """
-            Parameters
-            ----------
-            params:
-                Same parameters as would be passed to create the class
-            t0: float
-                The time corresponding to time index 0. By default this is 0.
-            dt: float
-                The time step. Required in order to use `get_tidx` and `index_interval`;
-                can be omitted if these functions are not used.
-            """
-            # Since we don't call super().__init__, we need to reproduce
-            # the content of ParameterMixin.__init__
-            self.set_parameters(params)
-            # Set the attributes required for the few provided methods
-            self._t0 = t0
-            self._dt = dt   # dt is a read-only property of Model: can't just set the value
-
-        @property
-        def t0(self):
-            return self._t0
-        @property
-        def dt(self):
-            return self._dt
-
-        def get_tidx(self, t, allow_rounding=False):
-            if self.dt is None:
-                raise AttributeError("You must provide a timestep 'dt' to the surrogate class "
-                                    "in order to call 'get_tidx'.")
-            if shim.istype(t, 'int'):
-                return t
-            else:
-                try:
-                    shim.check( (t * sinn.config.get_rel_tolerance(t) < self.dt).all() )
-                except AssertionError:
-                    raise ValueError("You've tried to convert a time (float) into an index "
-                                    "(int), but the value is too large to ensure the absence "
-                                    "of numerical errors. Try using a higher precision type.")
-                t_idx = (t - self.t0) / self.dt
-                r_t_idx = shim.round(t_idx)
-                if (not shim.is_theano_object(r_t_idx) and not allow_rounding
-                    and (abs(t_idx - r_t_idx) > config.get_abs_tolerance(t) / self.dt).all() ):
-                    logger.error("t: {}, t0: {}, t-t0: {}, t_idx: {}, dt: {}"
-                                .format(t, self._tarr[0], t - self._tarr[0], t_idx, self.dt) )
-                    raise ValueError("Tried to obtain the time index of t=" +
-                                    str(t) + ", but it does not seem to exist.")
-                return shim.cast(r_t_idx, dtype = self.cur_tidx.dtype)
-
-        def index_interval(Δt, allow_rounding=False):
-            if self.dt is None:
-                raise AttributeError("You must provide a timestep 'dt' to the surrogate class "
-                                    "in order to call 'index_interval'.")
-            if not shim.is_theano_object(Δt) and abs(Δt) < self.dt - config.abs_tolerance:
-                if Δt == 0:
-                    return 0
-                else:
-                    raise ValueError("You've asked for the index interval corresponding to "
-                                    "Δt = {}, which is smaller than this history's step size "
-                                    "({}).".format(Δt, self.dt))
-            if shim.istype(Δt, 'int'):
-                return Δt
-            else:
-                try:
-                    shim.check( Δt * config.get_rel_tolerance(Δt) < self.dt )
-                except AssertionError:
-                    raise ValueError("You've tried to convert a time (float) into an index "
-                                    "(int), but the value is too large to ensure the absence "
-                                    "of numerical errors. Try using a higher precision type.")
-                quotient = Δt / self.dt
-                rquotient = shim.round(quotient)
-                if not allow_rounding:
-                    try:
-                        shim.check( shim.abs(quotient - rquotient) < config.get_abs_tolerance(Δt) / self.dt )
-                    except AssertionError:
-                        logger.error("Δt: {}, dt: {}".format(Δt, self.dt) )
-                        raise ValueError("Tried to convert t=" + str(Δt) + " to an index interval "
-                                        "but its not a multiple of dt.")
-                return shim.cast_int16( rquotient )
-
-        def clear_unlocked_histories(self):
-            pass
-
-        def theano_reset(self):
-            pass
-
-        def advance(self, t):
-            pass
-
-        def loglikelihood(self, start, batch_size, data=None):
-            pass
-
-    return SurrogateModel
-
-class ModelKernelMixin:
-    """
-    Kernels within models should include this mixin.
-    Adds interoperability with model parameters
-    """
-    def __init__(self, name, params, shape=None, f=None, memory_time=None, t0=0, **kwargs):
-        super().__init__(name,
-                         params = self.get_kernel_params(params),
-                         shape  = shape,
-                         f      = f,
-                         memory_time=memory_time,
-                         t0     = t0,
-                         **kwargs)
-
-    def update_params(self, params):
-        super().update_params(self.get_parameter_subset(params))
-
-    def get_parameter_subset(self, params):
-        """Given a set of model parameters, return the set which applies
-        to this kernel. These will in general not be a strict subset of
-        `model_params`, but derived from them using `get_kernel_params`.
-        As a special case, if each of the kernel's parameters can
-        be found in `params`, then it is assumed that they have already
-        been converted, and `get_kernel_params` is not called again.
+    def make_binomial_loglikelihood(self, n, N, p, approx=None):
         """
-        if all( field in params._fields for field in self.params._fields ):
-            # params already converted for kernel
-            return sinn.get_parameter_subset(self, params)
-        else:
-            # These are model parameters. Convert them for the kernel
-            return self.cast_parameters(self.get_kernel_params(params))
+        Parameters
+        ----------
+        n: History
+            Number of successful samples
+        N: array of ints:
+            Total number of samples.
+            Must have n.shape == N.shape
+        p: History
+            Probability of success; first dimension is time.
+            Must have n.shape == p.shape and len(n) == len(p).
+        approx: str
+            (Optional) If specified, one of:
+            - 'low p': The probability is always very low; the Stirling approximation
+              is used for the contribution from (1-p) to ensure numerical stability
+            - 'high p': The probability is always very high; the Stirling approximation
+              is used for the contribution from (p) to ensure numerical stability
+            - 'Stirling': Use the Stirling approximation for both the contribution from
+              (p) and (1-p) to ensure numerical stability.
+            - 'low n' or `None`: Don't use any approximation. Make sure `n` is really low
+              (n < 20) to avoid numerical issues.
+        """
 
-    @staticmethod
-    def get_kernel_params(model_params):
-        raise NotImplementedError("Each of your model's kernels must "
-                                  "implement the method `get_kernel_params`.")
+        def loglikelihood(start=None, stop=None):
+
+            hist_type_msg = ("To compute the loglikelihood, you need to use a NumPy "
+                             "history for the {}, or compile the history beforehand.")
+            if n.use_theano:
+                if n.compiled_history is None:
+                    raise RuntimeError(hist_type_msg.format("events"))
+                else:
+                    nhist = n.compiled_history
+            else:
+                nhist = n
+
+            phist = p
+            # We deliberately use times here (instead of indices) for start/
+            # stop so that they remain consistent across different histories
+            if start is None:
+                start = nhist.t0
+            else:
+                start = nhist.get_time(start)
+            if stop is None:
+                stop = nhist.tn
+            else:
+                stop = nhist.get_time(stop)
+
+            n_arr_floats = nhist[start:stop]
+            p_arr = phist[start:stop]
+
+            # FIXME: This would break the Theano graph, no ?
+            if shim.isshared(n_arr_floats):
+                n_arr_floats = n_arr_floats.get_value()
+            if shim.isshared(p_arr):
+                p_arr = p_arr.get_value()
+
+            p_arr = sinn.clip_probabilities(p_arr)
+
+            if not shim.is_theano_object(n_arr_floats):
+                assert(sinn.ismultiple(n_arr_floats, 1).all())
+            n_arr = shim.cast(n_arr_floats, 'int32')
+
+            #loglikelihood: -log n! - log (N-n)! + n log p + (N-n) log (1-p) + cst
+
+            if approx == 'low p':
+                # We use the Stirling approximation for the second log
+                l = shim.sum( -shim.log(shim.factorial(n_arr, exact=False))
+                              -(N-n_arr)*shim.log(N - n_arr) + N-n_arr + n_arr*shim.log(p_arr)
+                              + (N-n_arr)*shim.log(1-p_arr) )
+                    # with exact=True, factorial is computed only once for whole array
+                    # but n_arr must not contain any elements greater than 20, as
+                    # 21! > int64 (NumPy is then forced to cast to 'object', which
+                    # does not play nice with numerical ops)
+            else:
+                raise NotImplementedError
+
+            return l
+
+        return loglikelihood
+
+class PyMC3Model(Model, abc.ABC):
+    """
+    A specialized model that is compatible with PyMC3.
+
+    .. Note:
+       Still needs to be ported to v0.2.
+    """
+
+    @property
+    def pymc(self, **kwargs):
+        """
+        The first access should be done as `model.pymc()` to instantiate the
+        model. Subsequent access, which retrieves the already instantiated
+        model, should use `model.pymc`.
+        """
+        if getattr(self, '_pymc', None) is None:
+            # Don't require that PyMC3 be installed unless we need it
+            import sinn.models.pymc3
+            # Store kwargs so we can throw a warning if they change
+            self._pymc_kwargs = copy.deepcopy(kwargs)
+            # PyMC3ModelWrapper assigns the PyMC3 model to `self._pymc`
+            return sinn.models.pymc3.PyMC3ModelWrapper(self, **kwargs)
+        else:
+            for key, val in kwargs.items():
+                if key not in self._pymc_kwargs:
+                    logger.warning(
+                        "Keyword parameter '{}' was not used when creating the "
+                        "model and will be ignored".format(key))
+                elif self._pymc_kwargs[key] != value:
+                    logger.warning(
+                        "Keyword parameter '{}' had a different value ({}) "
+                        "when creating the model.".format(key, value))
+        return self._pymc

@@ -14,6 +14,12 @@ import logging
 import copy
 import operator
 
+from typing import Type
+from pydantic import validator, root_validator
+from mackelab_toolbox.typing import NPType
+from mackelab_toolbox.cgshim import typing as cgtyping
+FloatX = cgtyping.FloatX
+
 import theano_shim as shim
 import mackelab_toolbox.utils as utils
 import sinn
@@ -23,7 +29,10 @@ import sinn.kernels as kernels
 import sinn.models as models
 import sinn.popterm
 
+from typing import ClassVar
+
 logger = logging.getLogger("fsgif_model")
+
 
 homo = False  # HACK
 
@@ -35,58 +44,92 @@ shim.cf.inf = 1e12
 debugprint = False
     # If true, all intermediate values are printed in the symbolic graph
 
-class Kernel_ε(models.ModelKernelMixin, kernels.ExpKernel):
-    @staticmethod
-    def get_kernel_params(model_params):
-        return kernels.ExpKernel.Parameters(
-            height      = 1/model_params.τ_s,
-            decay_const = model_params.τ_s,
-            t_offset    = model_params.Δ)
+class Kernel_ε(kernels.ExpKernel):
+    """
+    This class just renames the generic ExpKernel to match the parameter
+    names for this kernel, and ensures the kernel is normalized.
+    """
+    τ_s         : Tensor[FloatX, 2]
+    Δ           : Tensor[FloatX, 2]
+    height      : Tensor[FloatX, 2]=None  # Indicate that these parameters are computed
+    decay_const : Tensor[FloatX, 2]=None  # in __post_init__ and are thus not required
+    t_offset    : Tensor[FloatX, 2]=None  # when constructing kernel
+
+    _computed_params = ('height', 'decay_const', 't_offset')
+
+    @root_validator(cls, values, pre=True)
+    def set_values(values):
+        τ_s, Δ = (values.get(x, None) for x in ('τ_s', 'Δ'))
+        if any(values.get(x, None) is not None
+               for x in cls._computed_params):
+           raise ValueError(f"Parameters {cls._computed_params} are computed "
+                            "automatically and should not be provided.")
+        if None not in (τ_s, Δ):
+            values['height']      = 1/τ_s
+            values['decay_const'] = τ_s
+            values['t_offset']    = Δ
+        return values
+
 
 # The θ kernel is separated in two: θ1 is the constant equal to ∞ over (0, t_ref)
 # θ2 is the exponentially decaying adaptation kernel
-class Kernel_θ1(models.ModelKernelMixin, kernels.Kernel):
-    Parameter_info = OrderedDict( ( ( 'height', 'floatX' ),
-                                    ( 'start',  'floatX' ),
-                                    ( 'stop',   'floatX' ) ) )
-    Parameters = kernels.com.define_parameters(Parameter_info)
-    @staticmethod
-    def get_kernel_params(model_params):
-        if homo:
-            Npops = len(model_params.N.get_value())
-            height = (shim.cf.inf,)*Npops
-            stop = model_params.t_ref
-        else:
-            height = (shim.cf.inf,)*model_params.N.get_value().sum()
-            stop = model_params.t_ref
-            if isinstance(model_params.t_ref, sinn.popterm.PopTerm):
-                # TODO: This is only required because some operations
-                #       aren't yet supported by PopTerm, so we expand
-                #       manually. Once that is fixed, we should remove this.
-                stop = stop.expand_blocks(['Macro', 'Micro'])
-        return Kernel_θ1.Parameters(
-            height = height,
-            start  = 0,
-            stop   = stop
-        )
+# class Kernel_θ1(kernels.BoxKernel):
+#     Npops  : int
+#     PopTerm: Type
+#     # ---- Make computed params of base Kernel class optional
+#     height : Tensor[FloatX]=None
+#     start  : Tensor[FloatX]=0
+#
+#     @validator('start'):
+#     def check_start(cls, start):
+#         if start != 0:
+#             raise ValueError("Do not set `start`. It is fixed to 0.")
+#
+#     @root_validator(pre=True)
+#     def set_height_shape(cls, values):
+#         Npops = values.get('N', None)
+#         if Npops is not None:
+#             values['height'] = PopTerm((shim.cf.inf,)*Npops)
+#             values['shape']  = (Npops,Npops)
 
-    def __init__(self, name, params=None, shape=None, **kwargs):
-        kern_params = self.get_kernel_params(params)
-        memory_time = shim.asarray(shim.get_test_value(kern_params.stop)
-                                   - kern_params.start).max()
-            # FIXME: At present, if we don't set memory_time now, tn is not set
-            #        properly
-        super().__init__(name, params, shape,
-                         t0 = 0,
-                         memory_time = memory_time,  # FIXME: memory_time should be optional
-                         **kwargs)
 
-    def _eval_f(self, t, from_idx=slice(None,None)):
-        if shim.isscalar(t):
-            return self.params.height
-        else:
-            # t has already been shaped to align with the function output in Kernel.eval
-            return shim.ones(t.shape, dtype=shim.config.floatX) * self.params.height
+
+    # def get_kernel_params(model_params):
+    #     if homo:
+    #         Npops = len(model_params.N.get_value())
+    #         height = (shim.cf.inf,)*Npops
+    #         stop = model_params.t_ref
+    #     else:
+    #         height = (shim.cf.inf,)*model_params.N.get_value().sum()
+    #         stop = model_params.t_ref
+    #         # if isinstance(model_params.t_ref, sinn.popterm.PopTerm):
+    #         #     # TODO: This is only required because some operations
+    #         #     #       aren't yet supported by PopTerm, so we expand
+    #         #     #       manually. Once that is fixed, we should remove this.
+    #         #     stop = stop.expand_blocks(['Macro', 'Micro'])
+    #     return Kernel_θ1.Parameters(
+    #         height = height,
+    #         start  = 0,
+    #         stop   = stop
+    #     )
+
+    # def __init__(self, name, params=None, shape=None, **kwargs):
+    #     kern_params = self.get_kernel_params(params)
+    #     memory_time = shim.asarray(shim.get_test_value(kern_params.stop)
+    #                                - kern_params.start).max()
+    #         # FIXME: At present, if we don't set memory_time now, tn is not set
+    #         #        properly
+    #     super().__init__(name, params, shape,
+    #                      t0 = 0,
+    #                      memory_time = memory_time,  # FIXME: memory_time should be optional
+    #                      **kwargs)
+    #
+    # def _eval_f(self, t, from_idx=slice(None,None)):
+    #     if shim.isscalar(t):
+    #         return self.params.height
+    #     else:
+    #         # t has already been shaped to align with the function output in Kernel.eval
+    #         return shim.ones(t.shape, dtype=shim.config.floatX) * self.params.height
 
 class Kernel_θ2(models.ModelKernelMixin, kernels.ExpKernel):
     @staticmethod
@@ -102,7 +145,6 @@ class Kernel_θ2(models.ModelKernelMixin, kernels.ExpKernel):
             t_offset    = t_offset
         )
 
-
     # UGLY HACK: Copied function from ExpKernel and added 'expand'
     def _eval_f(self, t, from_idx=slice(None,None)):
         if homo:
@@ -115,47 +157,103 @@ class Kernel_θ2(models.ModelKernelMixin, kernels.ExpKernel):
                                 * shim.exp(-(t-self.params.t_offset[...,from_idx])
                                         / self.params.decay_const[...,from_idx])) )
 
+
 class GIF(models.Model):
+    # ===================================
+    # Class parameters
+    requires_rng        :ClassVar[bool] = True
+    default_initializer :ClassVar[Literal['silent', 'stationary'] = 'silent'
 
-    requires_rng = True
-    # Entries to Parameter_info: ( 'parameter name',
-    #                              (dtype, default value, shape_flag) )
-    # If the shape_flag is True, the parameter will be reshaped into a 2d
-    # matrix, if it isn't already. This is ensures the parameter is
-    # consistent with kernel methods which assume inputs which are at least 2d
-    # The last two options can be omitted; default flag is 'False'
-    # Typically if a parameter will be used inside a kernel, shape_flag should be True.
-    # NOTE: int32 * float32 = float64,  but  int16 * float32 = float32
-    Parameter_info = OrderedDict( (( 'N',      'int16' ),     # Maximum value: 2^16 == 65536
-                                   ( 'R',      'floatX' ),    # membrane resistance (
-                                   ( 'u_rest', ('floatX', None, False) ),
-                                   ( 'p',      'floatX' ),   # Connection probability between populations
-                                   ( 'w',      'floatX' ),         # matrix of *population* connectivity strengths
-                                   ( 'Γ',      'int8' ),               # binary connectivity between *neurons*
-                                   ( 'τ_m',    'floatX'  ), # membrane time constant (s)
-                                   ( 't_ref',  'floatX'  ), # absolute refractory period (s)
-                                   ( 'u_th',   'floatX'  ),    # non-adapting threshold (mV)
-                                   ( 'u_r',    'floatX'  ),    # reset potential (mV)
-                                   ( 'c',      'floatX'  ),   # escape rate at threshold (Hz)
-                                   ( 'Δu',     'floatX'  ),    # noise level (mV)
-                                   ( 'Δ',      ('floatX', None, True)), # transmission delay (s) (kernel ε)
-                                   ( 'τ_s',    ('floatX', None, True)), # synaptic time constant (mV) (kernel ε)
-                                   # Adaptation parameters (θ-kernel dependent)
-                                   ( 'J_θ',    ('floatX', None, False)), # Integral of adaptation (mV s)
-                                   ( 'τ_θ',    ('floatX', None, False))
-                                   ) )
-        # NOTE: `Γ` is typically obtained by calling `make_connectivity` with `N` and `p`.
-    Parameters = sinn.define_parameters(Parameter_info)
-    State = namedtuple('State', ['u', 't_hat'])
+    class State(BaseModel):
+        u     :Series
+        t_hat :Series
 
-    default_initializer = 'stationary'
+    # ====================================
+    # Model parameters
+    class Parameters(BaseModel):
+        # NOTE: int32 * float32 = float64,  but  int16 * float32 = float32
+        N      : Array['int16', 1]               # Maximum value: 2^16 == 65536
+            # Must not be symbolic
+        R      : Tensor[FloatX]               # membrane resistance (
+        u_rest : Tensor[FloatX, 1]
+        p      : Optional[Tensor[FloatX]]     # Connection probability between populations
+        w      : Tensor[FloatX, 2]            # matrix of *population* connectivity strengths
+        Γ      : Optional[Tensor['int8', 2]]  # binary connectivity between *neurons*
+            # NOTE: `Γ` is typically obtained by calling `make_connectivity` with `N` and `p`.
+        τ_m    : Tensor[FloatX, 1]            # membrane time constant (s)
+        t_ref  : Tensor[FloatX, 1]            # absolute refractory period (s)
+        u_th   : Tensor[FloatX, 1]            # non-adapting threshold (mV)
+        u_r    : Tensor[FloatX, 1]            # reset potential (mV)
+        c      : Tensor[FloatX, 1]            # escape rate at threshold (Hz)
+        Δu     : Tensor[FloatX, 1]            # noise level (mV)
+        Δ      : Tensor[FloatX, 2]            # transmission delay (s) (kernel ε)
+        τ_s    : Tensor[FloatX, 2]            # synaptic time constant (mV) (kernel ε)
+        # Adaptation parameters (θ-kernel dependent)
+        J_θ    : Tensor[FloatX, 1]                # Integral of adaptation (mV s)
+        τ_θ    : Tensor[FloatX, 1]
+    params :Parameters
+    # ===================================
+    # Dynamic variables
+    s         : PopulationHistory
+    I_ext     : History
+    rndstream : shim.typing.RandomStream
+    # ===================================
 
+    # Validators
+    @validator('rndstream')
+    def check_rng(cls, rndstream, values):
+        s = values.get('s', None)
+        if s is not None:
+            super().output_rng(s, rndstream)
+        return rndstream
 
-    def __init__(self, params, spike_history, input_history,
-                 initializer=None, set_weights=True, random_stream=None, memory_time=None):
+    @root_validator
+    def check_history_shapes(cls, values):
+        s, I_ext = values.get('s', None)
+        if s is not None and I_ext is not None:
+            super().check_same_shape(s, I_ext)
+        return values
+
+    @root_validator
+    def consistent_shapes(cls, values):
+        # FIXME: This needs to allow some parameters to be micro, some meso
+        # Raises ValueError if shapes don't match
+        # np.broadcast(values.get(x, 1) for x in
+        #     ('N', 'R', 'u_rest', 'p', 'w', 'τ_m', 't_ref', 'u_th', 'u_r',
+        #      'c', 'Δu', 'Δ', 'τ_s', 'J_θ', 'τ_θ')
+        return values
+
+    # Initializers
+    @validator('Γ')
+    def generate_connectivity_matrix(cls, Γ, values):
+        p, N = (values.get(x, None) for x in ('p', 'N'))
+        if (p is None and Γ is None) or (p is not None and Γ is not None):
+            raise ValueError("Exactly one of `p` or `Γ` must be provided.")
+        if Γ is None and N is not None:
+            Γrows = []
+            for Nα, prow in zip(N, p):
+                Γrows.append( np.concatenate(
+                    [ np.random.binomial(1, pαβ, size=(Nα, Nβ))
+                      for Nβ, pαβ in zip(N, prow) ],
+                    axis = 1) )
+            Γ = np.concatenate( Γrows, axis=0 )
+        return Γ
+
+    @root_validator
+    def convert_to_params_popterms(cls, values):
+        s = values.get('s', None)
+        if s is not None:
+            for k, v in values.items():
+                if k != 'N':
+                    values[k] = s.PopTerm(v)
+        return values
+
+    def __init__(self, ):
         """
         Parameters
         ----------
+        Γ: ndarray | tensor
+            If not given, computed from `p`.
         set_weights: bool, ndarray
             (Optional) Set to True to indicate that network connectivity should be set using the
             `w` and `Γ` parameters. If the spike history is already filled, set to False to
@@ -163,70 +261,85 @@ class GIF(models.Model):
             to set connectivity, ignoring model parameters. Default is True.
         """
         # FIXME
-        if homo and initializer == 'stationary':
+        if not homo and initializer == 'stationary':
             raise NotImplementedError("Stationary initialization doesn't work with heterogeneous "
                                       "populations yet. Reason: "
                                       "`τmT = self.params.τ_m.flatten()[:, np.newaxis]` line")
 
-        self.s = spike_history
-        self.I_ext = input_history
-        self.rndstream = random_stream
-        if not isinstance(self.s, PopulationHistory):
-            raise ValueError("Spike history must be an instance of sinn.PopulationHistory.")
-        if not isinstance(self.I_ext, Series):
-            raise ValueError("External input history must be an instance of sinn.Series.")
-        # This runs consistency tests on the parameters
-        # models.Model.same_shape(self.s, self.I)
-        models.Model.same_dt(self.s, self.I_ext)
-        models.Model.output_rng(self.s, self.rndstream)
-
-        super().__init__(params,
-                         t0=self.s.t0, tn=self.s.tn, dt=self.s.dt,
-                         public_histories=(spike_history, input_history),
-                         reference_history=self.s)
+        # self.s = spike_history
+        # self.I_ext = input_history
+        # self.rndstream = random_stream
+        # # This runs consistency tests on the parameters
+        # # models.Model.same_shape(self.s, self.I)
+        # models.Model.same_dt(self.s, self.I_ext)
+        # models.Model.output_rng(self.s, self.rndstream)
+        #
+        # super().__init__(params,
+        #                  t0=self.s.t0, tn=self.s.tn, dt=self.s.dt,
+        #                  public_histories=(spike_history, input_history),
+        #                  reference_history=self.s)
         # NOTE: Do not use `params` beyond here. Always use self.params.
-        N = self.params.N.get_value()
-        assert(N.ndim == 1)
-        self.Npops = len(N)
+        # N = self.params.N.get_value()
+        # assert(N.ndim == 1)
+        N     = self.N
+        Npops = len(N)
+        self.Npops = Npops
+        τ_s   = self.τ_s
+        Δ     = self.Δ
+        J_θ   = self.J_θ
+        τ_θ   = self.τ_θ
+        t_ref = self.t_ref
 
-        self.params = self.params._replace(
-            **{name: self.s.PopTerm(getattr(self.params, name))
-            for name in params._fields
-            if name != 'N'})
+
+        ε = FactorizedKernel(
+            name         = 'ε',
+            outproj      = self.Γ,
+            inner_kernel = BlockKernel(
+                inner_kernel = ExpKernel(
+                    name='ε_inner', height=1/τ_s, decay_const=τ_s, t_offset=Δ,
+                    shape=(Npops,Npops)
+                    )
+                )
+            )
+        # The θ kernel is separated in two: θ1 is the constant equal to ∞ over (0, t_ref)
+        # θ2 is the exponentially decaying adaptation kernel
+        θ1 = BoxKernel(name='θ1', height=s.PopTerm((shim.cf.inf,)*Npops),
+                       shape=(Npops,))
+        θ2 = ExpKernel(name='θ2', height=J_θ/τ_θ, decay_const=τ_θ,
+                       t_offset=t_ref, shape=(Npops,))
+        self.θ = θ1 + θ2
+
+
+        # self.params = self.params._replace(
+        #     **{name: self.s.PopTerm(getattr(self.params, name))
+        #     for name in params._fields
+        #     if name != 'N'})
 
         # if values.name in ['t_ref', 'J_θ', 'τ_θ']:
         # Set the connection weights
-        if isinstance(set_weights, np.ndarray):
-            self.s.set_connectivity(set_weights)
-        elif set_weights:
-            # TODO: If parameters were less hacky, w would already be properly
-            #       cast as an array
-            if shim.is_theano_object(self.w, self.Γ):
-                # HACK: Workaround b/c ShimmedPopTerm is incomplete
-                w = self.w * self.Γ
-            else:
-                w = (self.s.PopTerm(self.w) * self.Γ).expand.values
-                    # w includes both w and Γ from Eq. 20
-            self.s.set_connectivity(w)
+        # if isinstance(set_weights, np.ndarray):
+        #     self.s.set_connectivity(set_weights)
+        # elif set_weights:
+        #     # TODO: If parameters were less hacky, w would already be properly
+        #     #       cast as an array
+        #     w = (self.s.PopTerm(self.w) * self.Γ).expand.values
+        #         # w includes both w and Γ from Eq. 20
+        #     self.s.set_connectivity(w)
 
         # Model variables
         self.RI_syn = Series(self.s, 'RI_syn',
                              shape = (N.sum(), ),
                              dtype = shim.config.floatX)
-        self.λ = Series(self.RI_syn, 'λ', dtype=shim.config.floatX)
-        self.varθ = Series(self.RI_syn, 'ϑ')
-        self.u = Series(self.RI_syn, 'u')
+        self.λ      = Series(self.RI_syn, 'λ', dtype=shim.config.floatX)
+        self.varθ   = Series(self.RI_syn, 'ϑ')
+        self.u      = Series(self.RI_syn, 'u')
         # Surrogate variables
-        self.t_hat = Series(self.RI_syn, 't_hat')
+        self.t_hat  = Series(self.RI_syn, 't_hat')
             # time since last spike
 
         # self.statehists = [ getattr(self, varname) for varname in self.State._fields ]
         # Kernels
-        # HACK: Because PopTerm doesn't support shared arrays
-        if shim.is_theano_object(self.τ_s, self.Δ):
-            shape2d = (sum(N), sum(N))
-        else:
-            shape2d = (self.Npops, self.Npops)
+        shape2d = (self.Npops, self.Npops)
         self.ε = Kernel_ε('ε', self.params, shape=shape2d)
         # if values.name in ['t_ref', 'J_θ', 'τ_θ']:
         if homo:
@@ -276,7 +389,7 @@ class GIF(models.Model):
         #     u_r = self.expand_param(self.params.u_r, self.params.N)
         # )
 
-        #if self.s._original_tidx.get_value() < self.s.t0idx:
+        #if self.s._num_tidx.get_value() < self.s.t0idx:
         logger.info("Initializing model state variables...")
         self.init_state_vars(initializer)
         logger.info("Done.")
@@ -305,9 +418,9 @@ class GIF(models.Model):
         else:
             raise ValueError("Initializer string must be one of 'stationary', 'silent'")
 
-        for varname in self.State._fields:
+        for varname in self.State.__fields__:
             hist = getattr(self, varname)
-            if hist._original_tidx.get_value() < hist.t0idx:
+            if shim.eval(hist._num_tidx) < hist.t0idx:
                 initval = getattr(init_state, varname)
                 hist.pad(1)
                 idx = hist.t0idx - 1; assert(idx >= 0)
@@ -315,7 +428,7 @@ class GIF(models.Model):
 
         # TODO: Combine the following into the loop above
         nbins = self.s.t0idx
-        if self.s._original_tidx.get_value() < nbins:
+        if self.s._num_tidx.get_value() < nbins:
             self.s[:nbins] = init_state.s
         #data = self.s._data
         #data[:nbins,:] = init_state.s
@@ -323,7 +436,7 @@ class GIF(models.Model):
 
     def get_silent_latent_state(self):
         # TODO: include spikes in model state, so we don't need this custom 'Stateplus'
-        Stateplus = namedtuple('Stateplus', self.State._fields + ('s',))
+        Stateplus = namedtuple('Stateplus', self.State.__fields__ + ('s',))
         state = Stateplus(
             u = self.params.u_rest.expand.values,
             t_hat = shim.ones(self.t_hat.shape) * self.memory_time,
@@ -364,36 +477,36 @@ class GIF(models.Model):
         )
         return state
 
-    @staticmethod
-    def make_connectivity(N, p):
-        """
-        Construct a binary neuron connectivity matrix, for use as this class'
-        Γ parameter.
-
-        Parameters
-        ----------
-        N: array of ints
-            Number of neurons in each population
-        p: 2d array of floats between 0 and 1
-            Connection probability. If connection probabilities are symmetric,
-            this array should also be symmetric.
-
-        Returns
-        -------
-        2d binary matrix
-        """
-        # TODO: Use array to pre-allocate memory
-        # TODO: Does it make sense to return a sparse matrix ? For low connectivity
-        #       yes, but with the assumed all-to-all connectivity, we can't really
-        #       have p < 0.2.
-        Γrows = []
-        for Nα, prow in zip(N, p):
-            Γrows.append( np.concatenate([ np.random.binomial(1, pαβ, size=(Nα, Nβ))
-                                        for Nβ, pαβ in zip(N, prow) ],
-                                        axis = 1) )
-
-        Γ = np.concatenate( Γrows, axis=0 )
-        return Γ
+    # @staticmethod
+    # def make_connectivity(N, p):
+    #     """
+    #     Construct a binary neuron connectivity matrix, for use as this class'
+    #     Γ parameter.
+    #
+    #     Parameters
+    #     ----------
+    #     N: array of ints
+    #         Number of neurons in each population
+    #     p: 2d array of floats between 0 and 1
+    #         Connection probability. If connection probabilities are symmetric,
+    #         this array should also be symmetric.
+    #
+    #     Returns
+    #     -------
+    #     2d binary matrix
+    #     """
+    #     # TODO: Use array to pre-allocate memory
+    #     # TODO: Does it make sense to return a sparse matrix ? For low connectivity
+    #     #       yes, but with the assumed all-to-all connectivity, we can't really
+    #     #       have p < 0.2.
+    #     Γrows = []
+    #     for Nα, prow in zip(N, p):
+    #         Γrows.append( np.concatenate([ np.random.binomial(1, pαβ, size=(Nα, Nβ))
+    #                                     for Nβ, pαβ in zip(N, prow) ],
+    #                                     axis = 1) )
+    #
+    #     Γ = np.concatenate( Γrows, axis=0 )
+    #     return Γ
 
     @staticmethod
     def expand_param(param, N):
@@ -495,7 +608,7 @@ class GIF(models.Model):
             if h.name in ['θ_dis', 'θtilde_dis']:
                 continue
             if h.locked:
-                tn = h.get_time(h._original_tidx.get_value())
+                tn = h.get_time(h._num_tidx.get_value())
                 if tn < self._refhist.get_time(stopidx):
                     logger.warning("Locked history '{}' is only provided "
                                    "up to t={}. Output will be truncated."
@@ -503,12 +616,12 @@ class GIF(models.Model):
                     stopidx = self.nbar.get_t_idx(tn)
 
         if not shim.config.use_theano:
-            self._refhist.compute_up_to(stopidx - self.t0idx + self._refhist.t0idx)
+            self._refhist._compute_up_to(stopidx - self.t0idx + self._refhist.t0idx)
             for hist in self.statehists:
-                hist.compute_up_to(stopidx - self.t0idx + hist.t0idx)
+                hist._compute_up_to(stopidx - self.t0idx + hist.t0idx)
 
         else:
-            curtidx = min( hist._original_tidx.get_value() - hist.t0idx + self.t0idx
+            curtidx = min( hist._num_tidx.get_value() - hist.t0idx + self.t0idx
                            for hist in self.statehists )
             assert(curtidx >= -1)
 
@@ -752,7 +865,7 @@ class mesoGIF(models.Model):
         # Create the loglikelihood function
         # FIXME: Doesn't work with Theano histories because they only support updating tidx+1
         #        Need to create a Variable(History) type, which doesn't
-        #        trigger 'compute_up_to'.
+        #        trigger '_compute_up_to'.
         # TODO: Use op and write as `self.nbar / self.params.N`
         #phist = Series(self.nbar, 'p')
         #phist.set_update_function(lambda t: self.nbar[t] / self.params.N)
@@ -860,7 +973,7 @@ class mesoGIF(models.Model):
         self.W.add_inputs([self.P_λ, self.m])
         self.nbar.add_inputs([self.W, self.Pfree, self.x, self.P_Λ, self.X])
 
-        #if self.A._original_tidx.get_value() >= self.A.t0idx + len(self.A) - 1:
+        #if self.A._num_tidx.get_value() >= self.A.t0idx + len(self.A) - 1:
         if self.A.locked:
             self.given_A()
 
@@ -894,7 +1007,7 @@ class mesoGIF(models.Model):
         """
 
         assert(self.A.locked)
-        #assert(self.A._original_tidx.get_value() >= self.A.t0idx + len(self.A) - 1)
+        #assert(self.A._num_tidx.get_value() >= self.A.t0idx + len(self.A) - 1)
         if self.A.cur_tidx < self.A.t0idx + len(self.A):
             logger.warning("Activity was only computed up to {}."
                            .format(self.A.tn))
@@ -924,11 +1037,11 @@ class mesoGIF(models.Model):
         self.A_Δ._iterative = False
         # Can't use `set()` because self.A may be unfilled
         tidx = self.A.get_tidx_for(self.A.cur_tidx, self.A_Δ)
-        self.A_Δ.compute_up_to(tidx)
-        # self.A_Δ._original_data.set_value(self.A_Δ._data.eval())
-        # self.A_Δ._data = self.A_Δ._original_data
-        # self.A_Δ._original_tidx.set_value(self.A_Δ._cur_tidx.eval())
-        # self.A_Δ._cur_tidx = self.A_Δ._original_tidx
+        self.A_Δ._compute_up_to(tidx)
+        # self.A_Δ._num_data.set_value(self.A_Δ._data.eval())
+        # self.A_Δ._data = self.A_Δ._num_data
+        # self.A_Δ._num_tidx.set_value(self.A_Δ._sym_tidx.eval())
+        # self.A_Δ._sym_tidx = self.A_Δ._num_tidx
         self.A_Δ.lock()
 
     def get_memory_time(self, kernel, max_time=10):
@@ -1027,7 +1140,7 @@ class mesoGIF(models.Model):
             raise ValueError("Initializer string must be one of 'stationary', 'silent'")
 
         # Set the variables to the initial state
-        if self.A._original_tidx.get_value() < self.A.t0idx:
+        if self.A._num_tidx.get_value() < self.A.t0idx:
             self.init_observed_vars(observed_state, t)
         self.init_latent_vars(latent_state, t)
 
@@ -1062,8 +1175,8 @@ class mesoGIF(models.Model):
         data = self.A._data.get_value(borrow=True)
         data[:Atidx,:] = init_A
         self.A._data.set_value(data, borrow=True)
-        self.A._cur_tidx.set_value(Atidx - 1)
-        self.A._original_tidx = self.A._cur_tidx
+        self.A._sym_tidx.set_value(Atidx - 1)
+        self.A._num_tidx = self.A._sym_tidx
 
     def init_latent_vars(self, init_state, t=None):
         """
@@ -1091,7 +1204,7 @@ class mesoGIF(models.Model):
 
         for varname in self.ObservedState._fields:
             hist = getattr(self, varname)
-            if hist._original_tidx.get_value() < hist.t0idx - 1:
+            if hist._num_tidx.get_value() < hist.t0idx - 1:
                 raise RuntimeError("You must initialize the observed "
                                    "histories before the latents.")
 
@@ -1113,8 +1226,8 @@ class mesoGIF(models.Model):
             data = hist._data.get_value(borrow=True)
             data[histtidx,:] = initval
             hist._data.set_value(data, borrow=True)
-            hist._cur_tidx.set_value(histtidx)
-            hist._original_tidx = hist._cur_tidx
+            hist._sym_tidx.set_value(histtidx)
+            hist._num_tidx = hist._sym_tidx
 
         # # Make all neurons free neurons
         # idx = self.x.t0idx - 1; assert(idx >= 0)
@@ -1205,18 +1318,18 @@ class mesoGIF(models.Model):
         # HACK θ_dis updates should not be part of the loglikelihood's computational graph
         #      but 'already there'
         if shim.is_theano_object(θ_dis._data):
-            if θ_dis._original_data in shim.config.theano_updates:
-                del shim.config.theano_updates[θ_dis._original_data]
-            if θ_dis._original_tidx in shim.config.theano_updates:
-                del shim.config.theano_updates[θ_dis._original_tidx]
+            if θ_dis._num_data in shim.config.symbolic_updates:
+                del shim.config.symbolic_updates[θ_dis._num_data]
+            if θ_dis._num_tidx in shim.config.symbolic_updates:
+                del shim.config.symbolic_updates[θ_dis._num_tidx]
 
         # TODO: Use operations
         θtilde_dis = Series(θ_dis, 'θtilde_dis', iterative=False)
         # HACK Proper way to ensure this would be to specify no. of bins (instead of tn) to history constructor
         # if len(θ_dis) != len(θtilde_dis):
         #     θtilde_dis._tarr = copy.copy(θ_dis._tarr)
-        #     θtilde_dis._original_data.set_value(shim.zeros_like(θ_dis._original_data.get_value()))
-        #     θtilde_dis._data = θtilde_dis._original_data
+        #     θtilde_dis._num_data.set_value(shim.zeros_like(θ_dis._num_data.get_value()))
+        #     θtilde_dis._data = θtilde_dis._num_data
         #     θtilde_dis.tn = θtilde_dis._tarr[-1]
         #     θtilde_dis._unpadded_length = len(θtilde_dis._tarr)
         # HACK θ_dis._data should be θ_dis; then this can be made a lambda function
@@ -1237,10 +1350,10 @@ class mesoGIF(models.Model):
         # HACK θ_dis updates should not be part of the loglikelihood's computational graph
         #      but 'already there'
         if shim.is_theano_object(θtilde_dis._data):
-            if θtilde_dis._original_data in shim.config.theano_updates:
-                del shim.config.theano_updates[θtilde_dis._original_data]
-            if θtilde_dis._original_tidx in shim.config.theano_updates:
-                del shim.config.theano_updates[θtilde_dis._original_tidx]
+            if θtilde_dis._num_data in shim.config.symbolic_updates:
+                del shim.config.symbolic_updates[θtilde_dis._num_data]
+            if θtilde_dis._num_tidx in shim.config.symbolic_updates:
+                del shim.config.symbolic_updates[θtilde_dis._num_tidx]
 
         return θ_dis, θtilde_dis
 
@@ -1501,7 +1614,7 @@ class mesoGIF(models.Model):
             if hist.name in ['θ_dis', 'θtilde_dis']:
                 continue
             if hist.locked:
-                tnidx = hist._original_tidx.get_value()
+                tnidx = hist._num_tidx.get_value()
                 if tnidx < stopidx - self.t0idx + hist.t0idx:
                     logger.warning("Locked history '{}' is only provided "
                                    "up to t={}. Output will be truncated."
@@ -1512,12 +1625,12 @@ class mesoGIF(models.Model):
         # TODO: Check that histories, rather than shim are symbolic ?
         #       Theano could have been loaded afterwards.
         if not shim.config.use_theano:
-            self._refhist.compute_up_to(stopidx - self.t0idx + self._refhist.t0idx)
+            self._refhist._compute_up_to(stopidx - self.t0idx + self._refhist.t0idx)
             for hist in self.statehists:
-                hist.compute_up_to(stopidx - self.t0idx + hist.t0idx)
+                hist._compute_up_to(stopidx - self.t0idx + hist.t0idx)
 
         else:
-            curtidx = min( hist._original_tidx.get_value() - hist.t0idx + self.t0idx
+            curtidx = min( hist._num_tidx.get_value() - hist.t0idx + self.t0idx
                            for hist in self.statehists )
             assert(curtidx >= -1)
 
@@ -1530,13 +1643,13 @@ class mesoGIF(models.Model):
                 # for hist, newval in zip(self.statehists, newvals):
                 #     valslice = slice(curtidx-self.t0idx+1+hist.t0idx, stopidx+hist.t0idx-self.t0idx)
 
-                #     data = hist._original_data.get_value(borrow=True)
+                #     data = hist._num_data.get_value(borrow=True)
                 #     data[valslice] = newval
-                #     hist._original_data.set_value(data, borrow=True)
-                #     hist._data = hist._original_data
+                #     hist._num_data.set_value(data, borrow=True)
+                #     hist._data = hist._num_data
 
-                #     hist._original_tidx.set_value( valslice.stop - 1 )
-                #     hist._cur_tidx = hist._original_tidx
+                #     hist._num_tidx.set_value( valslice.stop - 1 )
+                #     hist._sym_tidx = hist._num_tidx
 
 
     def remove_other_histories(self):
@@ -1845,9 +1958,9 @@ class mesoGIF(models.Model):
     def Pfree_fn(self, t):
         """p. 53, line 9"""
         tidx_λ = self.Pfree.get_tidx_for(t, self.λfree)
-        #self.λfree.compute_up_to(tidx_λ)
+        #self.λfree._compute_up_to(tidx_λ)
             # HACK: force Theano to compute up to tidx_λ first
-            #       This is required because of the hack in History.compute_up_to
+            #       This is required because of the hack in History._compute_up_to
             #       which assumes only one update per history is required
         return 1 - shim.exp(-0.5 * (self.λfree[tidx_λ-1] + self.λfree[tidx_λ]) * self.Pfree.dt )
 
@@ -1899,7 +2012,7 @@ class mesoGIF(models.Model):
     def P_λ_fn(self, t):
         """p.53, line 19"""
         tidx_λ = self.P_λ.get_tidx_for(t, self.λ)
-        #self.λ.compute_up_to(tidx_λ)  # HACK: see Pfree_fn
+        #self.λ._compute_up_to(tidx_λ)  # HACK: see Pfree_fn
         if shim.isscalar(t):
             slice_shape = (1,) + self.λ.shape[1:]
             λprev = shim.concatenate( ( shim.zeros(slice_shape),

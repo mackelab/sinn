@@ -128,13 +128,13 @@ def mean(hist, pop_slices=None, time_array=None, **kwargs):
 
     # NOTE: Essential to use the mean method (rather than np.mean): data_arr may be sparse
     if pop_slices is not None:
-        if 'keepdims' not in kwargs and not shim.sparse.issparse(data_arr):
+        if 'keepdims' not in kwargs and not shim.issparse(data_arr):
             kwargs['keepdims'] = True
         res_data = np.concatenate( [ data_arr[:, pop_slice].mean( **kwargs )
                                      for pop_slice in pop_slices ],
                                    axis = 1 )
     else:
-        if 'keepdims' not in kwargs and not shim.sparse.issparse(data_arr):
+        if 'keepdims' not in kwargs and not shim.issparse(data_arr):
             kwargs['keepdims'] = False
         res_data = data_arr.mean(**kwargs)
 
@@ -194,7 +194,7 @@ def diff(hist, mode='centered'):
             endidx = hist.t0idx + len(hist)
 
         # Possibly shorten the length of data, if series was not computed to end
-        endidx = min(hist._cur_tidx.get_value(), endidx)
+        endidx = min(hist._sym_tidx.get_value(), endidx)
 
         res = Series(hist, name = "D " + hist.name,
                      t0 = t0, tn = tn,
@@ -215,7 +215,7 @@ def diff(hist, mode='centered'):
             endidx = hist.t0idx + len(hist)
 
         # Possibly shorten the length of data, if series was not computed to end
-        endidx = min(hist._cur_tidx.get_value(), endidx)
+        endidx = min(hist._sym_tidx.get_value(), endidx)
 
         res = Series(hist, name = "D " + hist.name,
                      t0 = t0, tn = tn,
@@ -236,7 +236,7 @@ def diff(hist, mode='centered'):
         endidx = hist.t0idx + len(hist) + 1
 
         # Possibly shorten the length of data, if series was not computed to end
-        endidx = min(hist._cur_tidx.get_value(), endidx)
+        endidx = min(hist._sym_tidx.get_value(), endidx)
 
         res = histories.Series(hist, name = "D " + hist.name,
                                t0 = t0, tn = tn,
@@ -345,7 +345,7 @@ def filter(series, function, window, name = None, **kwargs):
                 start = np.rint(start).astype(int)
                 return function(series[start:start+window])
         res.set_update_function(f)
-        res.compute_up_to('end')
+        res._compute_up_to('end')
     else:
         raise NotImplementedError
 
@@ -490,7 +490,7 @@ def subsample(series, amount=None, target_dt=None, aggregation='mean',
         for i in range(nbins):
             resdata[i] = aggregation(data[i*amount:(i+1)*amount])
         res._data.set_value(resdata, borrow=True)
-        res._cur_tidx.set_value(res.t0idx + len(resdata) - 1)
+        res._sym_tidx.set_value(res.t0idx + len(resdata) - 1)
     res.lock()
     return res
 
@@ -727,7 +727,7 @@ def plot(data, **kwargs):
             # Loop over the components, plotting each separately
             # Plotting separately allows to assign a label to each
             for comp, label, kwds in zip(comp_list, labels, plot_kwds):
-                kwargs.update(**kwds)
+                kwargs.update(**kwargs)
                 idx = (slice(None),) + comp
                 lines.extend( plt.plot(np.arange(len(data)), data[idx], label=label, **kwargs) )
         return lines
@@ -776,7 +776,7 @@ def plot(data, **kwargs):
         # Plotting separately allows to assign a label to each
         lines = []
         for comp, label, kwds in zip(comp_list, labels, plot_kwds):
-            kwargs.update(**kwds)
+            kwargs.update(**kwargs)
             lines.extend( plt.plot(data.get_time_array(time_slice=tslice),
                                    data.get_trace(comp, time_slice=tslice),
                                    label=label, **kwargs) )
@@ -824,7 +824,7 @@ def plot(data, **kwargs):
                                       linestyle = linestyle,
                                       label = baselabel + str(i),
                                       alpha = alpha,
-                                      **kwds)  )
+                                      **kwargs)  )
 
         # Set the axis limits to see the whole time range
         # (if the beginning or end is empty, it would otherwise be truncated)

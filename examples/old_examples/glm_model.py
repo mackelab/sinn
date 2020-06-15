@@ -123,8 +123,8 @@ class GLM_exp_kernel(Model):
     def A_range_fn(self, t_array):
         shim.check( t_array[0] < t_array[-1] )
             # We don't want to check that the entire array is ordered; this is a compromise
-        if not shim.is_theano_object(self.A._cur_tidx):
-            shim.check( t_array[0] == self.A._cur_tidx.get_value() + 1 )
+        if not shim.is_theano_object(self.A._sym_tidx):
+            shim.check( t_array[0] == self.A._sym_tidx.get_value() + 1 )
 
         if not shim.is_theano_object(self.A._data):
             def loop(t):
@@ -218,8 +218,8 @@ class GLM_exp_kernel(Model):
         # TODO Make separate function, so that it can be called within loglikelihood instead
         for hist in self.history_inputs.union(sinn.inputs):
             if ( not hist.locked and ( ( hist.use_theano and hist.compiled_history is not None
-                                         and hist.compiled_history._cur_tidx.get_value() >= hist.t0idx )
-                                       or (not hist.use_theano and hist._cur_tidx.get_value() >= hist.t0idx) ) ):
+                                         and hist.compiled_history._sym_tidx.get_value() >= hist.t0idx )
+                                       or (not hist.use_theano and hist._sym_tidx.get_value() >= hist.t0idx) ) ):
                 uncleared_histories.append(hist)
         if len(uncleared_histories) > 0:
             raise RuntimeError("You are trying to produce a cost function graph, but have "
@@ -264,12 +264,12 @@ class GLM_exp_kernel(Model):
         input_vals = []
         # HACK Shouldn't need to combine sinn.inputs
         for hist in self.history_inputs.union(sinn.inputs):
-            if shim.is_theano_variable(hist._original_data):
+            if shim.is_theano_variable(hist._num_data):
                 shape = hist._tarr.shape + hist.shape
-                if hist._original_data is not None:
+                if hist._num_data is not None:
                     # The graph triggered an update of the variable. The input to the
                     # function remains the original variable.
-                    input_list.append(hist._original_data)
+                    input_list.append(hist._num_data)
                 else:
                     input_list.append(hist._data)
                 input_vals.append(np.zeros(shape, dtype=sinn.config.floatX))

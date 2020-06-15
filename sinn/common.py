@@ -8,9 +8,15 @@ import abc
 import os
 import sys
 import logging
-from enum import IntEnum
+from enum import IntEnum, Enum
 import numpy as np
 from collections import namedtuple, deque
+
+from typing import Tuple
+import dataclasses
+import pydantic
+from mackelab_toolbox.cgshim import typing as cgtyping
+FloatX = cgtyping.FloatX
 
 import theano_shim as shim
 from ._globals import *
@@ -72,6 +78,58 @@ except ImportError:
         return
     def find_registered_typename(type):
         return type.__name__
+
+###########################
+# Internal state variables
+#
+# These are mostly used as sentinels to recognize recursion within a function
+# Such global state variables should be avoided, but sometimes I haven't yet
+# found a better solution.
+
+_convolution_recursion_level = 0
+
+
+###########################
+# Special types
+#
+# Especially small wrapper types, which associate metadata to an object.
+
+# These objects can get created inside iterated convolution calls, so we prefer
+# the lighter `dataclasses` structure with no validation over the pydantic one
+@dataclasses.dataclass
+class TensorDims:
+    covariant    : Tuple = ()
+    contravariant: Tuple = ()
+    contraction  : Tuple = ()
+
+    # If we didn't care about performance, we could use the following validator:
+    # @root_validator
+    # def no_overlap(cls, values):
+    #     covary, contravary, contract = (values.get(x, None)
+    #         for x in ('covariant', 'contravariant', 'contraction'))
+    #     if None not in (covary, contravary, contract):
+    #         assert len(set(covary) & set(contravary)) == 0
+    #         assert len(set(covary) & set(contract)) == 0
+    #         assert len(set(contravary) & set(contract)) == 0
+    #     return values
+
+@dataclasses.dataclass
+class TensorWrapper:
+    """
+    Package an array along with some metadata indicating which axes are
+    covariant/contravariant, and which are contractions.
+    """
+    array: cgtyping.Tensor
+    dims: TensorDims
+
+    # # If we need to normalize inputs in the future, we can consider if the
+    # # following is worth doing.
+    # def __post_init__(self):
+    #     """Unlabled axes default to 'covariant'."""
+    #     axes = np.arange(self.array.ndim)
+    #     labeled_axes = set(self.dims.covariant) | set(self.dims.contravariant) | set(self.dims.contraction)
+    #     if len(axes) > len(labeled_axes):
+    #         self.dims.covariant = Tuple(ax for ax in axes if ax in self.dims.covariant or ax not in labeled_axes):
 
 ###########################
 # Utility functions
@@ -238,140 +296,138 @@ def static_vars(**kwargs):
         return func
     return decorate
 
-def add_sibling_input(sibling, new_input):
-    # TODO Move to Graph class
-    for key, val in inputs.items():
-        if sibling in val:
-            inputs[key].add(new_input)
-
-def get_updates():
-    return shim.get_updates()
-
-def theano_reset():
-    global inputs
-    for hist in inputs:
-        # HACK sinn.inputs happens to have each history as
-        # a key, but this is not what it's meant for
-        if not hist.locked:
-            hist.theano_reset()
-    #inputs = {}
-    shim.reset_updates()
-
-class Node:
-    def __init__(self, name):
-        self.name = name
-
-class DependencyGraph(dict):
-
-    def __init__(self, name):
-        self.name = name
-        super().__init__()
-
-    def add(self, obj):
-        if obj not in self:
-            if obj.name == 'JᕽAᐩI':
-                pass
-            self[obj] = set()
-
-    def union(self, other):
-        for obj in other:
-            self.add(obj)
-        if isinstance(other, DependencyGraph):
-            self.match_template(other)
-        return self
-
-    def find_by_name(self, name, nofail=False):
-        res = None
-        for node in self:
-            if node.name == name:
-                assert(res is None)
-                res = node
-        if res is None and not nofail:
-            raise ValueError("Node {} was not found.".format(name))
-        return res
-
-    def match_template(self, template):
-        """Take a template graph, and reproduce the edges therein.
-        Nodes are identified by their name.
-        All names in `template` must already exist, but `self` can contain
-        additional names.
-        """
-        for tmplnode, tmpledges in template.items():
-            node = self.find_by_name(tmplnode.name)
-            edge_list = [self.find_by_name(connected_node.name)
-                         for connected_node in tmpledges]
-            self[node] = self[node].union(edge_list)
-
-    def strip(self):
-        """Return a new graph reproducing the connections but stripping
-        out everything else. Useful if you want to share the connectivity,
-        but your objects contain large data."""
-        nwgraph = Graph()
-
-        node_set = set()
-        for node, edges in self.items():
-            node_set.add(node)
-            node_set.union(edges)
-
-        nwnode_set = set()
-        for node in node_set:
-            nwnode = Node(node.name)
-            nwnode_set.add(nwnode)
-            nwgraph[nwnode] = set()
-
-        nwgraph.match_template(self)
-
-        return nwgraph
-
-inputs = DependencyGraph('sinn.inputs')
-    # The inputs dictionary is keyed by histories. If 'hist' is a History instance,
-    # inputs[hist] is a set containing all histories which appear in hist's
-    # update function.
-    # Whenever a history's __getitem__ method is called, it adds itself
-    # to this dictionary
+# def add_sibling_input(sibling, new_input):
+#     # TODO Move to Graph class
+#     for key, val in inputs.items():
+#         if sibling in val:
+#             inputs[key].add(new_input)
+#
+# def get_updates():
+#     return shim.get_updates()
+#
+# def theano_reset():
+#     global inputs
+#     for hist in inputs:
+#         # HACK sinn.inputs happens to have each history as
+#         # a key, but this is not what it's meant for
+#         if not hist.locked:
+#             hist.theano_reset()
+#     #inputs = {}
+#     shim.reset_updates()
+#
+# class Node:
+#     def __init__(self, name):
+#         self.name = name
+#
+# class DependencyGraph(dict):
+#
+#     def __init__(self, name):
+#         self.name = name
+#         super().__init__()
+#
+#     def add(self, obj):
+#         if obj not in self:
+#             if obj.name == 'JᕽAᐩI':
+#                 pass
+#             self[obj] = set()
+#
+#     def union(self, other):
+#         for obj in other:
+#             self.add(obj)
+#         if isinstance(other, DependencyGraph):
+#             self.match_template(other)
+#         return self
+#
+#     def find_by_name(self, name, nofail=False):
+#         res = None
+#         for node in self:
+#             if node.name == name:
+#                 assert(res is None)
+#                 res = node
+#         if res is None and not nofail:
+#             raise ValueError("Node {} was not found.".format(name))
+#         return res
+#
+#     def match_template(self, template):
+#         """Take a template graph, and reproduce the edges therein.
+#         Nodes are identified by their name.
+#         All names in `template` must already exist, but `self` can contain
+#         additional names.
+#         """
+#         for tmplnode, tmpledges in template.items():
+#             node = self.find_by_name(tmplnode.name)
+#             edge_list = [self.find_by_name(connected_node.name)
+#                          for connected_node in tmpledges]
+#             self[node] = self[node].union(edge_list)
+#
+#     def strip(self):
+#         """Return a new graph reproducing the connections but stripping
+#         out everything else. Useful if you want to share the connectivity,
+#         but your objects contain large data."""
+#         nwgraph = Graph()
+#
+#         node_set = set()
+#         for node, edges in self.items():
+#             node_set.add(node)
+#             node_set.union(edges)
+#
+#         nwnode_set = set()
+#         for node in node_set:
+#             nwnode = Node(node.name)
+#             nwnode_set.add(nwnode)
+#             nwgraph[nwnode] = set()
+#
+#         nwgraph.match_template(self)
+#
+#         return nwgraph
+#
+# inputs = DependencyGraph('sinn.inputs')
+#     # The inputs dictionary is keyed by histories. If 'hist' is a History instance,
+#     # inputs[hist] is a set containing all histories which appear in hist's
+#     # update function.
+#     # Whenever a history's __getitem__ method is called, it adds itself
+#     # to this dictionary
 
 # HistoryBase, PopulationHistoryBase and KernelBase are mostly provided for
 # type-checking (otherwise one needs to import e.g. histories.py, which can
 # lead to circular imports)
 
-class HistoryBase(abc.ABC):
-
-    # TODO: Move setting of `name` attribute here
-    def __init__(self, t0, tn):
-        self.t0 = t0
-        self.tn = tn
-        self._tarr = None # Implement in child classes
-
-    @abc.abstractmethod
-    def get_time(self, t):
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def get_tidx(self, t):
-        raise NotImplementedError
-
-    def __str__(self):
-        if hasattr(self, 'name'):
-            return self.name
-        else:
-            return super().__str__()
-
-    def __repr__(self):
-        if hasattr(self, 'name'):
-            info = "t0: {}, tn: {}".format(self.t0, self.tn)
-            if hasattr(self, 'cur_t'):
-                info += ", cur_t: {}".format(self.cur_t)
-            if hasattr(self, 'cur_tidx'):
-                info += ", cur_tidx: {}".format(self.cur_tidx)
-            return "{} ({})".format(self.name, info)
-        else:
-            return super().__repr__()
+class HistoryBase(pydantic.BaseModel, abc.ABC):
+    pass
+    # __slots__ = ()
+    # t0: FloatX
+    # tn: FloatX
+    #
+    # @abc.abstractmethod
+    # def get_time(self, t):
+    #     raise NotImplementedError
+    #
+    # @abc.abstractmethod
+    # def get_tidx(self, t):
+    #     raise NotImplementedError
+    #
+    # def __str__(self):
+    #     if hasattr(self, 'name'):
+    #         return self.name
+    #     else:
+    #         return super().__str__()
+    #
+    # def __repr__(self):
+    #     if hasattr(self, 'name'):
+    #         info = "t0: {}, tn: {}".format(self.t0, self.tn)
+    #         if hasattr(self, 'cur_t'):
+    #             info += ", cur_t: {}".format(self.cur_t)
+    #         if hasattr(self, 'cur_tidx'):
+    #             info += ", cur_tidx: {}".format(self.cur_tidx)
+    #         return "{} ({})".format(self.name, info)
+    #     else:
+    #         return super().__repr__()
 
 
 class PopulationHistoryBase(HistoryBase):
     pass
 
-class KernelBase:
+class KernelBase(pydantic.BaseModel):
     pass
 
 class _OpTupleCache:
@@ -461,8 +517,8 @@ class OpCache:
         # FIXME: At present practically nothing will be cached. For kernels,
         #        instead of checking 'locked' state, should check if parameter set corresponds
         if ( config.use_theano()
-             or (hasattr(self, 'locked') and not self.locked)
-             or (hasattr(other, 'locked') and not other.locked) ):
+             or not getattr(self.source, 'locked', True)
+             or not getattr(other, 'locked', True) ):
             return shim.stack( [ self.op(other, arg) for arg in args ] )
 
         ################################################
@@ -544,7 +600,7 @@ class OpCache:
 
             if self.cache[hash(other)].data is None:
                 # First time we cache data – create a new structure
-                self.cache[hash(other)].data = shim.ShimmedShared(new_data)
+                self.cache[hash(other)].data = shim.ShimmedTensorShared(new_data)
                     # TODO: Just replace by a normal Numpy array
                 for i, akey in enumerate(arg_keys):
                     data_keys[i] = i
@@ -665,143 +721,147 @@ def params_are_equal(params1, params2):
 #     return TParameters(*(T.constant(getattr(params,name), str(id_num) + '_' + name, dtype=config.floatX)
 #                          for name, id_num in zip(param_names, id_nums)))
 
-def get_parameter_subset(model, src_params):
-    """
-    Create a Parameters object with the same instances as src_params
-    Use case: we need a handle on a kernel's parameters, e.g. because
-    the parameters are shared with another kernel or some higher level
-    function.
+# DEPRECATED parameter functions
+# See mtb.dataclasses.prune_attr_dict if you need this
+# def get_parameter_subset(model, src_params):
+#     """
+#     Create a Parameters object with the same instances as src_params
+#     Use case: we need a handle on a kernel's parameters, e.g. because
+#     the parameters are shared with another kernel or some higher level
+#     function.
+#
+#     Parameters
+#     ----------
+#     model: class instance derived from Model
+#         The model class for which we want a Parameter collection.
+#     src_params: namedtuple
+#         The pre-existing Parameter collection we want to reuse.
+#     """
+#     # TODO: use src_params._asdict() ?
+#     paramdict = {}
+#     for name in src_params._fields:
+#         if name in model.Parameters._fields:
+#             paramdict[name] = getattr(src_params, name)
+#     return model.Parameters(**paramdict)
 
-    Parameters
-    ----------
-    model: class instance derived from Model
-        The model class for which we want a Parameter collection.
-    src_params: namedtuple
-        The pre-existing Parameter collection we want to reuse.
-    """
-    # TODO: use src_params._asdict() ?
-    paramdict = {}
-    for name in src_params._fields:
-        if name in model.Parameters._fields:
-            paramdict[name] = getattr(src_params, name)
-    return model.Parameters(**paramdict)
-
-def set_parameters(target, source):
-    assert(hasattr(target, '_fields'))
-    if hasattr(source, '_fields'):
-        # We have a Parameter object
-        assert( set(target._fields) == set(source._fields) )
-        for field in target._fields:
-            val = getattr(source, field)
-            if shim.isshared(val):
-                val = val.get_value()
-            getattr(target, field).set_value( val )
-    else:
-        assert(isinstance(source, dict))
-        # assert( set(target._fields) == set(source.keys()) )
-        assert( set(source.keys()).issubset(set(target._fields)) )
-        for pname, val in source.items():
-            # val = source[field]
-            if shim.isshared(val):
-                val = val.get_value()
-            getattr(target, pname).set_value( val )
+# def set_parameters(target, source):
+#     assert(hasattr(target, '_fields'))
+#     if hasattr(source, '_fields'):
+#         # We have a Parameter object
+#         assert( set(target._fields) == set(source._fields) )
+#         for field in target._fields:
+#             val = getattr(source, field)
+#             if shim.isshared(val):
+#                 val = val.get_value()
+#             getattr(target, field).set_value( val )
+#     else:
+#         assert(isinstance(source, dict))
+#         # assert( set(target._fields) == set(source.keys()) )
+#         assert( set(source.keys()).issubset(set(target._fields)) )
+#         for pname, val in source.items():
+#             # val = source[field]
+#             if shim.isshared(val):
+#                 val = val.get_value()
+#             getattr(target, pname).set_value( val )
 
 def convert_parameters_to_theano(params):
     param_dict = params._asdict()
     for key, val in param_dict.items():
-        if isinstance(val, shim.ShimmedShared):
+        if isinstance(val, shim.ShimmedTensorShared):
             param_dict[key] = shim.shared(val.get_value(), name=val.name)
     return param_dict
 
 
-class ParameterMixin:
+# class ParameterMixin:
+#
+#     Parameter_info = {}
+#         # Overload this in derived classes
+#         # Entries to Parameter dict: 'key': (dtype, default, ensure_2d)
+#         # If the ensure_2d flag is True, parameter will guaranteed to be a matrix with at least 2 dimensions
+#         # Default is ensure_2d = False.
+#     Parameters = define_parameters(Parameter_info)
+#         # Overload this in derived classes
+#
+#     def __init__(self, *args, params, **kwargs):
+#
+#         # try:
+#         #     params = kwargs.pop('params')
+#         # except KeyError:
+#         #     raise TypeError("Unsufficient arguments: ParameterMixin "
+#         #                     "requires a `params` argument.")
+#         self.set_parameters(params)
+#         super().__init__(*args, **kwargs)
+#
+#     def cast_parameters(self, params):
+#         """
+#         Take parameters and cast them to the defined shape and type.
+#
+#         Parameters
+#         ----------
+#         params: namedtuple
+#
+#         Returns
+#         -------
+#         namedtuple
+#         """
+#         assert(self.parameters_are_valid(params))
+#
+#         # Cast the parameters to ensure they're of prescribed type
+#         param_dict = {}
+#         for key in self.Parameters._fields:
+#             val = getattr(params, key)
+#             if shim.isshared(val) or shim.is_theano_object(val):
+#                 # HACK We just assume that val has already been properly casted. We do this
+#                 #      to keep the reference to the original variable
+#                 if not hasattr(val, 'name') or val.name is None:
+#                     val.name = key
+#                 param_dict[key] = val
+#             else:
+#                 if not isinstance(val, np.ndarray):
+#                     val = np.asarray(val)
+#                 if isinstance(self.Parameter_info[key], tuple):
+#                     # TODO: Find a way to cast to dtype without making and then dereferencing an array
+#                     param_dict[key] = None
+#                     dtype = self.Parameter_info[key][0]
+#                     if dtype == 'floatX':
+#                         dtype = shim.config.floatX
+#                     temp_val = val.astype(dtype, copy=False)
+#                     # Check if we should ensure parameter is 2d.
+#                     try:
+#                         if self.Parameter_info[key][2]:
+#                             # Also wrap scalars in a 2D matrix so they play nice with algorithms
+#                             if temp_val.ndim < 2:
+#                                 param_dict[key] = shim.shared( shim.add_axes(temp_val, 2 - temp_val.ndim),
+#                                                                name = key )
+#                     except IndexError:
+#                         pass
+#                     if param_dict[key] is None:
+#                         # `ensure_2d` is either False or unset
+#                         param_dict[key] = shim.shared(temp_val, name = key)
+#                 else:
+#                     dtype = self.Parameter_info[key]
+#                     if dtype == 'floatX':
+#                         dtype = shim.config.floatX
+#                     param_dict[key] = shim.shared(
+#                         val.astype(dtype, copy=False),
+#                         name=key)
+#         return self.Parameters(**param_dict)
+#
+#     def set_parameters(self, params):
+#         self.params = self.cast_parameters(params)
+#
+#     def parameters_are_valid(self, params):
+#         """Returns `true` if all of the model's parameters can be set from `params`"""
+#         return set(self.Parameters._fields).issubset(set(params._fields))
 
-    Parameter_info = {}
-        # Overload this in derived classes
-        # Entries to Parameter dict: 'key': (dtype, default, ensure_2d)
-        # If the ensure_2d flag is True, parameter will guaranteed to be a matrix with at least 2 dimensions
-        # Default is ensure_2d = False.
-    Parameters = define_parameters(Parameter_info)
-        # Overload this in derived classes
-
-    def __init__(self, *args, params, **kwargs):
-
-        # try:
-        #     params = kwargs.pop('params')
-        # except KeyError:
-        #     raise TypeError("Unsufficient arguments: ParameterMixin "
-        #                     "requires a `params` argument.")
-        self.set_parameters(params)
-        super().__init__(*args, **kwargs)
-
-    def cast_parameters(self, params):
-        """
-        Take parameters and cast them to the defined shape and type.
-
-        Parameters
-        ----------
-        params: namedtuple
-
-        Returns
-        -------
-        namedtuple
-        """
-        assert(self.parameters_are_valid(params))
-
-        # Cast the parameters to ensure they're of prescribed type
-        param_dict = {}
-        for key in self.Parameters._fields:
-            val = getattr(params, key)
-            if shim.isshared(val) or shim.is_theano_object(val):
-                # HACK We just assume that val has already been properly casted. We do this
-                #      to keep the reference to the original variable
-                if not hasattr(val, 'name') or val.name is None:
-                    val.name = key
-                param_dict[key] = val
-            else:
-                if not isinstance(val, np.ndarray):
-                    val = np.asarray(val)
-                if isinstance(self.Parameter_info[key], tuple):
-                    # TODO: Find a way to cast to dtype without making and then dereferencing an array
-                    param_dict[key] = None
-                    dtype = self.Parameter_info[key][0]
-                    if dtype == 'floatX':
-                        dtype = shim.config.floatX
-                    temp_val = val.astype(dtype, copy=False)
-                    # Check if we should ensure parameter is 2d.
-                    try:
-                        if self.Parameter_info[key][2]:
-                            # Also wrap scalars in a 2D matrix so they play nice with algorithms
-                            if temp_val.ndim < 2:
-                                param_dict[key] = shim.shared( shim.add_axes(temp_val, 2 - temp_val.ndim),
-                                                               name = key )
-                    except IndexError:
-                        pass
-                    if param_dict[key] is None:
-                        # `ensure_2d` is either False or unset
-                        param_dict[key] = shim.shared(temp_val, name = key)
-                else:
-                    dtype = self.Parameter_info[key]
-                    if dtype == 'floatX':
-                        dtype = shim.config.floatX
-                    param_dict[key] = shim.shared(
-                        val.astype(dtype, copy=False),
-                        name=key)
-        return self.Parameters(**param_dict)
-
-    def set_parameters(self, params):
-        self.params = self.cast_parameters(params)
-
-    def parameters_are_valid(self, params):
-        """Returns `true` if all of the model's parameters can be set from `params`"""
-        return set(self.Parameters._fields).issubset(set(params._fields))
-
-    def get_parameter_subset(self, params):
-        """
-        Return the subset of parameters from params that relate to this model.
-
-        Returns
-        -------
-        A Parameter namedtuple
-        """
-        return get_parameter_subset(self, params)
+    # DEPRECATED
+    # Use mtb.dataclasses.prune_attr_dict
+    # def get_parameter_subset(self, params):
+    #     """
+    #     Return the subset of parameters from params that relate to this model.
+    #
+    #     Returns
+    #     -------
+    #     A Parameter namedtuple
+    #     """
+    #     return get_parameter_subset(self, params)

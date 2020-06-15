@@ -1,11 +1,4 @@
 * Priority 1
-** TODO Make history dependency resolution local
-   Don't search sinn.inputs for the list of inputs, but keep the list of inputs
-in the history itself.
-*** TODO Make HistoryBase derive from a Node class (or replace by?)
-   Then make the elements of _globals.inputs Node instances
-*** TODO Change sinn.inputs to sinn.histories
-** TODO Parameters -> Sumatra Parameters
 
 * Priority 2
 ** BUG [History] Compound operations don't work. E.g. : (A-a) * (B-b), with A,B histories.
@@ -14,7 +7,6 @@ in the history itself.
    - Only update once per t
    - Only update to next t
    - Cannot update to past t
-** TODO Allow setting portions of a history
 ** TODO Lag method for histories
    Return the value of a history at some lag
    - Allows using index for time and float for lag, or vice-versa
@@ -23,12 +15,6 @@ in the history itself.
    - Idea: implement a HistoryView, which allows indexing of histories
      at lagged times. So call could be `A.lag(3)[t]`
 ** TODO [History] Detect when name is reused, and add suffix.
-** TODO [gradient-descent] Index with variable names rather than Theano variable.
-   At the moment we first need to load a model first just to have dictionary keys
-   to which to assign traces, etc. This means we need to instantiate a model just to
-   read the results of a fit.
-   Search for 'name indexing' in gradient_descent.py
-** TODO [gradient descent] Don't save parameter evolutions for clamped parameters
 
 * Priority 3
 
@@ -36,34 +22,48 @@ in the history itself.
    Would take graph, parameter, new name, "to" and "from" conversion functions (e.g. 10** and log)
    Would then take care of cloning the graph, replacing with the "to" converted new parameter
    and setting the value of the shared parameter with the "from" conversion
-** TODO Deprecate `use_theano` attribute and parameter in History
-   _data should always be a shared variable
-** TODO Allow combinations of kernels (e.g. uniform + exp)
-** TODO Attach list of inputs to history
 ** TODO Allow resizing a History (esp. reducing)
 ** TODO Allow input dependencies to specify a lag
-   Should be possible to give to m the dependency m_lag1, while
-   keeping m 'batch computable'.
-** TODO Uniform kernel
-** TODO [Spiketrain] Attach connectivity matrix to kernel, not spiketrain
-*** Will need to figure out how to expand the connectivity matrix
-    Possibly something like the 'discretize' pattern, where it is attached to the kernel ?
-** TODO [History] Allow to specify no. of bins in __init__, instead of t0 & tn
 ** TODO Multiple 'monitor' levels for logging
-** TODO [History] Allow argument to 'pad' to be another history
-   Padding would then be adjusted to include at least as much padding
-
-** TODO Add a destructor to models
-   So that when we delete them, they also remove histories from sinn.histories
-   Ideally only if those histories don't appear anywhere else. Or at least a warning.
-org-todo-keywords
-** TODO Allow History functions to deal with pure Python _data objects
-   (Not just shared variables)
-
 ** TODO Catch when caught in a lookup loop (e.g. u[t] requires u[t] requires...)
    Raise an easier to understand error than "max recursion depth"
 
-** DONE Check that on disk caching is successfully loading
-** DONE Don't allow negative integer indices for histories
+
 
 * Priority 4
+
+
+* DONE
+
+** DONE Make history dependency resolution local
+   Don't search sinn.inputs for the list of inputs, but keep the list of inputs
+in the history itself.
+** DONE Parameters -> Pydantic Parameters
+** DONE Allow setting portions of a history
+** DONE [gradient-descent] Index with variable names rather than Theano variable.
+   At the moment we first need to load a model first just to have dictionary keys
+   to which to assign traces, etc. This means we need to instantiate a model just to
+   read the results of a fit.
+   Search for 'name indexing' in gradient_descent.py
+** DONE [gradient descent] Don't save parameter evolutions for clamped parameters
+** DONE Deprecate `use_theano` attribute and parameter in History
+   _data should always be a shared variable
+** DONE Allow combinations of kernels (e.g. uniform + exp)
+** DONE Attach list of inputs to history
+   Should be possible to give to m the dependency m_lag1, while
+   keeping m 'batch computable'.
+** DONE Uniform kernel
+** DONE [Spiketrain] Attach connectivity matrix to kernel, not spiketrain
+*** Will need to figure out how to expand the connectivity matrix
+    Possibly something like the 'discretize' pattern, where it is attached to the kernel ?
+** DONE [History] Allow to specify no. of bins in __init__, instead of t0 & tn
+** WONTFIX [History] Allow argument to 'pad' to be another history
+   Padding would then be adjusted to include at least as much padding
+** WONTFIX Add a destructor to models
+   So that when we delete them, they also remove histories from sinn.histories
+   Ideally only if those histories don't appear anywhere else. Or at least a warning.
+org-todo-keywords
+** DONE Allow History functions to deal with pure Python _data objects
+   (Not just shared variables)
+** DONE Check that on disk caching is successfully loading
+** DONE Don't allow negative integer indices for histories

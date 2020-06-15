@@ -1,3 +1,5 @@
+# TODO: This example is still based on sinn v0.1
+
 from collections import deque
 import numpy as np
 import pymc3 as pm

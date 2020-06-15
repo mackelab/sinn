@@ -1,8 +1,10 @@
 import logging
 import numpy as np
 import packaging
+from typing import TypeVar, Union
 
 import theano_shim as shim
+import sinn
 
 #logLevel = logging.DEBUG # CRITICAL, INFO, WARNING, DEBUG, ERROR, FATAL
 logger = logging.getLogger('sinn.config')
@@ -102,6 +104,14 @@ class CompatVersion:
         return self._compat_version > self.parse(other)
     def __ge__(self, other):
         return self._compat_version >= self.parse(other)
+
+######################
+# Extensions to typing support
+
+T = TypeVar('T')
+SinnOptional = Union[T, type(sinn._NoValue)]
+"""Same purpose as `typing.Optional`, but instead of `None` as a sentinel
+value, `sinn._NoValue` is used."""
 
 ######################
 # Set numerical tolerance

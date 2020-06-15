@@ -14,12 +14,21 @@ debuglog*
 data
 TMPNOTES
 venv
+snippets
 tmp*
 *.log*
 *.cprof
 _build
+_autosummary
+*.coverage
 *.html
 *.cache
 *.compilecache
+*???final?.dat
+*???final?.dir
+  # Theano graph cache files
 activate
   # symbolic link to environment
+*.Rproj*
+.Rprofile
+.RData

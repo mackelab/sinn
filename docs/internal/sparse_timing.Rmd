@@ -1,0 +1,66 @@
+---
+title: "Sparse timing"
+output: html_notebook
+---
+
+```{python}
+gen_setup = """\
+import numpy as np
+from scipy import sparse
+N = 100
+T = 4000
+p = 0.03
+np.random.seed(0)
+data_generator = [np.where(np.random.binomial(1, 0.03, size=N))[0]
+                  for i in range(T)]
+"""
+```
+
+```{python}
+coo_setup = """\
+def cooupdate(mat, ti, idcs):
+    onevect = np.ones(idcs.shape, dtype='int8')
+        # vector of ones of the same length as the number of units which fired
+    mat.data = np.concatenate((mat.data, onevect))
+        # Add as many 1 entries as there are new spikes
+    mat.col = np.concatenate((mat.col, idcs))
+        # Assign those spikes to neurons (col idx corresponds to neuron index)
+    mat.row = np.concatenate((mat.row, i*onevect))
+"""
+
+csr_setup = ""
+csc_setup = ""
+```
+
+
+```{python}
+fillcoo = """\
+coomat = sparse.coo_matrix((T,N), dtype=np.int8)
+for i, spikes in enumerate(data_generator):
+  cooupdate(coomat, i, spikes)
+#print(repr(coomat))
+"""
+fillcsr = """\
+csrmat = sparse.csr_matrix((T,N), dtype=np.int8)
+for i, spikes in enumerate(data_generator):
+  csrmat[i,spikes] = 1
+#print(repr(csrmat))
+"""
+fillcsc = """\
+cscmat = sparse.csc_matrix((T,N), dtype=np.int8)
+for i, spikes in enumerate(data_generator):
+  cscmat[i,spikes] = 1
+#print(repr(cscmat))
+"""
+```
+
+
+```{python}
+res = {}
+for mat, (task, task_setup) in {'coo':(fillcoo, coo_setup),
+                           'csr':(fillcsr, csr_setup),
+                           'csc':(fillcsc, csc_setup)}.items():
+  timings = timeit.repeat(task, setup=gen_setup+task_setup, repeat=3, number=10)
+  res[mat] = f"{mat}: {np.mean(timings):.5f} ± {np.std(timings):.5f}"
+  print(res[mat])
+```

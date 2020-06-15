@@ -1,7 +1,7 @@
 import numpy as np
 import copy
 import builtins
-from collections import Iterable
+from collections.abc import Iterable
 import itertools
 from numbers import Number
 import operator
@@ -162,7 +162,7 @@ def _construct_block_types(PopTermT):
     # Retrieve the base block type
     baseblockT = _get_baseT(dataT, block=True)
     # baseT = _get_baseT(dataT)
-    # if issubclass(dataT, (shim.ShimmedShared, shim.config.SymbolicSharedType)):
+    # if issubclass(dataT, (shim.ShimmedTensorShared, shim.config.SymbolicSharedType)):
     #     # SymbolicPopTerm must be before NumpyPopTerm in mro
     #     if SymbolicPopTerm not in bases: bases += (SymbolicPopTerm,)
     # if issubclass(dataT, np.ndarray):
@@ -1107,7 +1107,7 @@ class PopTermPart(PopTermBlock):
 class PopTermMicro(PopTermBlock):
     """
     A variable which properly broadcasts when multiplied/added to a population History
-    (e.g. SpikeTrain)
+    (e.g. Spiketrain)
     One entry per population member
     """
     def __new__(cls, *args, **kwargs):
@@ -1116,7 +1116,7 @@ class PopTermMicro(PopTermBlock):
 class PopTermMeso(PopTermBlock):
     """
     A variable which properly broadcasts when multiplied/added to a population History
-    (e.g. SpikeTrain)
+    (e.g. Spiketrain)
     Checks that the population sizes match before applying operations.
     One entry per population.
     """
@@ -1126,7 +1126,7 @@ class PopTermMeso(PopTermBlock):
 class PopTermMacro(PopTermBlock):
     """
     A variable which properly broadcasts when multiplied/added to a population History
-    (e.g. SpikeTrain)
+    (e.g. Spiketrain)
     Checks that the population sizes match before applying operations.
     Represents a single entry, common to all populations
     """
@@ -1245,7 +1245,7 @@ class SymbolicPopTerm(PopTerm):
                             "although it is supported for shared types.")
         if type is np.ndarray:
             if isinstance(self, np.ndarray):
-                # A ShimmedShared variable implements `get_value` with `view`
+                # A ShimmedTensorShared variable implements `get_value` with `view`
                 # so using get_value() here would lead to infinite recursion
                 return self.data_type.view(self, np.ndarray)
             else:
@@ -1267,7 +1267,7 @@ class SymbolicPopTerm(PopTerm):
         #  - remove `_data`
         # F
 
-        # HACK: ShimmedShared types need use the NumpyPopTerm, because they
+        # HACK: ShimmedTensorShared types need use the NumpyPopTerm, because they
         #       subclass ndarray.
         #       This should be fixed by a saner inheritance structure, and/or
         #       by merging the _apply_op methods

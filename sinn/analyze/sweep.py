@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 import theano_shim as shim
 import sinn
-import sinn.iotools as io
+import mackelab_toolbox.iotools as io
 from .heatmap import HeatMap
 from .axis import Axis
 

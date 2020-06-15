@@ -20,13 +20,13 @@ sys.path.insert(0, os.path.abspath('../'))
 # -- Project information -----------------------------------------------------
 
 project = 'Sinn'
-copyright = '2018, Alexandre René'
+copyright = '2018-2020, Alexandre René'
 author = 'Alexandre René'
 
 # The short X.Y version
-version = ''
+version = '0.2'
 # The full version, including alpha/beta/rc tags
-release = '0.1'
+release = '0.2dev'
 
 
 # -- General configuration ---------------------------------------------------
@@ -40,12 +40,15 @@ release = '0.1'
 # ones.
 extensions = [
     'sphinx.ext.autodoc',
+    'sphinx.ext.autosummary',
     'sphinx.ext.todo',
     'sphinx.ext.coverage',
     'sphinx.ext.mathjax',
     'sphinx.ext.viewcode',
     'sphinx.ext.napoleon',
 ]
+
+autosummary_generate = True
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
@@ -64,7 +67,7 @@ master_doc = 'index'
 #
 # This is also used if you do content translation via gettext catalogs.
 # Usually you set "language" from the command line for these cases.
-language = None
+language = 'en'
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
@@ -74,6 +77,7 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 # The name of the Pygments (syntax highlighting) style to use.
 pygments_style = 'sphinx'
 
+default_role = 'py:obj'
 
 # -- Options for HTML output -------------------------------------------------
 
@@ -169,3 +173,56 @@ autodoc_member_order = 'bysource'
 
 # If true, `todo` and `todoList` produce output, else they produce nothing.
 todo_include_todos = True
+
+
+# -- Custom instructions ----------------------------------------------
+
+from sphinx.ext.autosummary import Autosummary
+from sphinx.ext.autosummary import get_documenter
+from docutils.parsers.rst import directives
+from sphinx.util.inspect import safe_getattr
+import re
+
+class AutoAutoSummary(Autosummary):
+    """Source: https://stackoverflow.com/a/30783465."""
+
+    option_spec = {
+        'methods': directives.unchanged,
+        'attributes': directives.unchanged
+    }
+
+    required_arguments = 1
+
+    @staticmethod
+    def get_members(obj, typ, include_public=None):
+        if not include_public:
+            include_public = []
+        items = []
+        for name in dir(obj):
+            try:
+                documenter = get_documenter(safe_getattr(obj, name), obj)
+            except AttributeError:
+                continue
+            if documenter.objtype == typ:
+                items.append(name)
+        public = [x for x in items if x in include_public or not x.startswith('_')]
+        return public, items
+
+    def run(self):
+        clazz = str(self.arguments[0])
+        try:
+            (module_name, class_name) = clazz.rsplit('.', 1)
+            m = __import__(module_name, globals(), locals(), [class_name])
+            c = getattr(m, class_name)
+            if 'methods' in self.options:
+                _, methods = self.get_members(c, 'method', ['__init__'])
+
+                self.content = ["~%s.%s" % (clazz, method) for method in methods if not method.startswith('_')]
+            if 'attributes' in self.options:
+                _, attribs = self.get_members(c, 'attribute')
+                self.content = ["~%s.%s" % (clazz, attrib) for attrib in attribs if not attrib.startswith('_')]
+        finally:
+            return super(AutoAutoSummary, self).run()
+
+def setup(app):
+    app.add_directive('autoautosummary', AutoAutoSummary)

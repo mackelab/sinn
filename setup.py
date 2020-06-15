@@ -23,14 +23,19 @@ setup(
 
       install_requires=['numpy >= 1.13',
                         'scipy',
+                        'pydantic',
                         'mackelab_toolbox',
                         'theano_shim',
                         'theano',
                         'tqdm',
                         'packaging',
-                        'jsonpickle',
-                        'odictliteral']
-      # Add mackelab, theano as optional dependency
-      # luigi is not included, since nothing imports luigi.py
-      # A user importing sinn.models.luigi should expect to install luigi
+                        'odictliteral'],
+      # Add theano as optional dependency
+
+      extras_require = {
+        'dev': [
+            'pytest',
+            'pytest-xdist'
+        ]
+      }
      )

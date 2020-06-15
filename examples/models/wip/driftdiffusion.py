@@ -5,6 +5,8 @@ Drift-diffusion model (aka Brownian motion)
 Created Wed Aug 7 2018
 
 author: Alexandre René
+
+TODO: Port to v0.2
 """
 
 import numpy as np
