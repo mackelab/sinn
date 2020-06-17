@@ -94,197 +94,6 @@ def get_model(modelname, *args, **kwargs):
     global _models
     return _models.get(modelname, *args, **kwargs)
 
-def make_placeholder(history, name_suffix=' placeholder'):
-    """
-    Return a symbolic variable representating a time slice of
-    :param:history.
-    TODO: Add support for >1 lags.
-    """
-    return shim.tensor(history.shape, history.name + name_suffix, history.dtype)
-
-def _graph_batch_bounds(model, start, stop, batch_size):
-    """ Internal function for :func:batch_function_scan. """
-    start = model.get_tidx(start)
-    if stop is None and batch_size is None:
-        raise TypeError("Batch function requires that `start` and"
-                        "one of `stop`, `batch_size` be specified.")
-    elif batch_size is None:
-        stop = model.get_tidx(stop)
-        batch_size = stop - start
-    elif stop is None:
-        batch_size = model.index_interval(batch_size)
-        stop = start + batch_size
-    else:
-        logger.warning("Both `stop` and `batch_size` were provided "
-                       "to a batch function. This is probably an "
-                       "error, and if it isn't, make sure that "
-                       "they are consistent.")
-    return start, stop, batch_size
-
-def batch_function_scan(*inputs):
-    """
-    To be used as a decorator. Uses `scan` to construct the vectors
-    of values constituting a batch, iterating from `start` to `stop`.
-
-    Parameters
-    ----------
-    inputs: list of str
-        Each string must correspond exactly to the identifier for one
-        of the model's histories. (They are retrieved with `gettattr`.)
-        The slice corresponding to a batch for each defined input will
-        be passed to the function, in the order defined by :param:inputs.
-
-    Example
-    -------
-
-    >>> import numpy as np
-    >>> from Collections import namedtuple
-    >>> from odictliteral import odict
-    >>> import sinn
-    >>> from sinn.histories import Series
-    >>> from sinn.models import Model
-    >>> class MyModel(Model):
-            requires_rng = True
-            Parameter_info = odict['θ': 'floatX']
-            Parameters = sinn.define_parameters(Parameter_info)
-            State = namedtuple()
-            def __init__(self, params, random_stream=None):
-                self.A = Series('A', shape=(1,), time_array=np.arange(1000))
-                self.rndstream = random_stream
-                super().__init__(params=params, reference_history=self.A)
-                self.A.set_update_function(
-                    lambda t: self.rndstream.normal(avg=self.θ))
-
-            @batch_function_scan('A')
-            def logp(A):
-                # Squared error
-                return ((A - self.θ)**2).sum()
-
-    >>> θ = 0
-    >>> model = MyModel(MyModel.Parameters(θ=θ))
-    >>> model.A.set(np.random.normal(loc=θ)
-    >>> model.logp(start=200, batch_size=500)
-    >>> model.params.θ.set_value(1)
-    >>> model.logp(start=200, batch_size=500)
-
-    """
-    def decorator(f):
-        def wrapped_f(self, start, stop=None, batch_size=None):
-            """Either :param:stop or :param:batch are required."""
-            start, stop, batch_size = \
-                _graph_batch_bounds(self, start, stop, batch_size)
-                # Returns integer indices
-
-            # Define a bunch of lists of histories and indices to be able to
-            # permute inputs between the order of `self.State` and that defined
-            # by `inputs`.
-            statehists = list(self.unlocked_statehists)
-            locked_statehists = list(self.locked_statehists)
-            inputhists = [getattr(self, name) for name in inputs]
-                # The set of histories which are included in the function
-                # May include both state and non-state histories
-            lockedstateinputs = [h for h in inputhists
-                                   if h in locked_statehists]
-            nonstateinputs  = [h for h in inputhists
-                                 if h not in self.statehists]
-            stateinputs     = [h for h in inputhists if h in statehists]
-            stateinput_idcs = [(i, statehists.index(h))
-                               for i, h in enumerate(inputhists)
-                               if h in statehists]
-
-            # Construct the initial values
-            if not shim.is_theano_object(start):
-                unupdatedhists = [h for h in chain(nonstateinputs, statehists)
-                                 if h.cur_tidx < self.get_tidx_for(start-1, h)]
-                unfilledhists = [h for h in locked_statehists
-                                 if h.cur_tidx < self.get_tidx_for(stop-1, h)]
-                if len(unupdatedhists) > 0:
-                    raise RuntimeError(
-                        "Use the `advance()` method to ensure all histories "
-                        "have been integrated up to the start of the batch. "
-                        "Offending histories are: {}."
-                        "If you are calling `advance()`, then it may be that "
-                        "the update functions for these histories are actually "
-                        "disconnected for those of the model."
-                        .format(', '.join([repr(h) for h in unupdatedhists])))
-                if len(unfilledhists) > 0:
-                    raise RuntimeError(
-                        "Locked histories must already be filled up to the end "
-                        "of the batch, since they cannot be updated."
-                        "Offending histories are: {}"
-                        .format(', '.join([repr(h) for h in unfilledhists])))
-            initial_values = [h._sym_data[self.get_tidx_for(start-1, h)]
-                              for h in chain(nonstateinputs, statehists)]
-
-            if shim.cf.use_theano:
-                def onestep(tidx, *args):
-                    for x, name in zip(
-                        utils.flatten(
-                            tidx, *args, terminate=shim.cf._TerminatingTypes),
-                        utils.flatten(
-                            'tidx (scan)',
-                            #(h.name + ' (scan)' for h in lockedstateinputs),
-                            (h.name + ' (scan)' for h in nonstateinputs),
-                            (h.name + ' (scan)' for h in statehists),
-                            terminate=shim.cf._TerminatingTypes)):
-                        if getattr(x, 'name', None) is None:
-                            x.name = name
-                    m = len(nonstateinputs)
-                    _nonstate = args[:m]
-                    _state = args[m:]
-                    assert len(_state) == len(statehists)
-                    _stateinputs = [_state[j] for i,j in stateinput_idcs]
-                    state_outputs, updates = self.symbolic_update(tidx, *_state)
-                    nonstate_outputs, nonstate_updates = self.nonstate_symbolic_update(
-                        tidx, nonstateinputs, _state, _nonstate, state_outputs)
-                    assert len(set(updates).intersection(nonstate_updates)) == 0
-                    updates.update(nonstate_updates)
-                    return nonstate_outputs + state_outputs, updates
-
-            else:
-                def onestep(tidx, *args):
-                    # There are no symbolic state updates if we are using NumPy
-                    return ([h[self.get_tidx_for(tidx, h)] for h in inputhists],
-                            OrderedDict())
-
-            # Accumulate over the batch
-            if batch_size == 1:
-                # No need for scan
-                outputs, updates = onestep(start, *initial_values)
-                # Add the batch dimension which scan would have created
-                outputs = [o[np.newaxis,...] for o in outputs]
-            else:
-                outputs, updates = shim.scan(
-                    onestep, sequences=shim.arange(start, stop),
-                    outputs_info=initial_values,
-                    return_list=True)
-            assert(len(outputs) == len(nonstateinputs) + len(statehists))
-
-            # Permute the outputs so they are in the order expected by `f`
-            finputs = [None]*len(inputs)
-            m = len(nonstateinputs)
-            for h in lockedstateinputs:
-                i = inputhists.index(h)
-                _start = self.get_tidx_for(start, h)
-                _stop = self.get_tidx_for(stop, h)
-                finputs[i] = h._sym_data[_start:_stop]
-            for h, o in zip(nonstateinputs, outputs[:m]):
-                i = inputhists.index(h)
-                finputs[i] = o
-            for h, o in zip(statehists, outputs[m:]):
-                if h in inputhists:
-                    i = inputhists.index(h)
-                    finputs[i] = o
-            assert all(i is not None for i in finputs)
-
-            # Evaluate `f`.
-            return f(self, *finputs)
-                # `f` is still a function while being decoratod, so we need
-                # to explicitly pass `self`
-
-        return wrapped_f
-    return decorator
-
 # Model decorators
 
 ## updatefunction decorator
@@ -669,8 +478,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     """
     # ALTERNATIVE: Have a SimpleNamespace attribute `priv` in which to place
     #              private attributes, instead of listing them all here.
-    __slots__ = ('graph_cache', 'compile_cache', '_pymc', 'batch_start_var', 'batch_size_var',
-                 '_curtidx', '_stoptidx_var', '_advance_updates')
+    __slots__ = ('graph_cache', 'compile_cache', '_pymc', 'batch_start_var', #'batch_size_var',
+                 '_num_tidx', '_curtidx', '_stoptidx_var', '_batchsize_var', '_advance_updates')
 
     class Config:
         # Allow assigning other attributes during initialization.
@@ -745,9 +554,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                                shim.shared(start, name='batch_start'))
             #     # Must be large enough so that test_value slices are not empty
             size = np.array(2).astype(self.tidx_dtype)
-            object.__setattr__(self, 'batch_size_var',
-                               shim.shared(size, name='batch_size'))
-            #     # Must be large enough so that test_value slices are not empty
+            # object.__setattr__(self, 'batch_size_var',
+            #                    shim.shared(size, name='batch_size'))
+            # #     # Must be large enough so that test_value slices are not empty
 
     @abc.abstractmethod
     def initialize(self, initializer :Any=None):
@@ -880,6 +689,61 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                  "ignored, since the histories are already computed:\n"
                  "(hist name: random input)\n" + useless)
 
+    #############
+    # Attribute access and (disabled) pickling
+
+    def __getattribute__(self, attr):
+        """
+        Retrieve parameters if their name does not clash with an attribute.
+        """
+        # Use __getattribute__ to maintain current stack trace on exceptions
+        # https://stackoverflow.com/q/36575068
+        # if (attr != 'params'
+        #     and attr in self.params.__fields__):
+        if (attr != 'params'              # Prevent infinite recursion
+            # and attr not in self.__dict__ # Prevent shadowing
+            and hasattr(self, 'params') and attr in self.params.__fields__):
+            # Return either a PyMC3 prior (if in PyMC3 context) or shared var
+            # Using sys.get() avoids the need to load pymc3 if it isn't already
+            pymc3 = sys.modules.get('pymc3', None)
+            param = getattr(self.params, attr)
+            if not hasattr(param, 'prior') or pymc3 is None:
+                return param
+            else:
+                try:
+                    pymc3.Model.get_context()
+                except TypeError:
+                    # No PyMC3 model on stack – return plain param
+                    return param
+                else:
+                    # Return PyMC3 prior
+                    return param.prior
+
+        else:
+            return super().__getattribute__(attr)
+
+    # Pickling infrastructure
+    # Reference: https://docs.python.org/3/library/pickle.html#pickle-state
+    def __getstate__(self):
+        raise NotImplementedError
+        # # Clear the nonstate histories: by definition these aren't necessary
+        # # to recover the state, but they could store huge intermediate date.
+        # # Pickling only stores history data up to their `cur_tidx`, so by
+        # # clearing them we store no data at all.
+        # state = self.__dict__.copy()
+        # for attr, val in state.items():
+        #     if val in self.nonstatehists:
+        #         # TODO: Find way to store an empty history without clearing
+        #         #       the one in memory. The following would work if it
+        #         #       didn't break all references in update functions.
+        #         # state[attr] = val.copy_empty()
+        #         val.clear()
+        # return state
+
+    ###################
+    # Inspection / description methods
+    # These methods do not modify the model
+
     # TODO: Some redundancy here, and we could probably store the
     # hist & kernel lists after object creation – just ensure this is
     # also done after copy() and parse_obj()
@@ -916,60 +780,6 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     @property
     def dt(self):
         return self.time.dt
-
-    def __getattribute__(self, attr):
-        """
-        Retrieve parameters if their name does not clash with an attribute.
-        """
-        # Use __getattribute__ to maintain current stack trace on exceptions
-        # https://stackoverflow.com/q/36575068
-        # if (attr != 'params'
-        #     and attr in self.params.__fields__):
-        if (attr != 'params'              # Prevent infinite recursion
-            # and attr not in self.__dict__ # Prevent shadowing
-            and hasattr(self, 'params') and attr in self.params.__fields__):
-            # Return either a PyMC3 prior (if in PyMC3 context) or shared var
-            # Using sys.get() avoids the need to load pymc3 if it isn't already
-            pymc3 = sys.modules.get('pymc3', None)
-            param = getattr(self.params, attr)
-            if not hasattr(param, 'prior') or pymc3 is None:
-                return param
-            else:
-                try:
-                    pymc3.Model.get_context()
-                except TypeError:
-                    # No PyMC3 model on stack – return plain param
-                    return param
-                else:
-                    # Return PyMC3 prior
-                    return param.prior
-
-        else:
-            return super().__getattribute__(attr)
-
-    # def set_reference_history(self, reference_history):
-    #     if (reference_history is not None
-    #         and getattr(self, '_refhist', None) is not None):
-    #         raise RuntimeError("Reference history for this model is already set.")
-    #     self._refhist = reference_history
-
-    # Pickling infrastructure
-    # Reference: https://docs.python.org/3/library/pickle.html#pickle-state
-    def __getstate__(self):
-        raise NotImplementedError
-        # # Clear the nonstate histories: by definition these aren't necessary
-        # # to recover the state, but they could store huge intermediate date.
-        # # Pickling only stores history data up to their `cur_tidx`, so by
-        # # clearing them we store no data at all.
-        # state = self.__dict__.copy()
-        # for attr, val in state.items():
-        #     if val in self.nonstatehists:
-        #         # TODO: Find way to store an empty history without clearing
-        #         #       the one in memory. The following would work if it
-        #         #       didn't break all references in update functions.
-        #         # state[attr] = val.copy_empty()
-        #         val.clear()
-        # return state
 
     @property
     def statehists(self):
@@ -1016,15 +826,83 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         return min(h.cur_tidx.convert(self.time.Index)
                    for h in self.statehists)
 
+    # Symbolic variables for use when compiling unanchored functions
+    # Building as `shim.tensor(np.array(...))` assigns a test value to the
+    # variable, allowing models to work with compute_test_value != 'ignore'
+    # (As is required for PyMC3)
+    # Stop test value should be at least 2 more than _curtidx, because scan runs
+    # from `_curtidx + 1` to `stoptidx`.
     @property
-    def _num_tidx(self):
+    def curtidx_var(self):
+        """
+        Return a purely symbolic variable intended to represent the current
+        time index of the model (i.e. all state histories have been computed
+        up to this point inclusively).
+
+        Always returns the same object, so that it can be substituted in
+        computational graphs.
+        """
+        # It's important to guard with hasattr, because `self.curtidx_var`
+        # must always return the same variable.
+        if not hasattr(self, '_curtidx_var'):
+            object.__setattr__(self, '_curtidx_var',
+                               shim.tensor(np.array(1, dtype=self.tidx_dtype),
+                                           name='curtidx (model)'))
+        return self._curtidx_var
+    @property
+    def stoptidx_var(self):
+        """
+        Return a purely symbolic variable intended to represent the end point
+        (exclusive) of a computation.
+
+        Always returns the same object, so that it can be substituted in
+        computational graphs.
+        """
+        if not hasattr(self, '_stoptidx_var'):
+            object.__setattr__(self, '_stoptidx_var',
+                               shim.tensor(np.array(3, dtype=self.tidx_dtype),
+                                           name='stoptidx (model)'))
+        return self._stoptidx_var
+    @property
+    def batchsize_var(self):
+        """
+        Return a purely symbolic variable intended to represent the batch size.
+        This is sometimes more convenient in functions than specifying the end
+        point.
+
+        Always returns the same object, so that it can be substituted in
+        computational graphs.
+        """
+        if not hasattr(self, '_batchsize_var'):
+            object.__setattr__(self, '_batchsize_var',
+                               shim.tensor(np.array(2, dtype=self.tidx_dtype),
+                                           name='batchsize (model)'))
+        return self._batchsize_var
+
+    @property
+    def num_tidx(self):
+        """
+        A shared variable corresponding to the current time point of
+        the model. This is only defined if all histories are synchronized.
+
+        Always returns the same object, so that it can be substituted in
+        computational graphs.
+
+        Raises `RuntimeError` if histories are not all synchronized.
+        """
         if not self.histories_are_synchronized():
             raise RuntimeError(
                 f"Histories for the {type(self).__name__}) are not all "
                 "computed up to the same point. The compilation of the "
                 "model's integration function is ill-defined in this case.")
-        return shim.shared(np.array(self.cur_tidx, dtype=self.tidx_dtype),
-                           f"t_idx ({type(self).__name__})")
+        if not hasattr(self, '_num_tidx'):
+            object.__setattr__(
+                self, '_num_tidx',
+                shim.shared(np.array(self.cur_tidx, dtype=self.tidx_dtype),
+                            f"t_idx ({type(self).__name__})") )
+        else:
+            self._num_tidx.set_value(self.cur_tidx)
+        return self._num_tidx
 
     def histories_are_synchronized(self):
         """
@@ -1081,48 +959,24 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         if not all(isinstance(h, str) for h in hists):
             raise ValueError(
                 "`hists` must be a list of histories or history names.")
-        funcs = [self._pending_update_functions[h] for h in statehists]
-
-        # if hists is None:
-        #     if isinstance(self, Model):
-        #         # Just grab the histories from self.statehists
-        #         # Converted to functions below
-        #         hists = self.statehists
-        #     else:
-        #         # Get the hist names from the State class
-        #         hists = self.State.__annotations__.keys()
-        #
-        # # Create list of update functions and their corresponding names
-        # hists = list(hists)
-        # funcs = []
-        # names = []
-        # for i, hist in enumerate(hists):
-        #     if isinstance(hist, History):
-        #         funcs.append(hist._update_function_dict['func'])
-        #         names.append(hist.name)
-        #     elif isinstance(hist, str):
-        #         try:
-        #             fn = getattr(self, hist + '_fn')
-        #         except AttributeError:
-        #             raise AttributeError("Unable to find update function for `{}`. "
-        #                                  "Naming convention expects it to be `{}`."
-        #                                  .format(hist, hist + '_fn'))
-        #         funcs.append(fn)
-        #         names.append(hist)
-        #     else:
-        #         assert isintance(hist, Callable)
-        #         funcs.append(hist)
-        #         names.append(None)
+        funcs = [pending.upd_fn for pending in self._pending_update_functions]
 
         # For each function, retrieve its source
         srcs = []
         for name, fn in zip(names, funcs):
             src = inspect.getsource(fn)
-            if src.strip()[:3] != 'def':
-                raise RuntimeError(
-                    "Something went wrong when retrieve an update function's source. "
-                    "Make sure the source file is saved and try reloading the Jupyter "
-                    "notebook. Source should start with `def`, but we got:\n" + src)
+            # Check that the source defines a function as expected:
+            # first non-decorator line should start with 'def'
+            for line in src.splitlines():
+                if line.strip()[0] == '@':
+                    continue
+                elif line.strip()[:3] != 'def':
+                    raise RuntimeError(
+                        "Something went wrong when retrieve an update function's source. "
+                        "Make sure the source file is saved and try reloading the Jupyter "
+                        "notebook. Source should start with `def`, but we got:\n" + src)
+                else:
+                    break
             # TODO: Remove indentation common to all lines
             if name is not None:
                 # Replace the `def` line by a more explicit string
@@ -1187,6 +1041,16 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # else:
         #     raise AttributeError("The reference history for this model was not set.")
     get_time.__doc__ = History.get_time.__doc__
+
+    ###################
+    # Methods which modify the model
+
+    def lock(self):
+        for hist in self.history_set:
+            hist.lock()
+    def clear(self):
+        for hist in self.unlocked_histories:
+            hist.clear()
 
     def eval(self, max_cost :Optional[int]=None, if_too_costly :str='raise'):
         """
@@ -1272,11 +1136,11 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         for rng in self.rng_inputs:
             # FIXME: `.state_updates` is Theano-only
             if (isinstance(rng, shim.config.SymbolicRNGType)
-                and len(self.rng.state_updates) > 0):
+                and len(rng.state_updates) > 0):
                 logger.warning("Erasing random number generator updates. Any "
                                "other graphs using this generator are likely "
                                "invalidated.\n"
-                               "RNG: {}".format(self.rng))
+                               "RNG: {}".format(rng))
             rng.state_updates = []
         #sinn.theano_reset() # theano_reset on histories will be called twice,
                             # but there's not much harm
@@ -1549,7 +1413,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     # This code isn't 100% generic yet;
     # look for TODO tags for model-specific hacks
     #
-    # Function overview:
+    # Function overview:  (NEEDS UPDATE)
     # - advance(self, stop): User-facing function
     # - _advance(self): Returns a function; use as `self._advance(stop)`:
     #   `self._advance` is a property which memoizes the compiled function.
@@ -1568,50 +1432,42 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         ti = self.cur_tidx
         return self.State(*(h[ti-self.t0idx+h.t0idx] for h in self.statehists))
 
-    def get_state_placeholder(self, name_suffix=' placeholder'):
-        """
-        Return a State object populated with symbolic placeholder variables.
-        TODO: Add support for >1 lags.
-        """
-        return self.State(*(make_placeholder(h, name_suffix)
-                            for h in self.statehists))
-
-    def advance(self, stop):
+    def advance(self, end):
         """
         Advance (i.e. integrate) a model.
         For a non-symbolic model the usual recursion is used – it's the
-        same as calling `hist[stop]` on each history in the model.
+        same as calling `hist[end]` on each history in the model.
         For a symbolic model, the function constructs the symbolic update
-        function, compiles it, and then evaluates it with `stop` as argument.
+        function, compiles it, and then evaluates it with `end` as argument.
         The update function is compiled only once, so subsequent calls to
         `advance` are much faster and benefit from the acceleration of running
         on compiled code.
 
         Parameters
         ----------
-        stop: int, float
+        end: int, float
             Compute history up to this point (inclusive).
         """
 
-        # TODO: Rename stoptidx -> endidx
-        if stop == 'end':
-            stoptidx = self.tnidx
+        # TODO: Rename endtidx -> endidx
+        if end == 'end':
+            endtidx = self.tnidx
         else:
-            stoptidx = self.get_tidx(stop)
+            endtidx = self.get_tidx(end)
 
         # Make sure we don't go beyond given data
         for hist in self.history_set:
             if hist.locked:
                 tnidx = hist._num_tidx.get_value()
-                if tnidx < stoptidx.convert(hist.time):
-                    stoptidx = tnidx.convert(self.time)
+                if tnidx < endtidx.convert(hist.time):
+                    endtidx = tnidx.convert(self.time)
                     logger.warning("Locked history '{}' is only provided "
                                    "up to t={}. Output will be truncated."
-                                   .format(hist.name, self.get_time(stoptidx)))
+                                   .format(hist.name, self.get_time(endtidx)))
 
         if not shim.config.use_theano:
             for hist in self.statehists:
-                hist._compute_up_to(stoptidx.convert(hist.time))
+                hist._compute_up_to(endtidx.convert(hist.time))
 
         else:
             if not shim.graph.is_computable(
@@ -1631,8 +1487,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             curtidx = self.cur_tidx
             assert(curtidx >= -1)
 
-            if curtidx < stoptidx:
-                self._advance(curtidx, stoptidx)
+            if curtidx < endtidx:
+                self._advance(curtidx, endtidx+1)
                 # _advance applies the updates, so should get rid of them
                 self.theano_reset()
     integrate = advance
@@ -1666,7 +1522,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     @property
     def _advance(self):
         """
-        Attribute which caches the compilation of the advance function.
+        Attribute which  the compilation of the advance function.
         """
         if not hasattr(self, '_advance_updates'):
             object.__setattr__(self, '_advance_updates',
@@ -1682,8 +1538,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         if self.no_updates:
             if not hasattr(self, '_advance_fn'):
                 logger.info("Compiling the update function")
-                self._advance_fn = self.compile_advance_function(
-                    self._advance_updates)
+                self._advance_fn = self.cached_compile(
+                    [self.curtidx_var, self.stoptidx_var], [], self._advance_updates)
                 logger.info("Done.")
             _advance_fn = self._advance_fn
         else:
@@ -1695,7 +1551,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 for var, upd in self._advance_updates.items())
 
             logger.info("Compiling the update function")
-            _advance_fn = self.compile_advance_function(advance_updates)
+            _advance_fn = self.cached_compile(
+                [self.curtidx_var, self.stoptidx_var], [], advance_updates)
             logger.info("Done.")
 
         return _advance_fn
@@ -1707,25 +1564,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         initial conditions.
         """
         cur_tidx = self.cur_tidx
-        if not hasattr(self, '_curtidx_var'):
-            object.__setattr__(self, '_curtidx_var',
-                               shim.tensor(np.array(1, dtype=self.tidx_dtype),
-                                           name='curtidx (model)'))
-            #                   shim.shared(np.array(cur_tidx+1, dtype=self.tidx_dtype)))
-                                # shim.getT().scalar('curtidx (model)',
-                                #                    dtype=self.tidx_dtype))
-            # self._curtidx_var.tag.test_value = 1
-        if not hasattr(self, '_stoptidx_var'):
-            object.__setattr__(self, '_stoptidx_var',
-                               shim.tensor(np.array(3, dtype=self.tidx_dtype),
-                                           name='curtidx (model)'))
-            #                   shim.shared(np.array(cur_tidx+3, dtype=self.tidx_dtype)))
-                                # shim.getT().scalar('stoptidx (model)',
-                                #                    dtype=self.tidx_dtype))
-            # self._stoptidx_var.tag.test_value = 3
-                # Allow model to work with compute_test_value != 'ignore'
-                # Should be at least 2 more than _curtidx, because scan runs
-                # from `_curtidx + 1` to `stoptidx`.
+
         logger.info("Constructing the update graph.")
         # Stash current symbolic updates
         for h in self.statehists:
@@ -1734,7 +1573,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         shim.reset_updates()
 
         # Get advance updates
-        updates = self.advance_updates(self._curtidx_var, self._stoptidx_var)
+        updates = self.advance_updates(self.curtidx_var, self.stoptidx_var)
         # Reset symbolic updates to their previous state
         shim.reset_updates()
         self.theano_reset()
@@ -1744,13 +1583,32 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         logger.info("Done.")
         return updates
 
-    def compile_advance_function(self, updates):
-        self._debug_ag = updates
-        fn = self.compile_cache.get([], updates, self.rng)
+    def cached_compile(self, inputs, outputs, updates, **kwargs):
+        """
+        A wrapper around `shim.graph.compile` which caches the result to disk
+        and retrieves it when possible.
+
+        .. Note:: Although all arguments to `shim.graph.compile` are supported,
+           caching is disabled when arguments other than `inputs`, `outputs`
+           and `updates` are specified.
+           With additional development and testing, it should be possible to
+           support other arguments.
+        """
+
+        if kwargs:
+            warn("Compilation caching is disabled when keyword arguments other "
+                 "than `inputs`, `outputs` and `updates` are specified.")
+            fn = None
+            cache = False
+        else:
+            fn = self.compile_cache.get(outputs, updates, rng=self.rng_inputs)
+            cache = True
         if fn is None:
-            fn = shim.graph.compile([self._curtidx_var, self._stoptidx_var], [],
-                                    updates = updates)
-            self.compile_cache.set([], updates, fn, self.rng)
+            fn = shim.graph.compile([self.curtidx_var, self.stoptidx_var],
+                                    outputs,
+                                    updates = updates, **kwargs)
+            if cache:
+                self.compile_cache.set(outputs, updates, fn, rng=self.rng_inputs)
         else:
             logger.info("Compiled advance function loaded from cache.")
         return fn
@@ -1779,6 +1637,67 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
            in the internal documentation: :doc:`/docs/internal/Building an integration graph.ipynb`.
         """
 
+        # Build the update dictionary by computing each history forward by one step.
+        for h in self.unlocked_statehists:
+            h(h._num_tidx+1)
+        return self.convert_point_updates_to_scan(shim.get_updates(), curtidx, stoptidx)
+
+    def convert_point_updates_to_scan(self, updates=None, curtidx=None, stoptidx=None):
+        """
+        Convert the current point-wise updates in the global shim update
+        dictionary, and convert them to an scan graph with start and end given
+        by ``curtidx + 1`` and `stoptidx`. The result is thus unanchored
+        from the possible `_num_tidx` dependencies in the updates.
+
+        .. Important:: This function will fail if the updates dictionary is
+           empty. Moreover, these updates must depend on
+           at least one history time index which can be related to the model's
+           time index.
+
+        Parameters
+        ----------
+        updates: dict (update dictionary)
+            Default: `shim.get_updates()`
+            A Theano update dictionary. The updates should correspond to one
+            time point update from ``self.num_tidx`` to ``self.num_tidx+1``.
+            This function will then iterate over these updates from
+            `curtidx` to `stoptidx`.
+        curtidx: symbolic (int):
+            Default: `self.curtidx_var`
+            We want to compute the model starting from this point exclusive.
+            (`curtidx` is the latest already computed point, so we start at
+            ``curtidx + 1``)
+        stoptidx: symbolic (int)
+            Default: `self.stoptidx_var`
+            We want to compute the model up to this point exclusive.
+
+        Returns
+        -------
+        Update dictionary:
+            Compiling a function and providing this dictionary as 'updates' will return a function
+            which fills in the histories up to `stoptidx`.
+
+        Raises
+        ------
+        TypeError:
+            - If `curtidx` or `stoptidx` cannot be casted to the index type of
+              the histories.
+        NotImplementedError:
+            - If there are no unlocked histories.
+        RuntimeError:
+            - If the update dictionary is empty.
+            - If the update dictionary has no dependency on any time index.
+              (Or all such dependencies are to locked histories.)
+
+        .. rubric:: For developers
+           You can find a documented explanation of the function's algorithm
+           in the internal documentation: :doc:`/docs/internal/Building an integration graph.ipynb`.
+        """
+        # Default values
+        if updates  is None: updates = shim.get_updates()
+        if curtidx  is None: curtidx = self.curtidx_var
+        if stoptidx is None: stoptidx = self.stoptidx_var
+
         if not all(np.can_cast(stoptidx.dtype, hist.tidx_dtype)
                    for hist in self.statehists):
             raise TypeError("`stoptidx` cannot be safely cast to a time index. "
@@ -1795,20 +1714,32 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             # Unable to find test value; just skip check
             pass
 
+
         # First, declare a “anchor” time index
-        anchor_tidx = self._num_tidx
+        anchor_tidx = self.num_tidx
+        if not self.time.Index(anchor_tidx+1).in_bounds:
+            raise RuntimeError(
+                "In order to compute a scan function, the model must "
+                "have at least one uncomputed time point.")
         # Build the substitution dictionary to convert all history time indices
         # to that of the model. This requires that histories be synchronized.
         assert self.histories_are_synchronized()
         anchor_tidx_typed = self.time.Index(anchor_tidx)  # Do only once to keep graph as clean as possible
         tidxsubs = {h._num_tidx: anchor_tidx_typed.convert(h.time)
                     for h in self.unlocked_histories}
-        # Build the update dictionary by computing each history forward by one step.
-        for h in self.unlocked_statehists:
-            h(h._num_tidx+1)
-        anchored_updates = shim.get_updates()
+
+        # Now we recover the global updates, and replace the multiple history
+        # time indices by the time index of the model.
+        if len(updates) == 0:
+            raise RuntimeError("The updates dictionary is empty. Cannot build "
+                               "a scan graph.")
+
+        if not ( set(shim.graph.symbolic_inputs(updates.values()))
+                & (set(h._num_tidx for h in self.unlocked_histories)  | set([anchor_tidx])) ):
+            raise RuntimeError("The updates dictionary has no dependency on "
+                               "any time index. Cannot build a scan graph.")
         anchored_updates = {k: shim.graph.clone(g, replace=tidxsubs)
-                            for k,g in anchored_updates.items()}
+                            for k,g in updates.items()}
 
         # Now we build the step function that will be passed to `scan`.
         # We found that Theano can get confused when the sequence variable
@@ -1820,6 +1751,17 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                             for k,g in anchored_updates.items())
             return [tidx], step_updates
 
+        # Check that there are no missing inputs: Theano's error messages
+        # for this are nasty. We want to catch the mistake first and print
+        # better information
+        symbinputs = shim.graph.pure_symbolic_inputs(anchored_updates.values())
+        if symbinputs:
+            raise shim.graph.MissingInputError(
+                "The following purely symbolic variables are present in the "
+                "computational graph. They were probably added accidentally; "
+                "the only supported symbolic variables are shared variables.\n"
+                f"Pure symbolic inputs: {symbinputs}.")
+
         # Now we can construct the scan graph.
         # We discard outputs since everything is in the updates
         _, upds = shim.scan(onestep,
@@ -1830,6 +1772,105 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
         return upds
 
+    # ---------------------------------------------
+    # Helper decorators for building cost functions
+
+    def accumulate_with_offset(self, start_offset):
+        """
+        .. Note:: In most cases, it will is easier to use one of the helper functions,
+           either `accumulate` or `static_accumulate`.
+
+        Construct a cost graph from a pointwise cost function.
+        A function is “pointwise” if it can be computed entirely from the histories
+        (i.e. it does not depend on its own value at other time points).
+
+        For a cost function ``f``, the resulting graph corresponds to
+
+        .. math::
+
+            \sum_{i=t0}^tn f(i)
+
+        where *t0* and *tn* are respectively ``curtidx+start_offset``
+        and ``curtidx+start_offset+batch_size``.
+
+        The returned function r takes two arguments, ``curtidx`` and ``batch_size``
+
+        Parameters
+        ----------
+        start_offset: Axis index delta | int
+            Index offset relative to the current time index.
+            There are mainly two intended values:
+              - 1: Evaluate one time index forward, relative to the current time.
+                   This will trigger all required history updates to integrate
+                   the model.
+                   Equivalent to `accumulate`.
+              - 0: Evaluate at the current time index. This should not trigger
+                   any history updates. This means dependencies on parameters are
+                   likely lost.
+                   Equivalent to `static_accumulate`.
+        """
+        def wrapped_acc(f):
+            def accumulated_function(curtidx, batchsize):
+                # Ensuring this works correctly with shared variables would require more testing
+                assert shim.is_pure_symbolic(curtidx) and shim.is_pure_symbolic(batchsize)
+                # TODO: Make c a symbolic variable, and pass it to scan as `outputs_info`
+                # time index anchor
+                numtidx = self.num_tidx  # Raises RuntimeError if errors are not synchronized
+                if not self.time.Index(numtidx+1).in_bounds:
+                    raise RuntimeError(
+                        "In order to compute a scan function, the model must "
+                        "have at least one uncomputed time point.")
+                # Accumulator variable for the cost. Initialized to zero.
+                cost = shim.shared(np.array(0, dtype='float64'), f"accumulator ({f.__name__})")
+                # Build the computational graph for the step update of the cost
+                shim.add_update(cost, cost + f(self.time.Index(numtidx+start_offset)))
+                    # f(…) triggers required history update computations
+                # Convert the step update to an iteration
+                updates = self.convert_point_updates_to_scan(
+                    shim.get_updates(), curtidx, curtidx+batchsize)
+                # Return the final cost, along with the rest of the updates
+                # Caller can decide if they want to apply updates or discard them
+                cost_total = updates.pop(cost)
+                return cost_total, updates
+            accumulated_function.__name__ = f"accumulated_{f.__name__}"
+            accumulated_function.__doc__ = ("This function accumulates (sums) the values "
+                                            f"of the function {f.__name__} from "
+                                            "`curtidx+1` to `stoptidx`.\n\n"
+                                            "--------------------------------------------"
+                                            f"Docstring for {f.__name__}:\n\n{f.__doc__}")
+            return accumulated_function
+        return wrapped_acc
+
+    def accumulate(self, f):
+        """
+        Accumulate (sum) the function f. Histories are integrated along
+        with the accumulator.
+
+        If you need a differentiable cost function, this is almost always
+        the decorator to use.
+
+        Intended uses:
+            - Training a model with back propagation through time.
+        """
+        return self.accumulate_with_offset(1)(f)
+
+    def static_accumulate(self, f):
+        """
+        Accumulate (sum) the function f without updating histories.
+        In `f`, use [] indexing to make sure you don't accidentally
+        trigger computations.
+
+        .. Warning:: Since update computations are not triggered,
+           any dependencies of those computations on parameters
+           will not show up in accumulator's graph.
+
+        Intended for:
+            - Evaluating a function on an already computed history.
+
+        *Not* intended for:
+            - Training the model dynamics.
+        """
+        return self.accumulate_with_offset(0)(f)
 
 class BinomialLogpMixin:
     """
