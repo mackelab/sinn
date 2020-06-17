@@ -724,14 +724,6 @@ class History(HistoryBase, abc.ABC):
         # Invalidate any existing data
         self.clear()
 
-    @property
-    def data(self):
-        """
-        Returns the data which has been computed. This does not include
-        in-progress symbolic updates.
-        """
-        return self.get_trace()
-
     def __hash__(self):
         """
         Current implementation just hashes the history name.
@@ -839,7 +831,7 @@ class History(HistoryBase, abc.ABC):
                                .format(key, type(key), self.name))
         # Check bounds
         try:
-            if not (earliest._check_in_bounds and latest.in_bounds):
+            if not (earliest.in_bounds and latest.in_bounds):
                 raise IndexError(f"Index {axis_index} is out of bounds for "
                                  f"history {self.name}.")
         except shim.graph.TooCostly:
@@ -978,10 +970,24 @@ class History(HistoryBase, abc.ABC):
 
     @property
     def time_stops(self):
-        return self.time.stops_array(padded=False)
+        return self.time.unpadded_stops_array
 
     @property
     def trace(self):
+        """
+        Return the tuple (`time_array`, `data`).
+        The time stops of `data` matches those of `time_array`.
+        """
+        # slc = slice(self.t0idx, self.cur_tidx+1)
+        return (self.get_time_array(),
+                self.get_trace())
+
+    @property
+    def data(self):
+        """
+        Returns the data which has been computed. This does not include
+        in-progress symbolic updates.
+        """
         return self.get_trace()
 
     def clear(self):
@@ -1370,14 +1376,14 @@ class History(HistoryBase, abc.ABC):
         -------
         ndarray
         """
-        slc = self.time.data_index_slice(time_slice)
-        slc.start = min(slc.start, self.cur_tidx)
-        slc.stop  = min(slc.stop , self.cur_tidx)
-        if slc.start == slc.stop:
+        slc = self.time.data_index_slice(time_slice, include_padding=include_padding)
+        start = slc.start
+        stop  = min(slc.stop , self.cur_tidx.data_index+1)
+        if start+1 == stop or start > self.cur_tidx.data_index:
             warn("`get_time_array` returned an empty slice, presumably "
                 "because the history hasn't been computed.\n"
                 f"History: {self.name}, current tidx: {self.cur_tidx}.")
-        return self.time.padded_stops_array[slc]
+        return self.time.padded_stops_array[slice(start, stop)]
         # return self._tarr[self._get_time_index_slice(time_slice, include_padding)]
 
     @abstractmethod
@@ -1498,7 +1504,7 @@ class History(HistoryBase, abc.ABC):
         """
         Convert a time or time index into a time index for another history.
         """
-        raise DeprecationWarning("Use the `convert` method attached to the AxisIndex.")
+        raise DeprecationWarning("Cast `t` with `hist.time.Index(t)`.")
 
 
     # def get_t_for(self, t, target_hist):
@@ -2058,7 +2064,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         """
         if self._sym_tidx is not self._num_tidx:
             raise RuntimeError("You are in the midst of constructing a Theano graph. "
-                               "Reset history {} before trying to obtain its time array."
+                               "Reset history {} before trying to obtain its trace."
                                .format(self.name))
 
         tslice = self.time.data_index_slice(time_slice,

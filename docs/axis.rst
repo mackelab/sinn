@@ -65,7 +65,7 @@ Indexing in `sinn` works a little differently than what you may expect (in fact,
 
 Later I realized the reason for these issues: that I was using “index” to refer to two related, but conceptually different things: a “data index” and an “axis index”. A *data* index is tied to a structure in computer memory; index ``0`` is always the first element of this structure, and since it has fixed length ``L``, mapping ``-i`` to ``L-i`` is unambiguous. An *axis* index, on the other hand, is simply a position on an arbitrarily defined discretization of that axis. Index `0` is most naturally associated with the origin, *but this need not be the first discretized position*. Correspondingly, a negative index should then be associated with a position left of the origin.
 
-The thing to remember is this: because the structures defined by `sinn` are mathematical structure, *so too is indexing done in axis space*. This includes the interpretation of negative indices as being “more to the left” than 0. The translation into data indices is done internally and should be transparent. As an added bonus, this avoids hard-to-optimize conditionals in the computational graph.
+The thing to remember is this: because the objects defined by `sinn` are mathematical objects, *so too is indexing done in axis space*. This includes the interpretation of negative indices as being “more to the left” than 0. The translation into data indices is done internally and should be transparent. As an added bonus, this avoids hard-to-optimize conditionals in the computational graph.
 
 Throughout this library, a “position along a discretized axis” is referred to as a “stop”.
 

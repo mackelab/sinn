@@ -29,7 +29,7 @@ try:
     import matplotlib as mpl
     import matplotlib.pyplot as plt
     import matplotlib.ticker
-    import mackelab.plot
+    import mackelab_toolbox.plot
 except ImportError:
     logger.warning("Unable to import matplotlib. Plotting functions "
                    "will not work.")
@@ -522,7 +522,7 @@ class SeriesSGD(SGDBase):
     #       Caller can use self.var_subs to substitute variables in the advance
     #       function with those that are optimized.
 
-    def __init__(self, cost, start_var, batch_size_var,cost_format,
+    def __init__(self, cost, start_var, batch_size_var, cost_format,
                  optimize_vars, track_vars,
                  start, datalen, burnin, batch_size, advance,
                  avg_cost=True, optimizer='adam', optimizer_kwargs=None,

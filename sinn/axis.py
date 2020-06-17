@@ -1190,6 +1190,11 @@ class SpecAxisIndexMeta(type):
     # Instance method
     @staticmethod
     def _instance___eq__(self, other):
+        if shim.graph.pure_symbolic_inputs([other]):
+            # We know that pure symbolics can't be made into indices, so this
+            # must return False. The eval checks in `make_index` would throw
+            # MissingInputError
+            return False
         try:
             other = self.make_index(other)
         except (IndexTypeOperationError, ValueError, TypeError):
@@ -3583,24 +3588,26 @@ class RangeAxis(MapAxis):
                                          allow_rounding=allow_rounding,
                                          cast=cast)
 
-    def index(self, value):
+    def index(self, value, allow_rounding=False):
+        ar = allow_rounding
         if isinstance(value, slice):
             if value.start is None:
                 start = self.stops.Index(self.stops.index_range[0])
             else:
-                start = self.index(value.start)
+                start = self.index(value.start, allow_rounding=ar)
             if value.stop is None:
                 stop  = self.stops.Index(self.stops.index_range[-1]+1)
             else:
-                stop  = self.index(value.stop)
+                stop  = self.index(value.stop, allow_rounding=ar)
             if value.step is None:
                 step = None
             elif shim.istype(value.step, 'int'):
                 step = self.Index.Delta.make_index(value.step)
             else:
-                step = self.index_interval(value)
+                step = self.index_interval(value, allow_rounding=ar)
             return slice(start, stop, step)
         else:
+            # TODO: Warn if `allow_rounding` was set since it is discarded here
             return super().index(value)
 
 
