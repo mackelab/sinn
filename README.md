@@ -10,7 +10,7 @@ Sinn was originally developed in order to infer a mesoscopic neuron model (René
 
 ## Documentation
 
-Partial documentation can be found on [Read the Docs](https://sinn.readthedocs.io/en/latest/). This will improve as development continues.
+Partial documentation can be found on [Read the Docs](https://sinn.readthedocs.io/en/latest/). It will improve as development continues.
 
 ## Features
 
@@ -75,11 +75,11 @@ This last point also means that to use a different ML framework one would only n
 
 ## Development status
 
-At present *sinn* is at a pre-alpha stage of development. Version 0.2 should settle the core API (everything related to the `History` and `Model` classes), but less mature elements may still see some changes.
+At present *sinn* is at an alpha stage of development. With version 0.2, we expect to have settled the core API (everything related to the `History` and `Model` classes), but less mature elements may still see some changes.
 
 ### v0.2dev release
 
-The current version is a near-complete rewrite of the library, with focus on eliminating stale and duplicated code, more natural model definitions, proper unit testing, and simpler integration into larger workflows. In particular, the use of *Pydantic* throughout means that model objects and parameters can be trivially saved and loaded from disk. Although some [planned changes](https://github.com/mackelab/sinn/issues/1) are still work in progress, the update of the core functionality is complete and already better tested than in the previous version.
+The current version is a near-complete rewrite of the library, with focus on eliminating stale and duplicated code, more natural model definitions, proper unit testing, and simpler integration into larger workflows. In particular, the use of *Pydantic* throughout means that model objects and parameters can be trivially saved and loaded from disk. A summary of changes introduced with v0.2 can be found [here](https://github.com/mackelab/sinn/commit/2a6c07291d4405a1c79441279f73f62e1a17e03e), and a partial list of planned changes [here](https://github.com/mackelab/sinn/issues/4).
 
 These changes were motivated by my own frustrations with v0.1, with regard to managing large numbers of simulations and workflows with multiple steps.
 
@@ -89,34 +89,32 @@ Although *sinn* tries hard to protect users from their own mistakes, users shoul
 
 ## Installation
 
-- Clone this repository to e.g. `~/code/sinn`.
+- (Recommended) Create and activate a virtual environment.
 
-- Create the virtual environment if required, e.g.
-
-  `conda create --prefix ~/envs/myproject` (Anaconda) \
-  `python3 -m venv --system-site-packages ~/envs/sinn` (Python venv)
-
-  You can omit `--system-site-packages` if you install all dependencies within the virtual environment.
-
-
-- Activate the virtual environment
-
-  `conda activate ~/envs/myproject` (Anaconda) \
-  `source $HOME/usr/venv/sinn/bin/activate` (Python venv)
-
-- `cd` to the directory containing this file.
+- Clone this repository and `cd` to its root directory.
 
 - Install with
 
-  `pip install .`
+      pip install -r requirements.txt
+      pip install .
 
   As usual, if you want to be able to modify the code, add the `-e` flag to obtain a development installation.
+
+- (Conda-only)
+  If you installed within conda and Theano complains aboout the `scan_perform.c` missing, this may be due to a recent issue with the conda package, reported [here](https://github.com/Theano/Theano/issues/6753).
+  Until this is fixed upstream, you can fix it locally by following these steps (replace `my_conda_env` with the path to your conda environment):
+  
+      cd my_conda_env/lib/python3.8/site-packages/theano/scan_module/
+      mkdir c_code
+      cd c_code
+      wget https://raw.githubusercontent.com/Theano/Theano/e0167f24ae896a2e956cdd99a629910cd717a299/theano/scan_module/c_code/scan_perform.c
+
 
 ## Running tests
 
   Install the development packages
 
-      pip install sinn[dev]
+      pip install -e sinn[dev]
 
   This will install `pytest` and `pytest-xdist`. Now run the test suite as
 
