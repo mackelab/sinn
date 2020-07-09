@@ -1,0 +1,21 @@
+name: bptt_sinn
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.8
+  - pip
+  - ipython
+  - ipykernel
+  - numpy
+  - matplotlib
+  - seaborn
+  - pydantic
+  - theano=1.0.4
+  # Theano version hard-coded because we download scan_perform.c by hand
+  - tqdm
+  # - sphinx
+  # - pip:
+     - "--editable=git+git://gitub.com/alcrene/theano_shim#egg=theano_shim"
+     - "--editable=git+git://github.com/mackelab/mackelab-toolbox#egg=mackelab-toolbox"
+     - "--editable=git+git://github.com/mackelab/sinn#egg=sinn"
