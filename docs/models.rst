@@ -86,7 +86,7 @@ TODO
 Model methods
 =============
 
-Models should define an :meth:`initialize` method; this is called automatically on model creation after all parameters, kernels and histories have been set. It can also be called to reset a model, for example to start a new optimization run. The :meth:`initialize` method must take one optional free-form argument :keyword:`initializer`; this can be e.g. a flag to select between initialization algorithms, or a dictionary of initialization values. You are free to ignore this value, but it should be in the signature.
+Models should define an :meth:`initialize` method; this is called automatically on model creation after all parameters, kernels and histories have been set. It can also be called to reset a model, for example to start a new optimization run. The :meth:`initialize` method must take one optional free-form argument :keyword:`initializer`; this can be e.g. a flag to select between initialization algorithms, or a dictionary of initialization values. You are free to ignore this value, but it should be in the signature, and the default should be ``None``.
 
 Models should also define an update function for each of their histories. Continuing the example from above, this could look like::
 
@@ -107,6 +107,9 @@ Models should also define an update function for each of their histories. Contin
      @update_function('x', inputs=['x']):
      def x_upd(self, tidx):
        return self.x[tidx-1] - self.y[tidx]*self.time.dt
+
+.. important:: If a model contains a left-padded history (a history with time points before ``t0``), that model must define an :meth:`initialize` method which fills all left-padded histories with data. This method can also be used to pre-compute kernels, or anything else which should be done when parameters change.
+   After calling :meth:`initialize`, one should have ``model.cur_tidx == -1``.
 
 Default values and initializers
 ===============================
