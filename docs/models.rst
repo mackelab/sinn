@@ -23,11 +23,11 @@ Parameters and state are defined by special classes at the top of your model, wh
   import theano_shim as shim
   from sinn.models import Model, ModelParams
   from sinn.histories import TimeAxis, Series, AutoHist
-  from mackelab_toolbox.cgshim import typing as cgtyping
+  from mackelab_toolbox import typing
 
   class MyModel(Model):
     time: TimeAxis
-    rng : cgtyping.RNG
+    rng : typing.AnyRNG
 
     class Parameters(ModelParams):
       a: float
@@ -143,10 +143,10 @@ Multiple models can be combined. For example, we may want to model the external 
 .. code-block:: python
    class WhiteNoise(Model):
      time: TimeAxis
-     rng: cgtyping.RNG
+     rng: typing.AnyRNG
 
      class Parameters:
-       σ: cgtyping.FloatX
+       σ: typing.FloatX
 
      ξ: AutoHist(name='ξ', shape=(1,), dtype='float64')
 

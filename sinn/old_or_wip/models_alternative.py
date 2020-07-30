@@ -43,11 +43,12 @@ from typing import Any, Optional
 from inspect import signature
 
 import theano_shim as shim
+import mackelab_toolbox as mtb
 import mackelab_toolbox.utils as utils
 import mackelab_toolbox.theano
+import mackelab_toolbox.typing
 from mackelab_toolbox.theano import GraphCache, CompiledGraphCache
 from mackelab_toolbox.utils import class_or_instance_method
-from mackelab_toolbox.cgshim import typing as cgtyping
 
 import sinn
 import sinn.config as config
@@ -812,7 +813,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         if hists is None: return values
         for h in hists:
             input_rng = [inp for inp in h.update_function.inputs
-                         if isinstance(inp, cgshim.typing.RNG)]
+                         if isinstance(inp, mtb.typing.RNG)]
             if len(input_rng) > 0:
                 Model.output_rng(h, input_rng)
         return values

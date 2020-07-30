@@ -32,15 +32,16 @@ import sys
 import pydantic
 from pydantic import BaseModel, validator, root_validator
 from pydantic.typing import AnyCallable
-from typing import Any, Optional
+from typing import Any, Optional, Union, Tuple, Callable as CallableT
 from inspect import signature
 
 import theano_shim as shim
+import mackelab_toolbox as mtb
 import mackelab_toolbox.utils as utils
 import mackelab_toolbox.theano
+import mackelab_toolbox.typing
 from mackelab_toolbox.theano import GraphCache, CompiledGraphCache
 from mackelab_toolbox.utils import class_or_instance_method
-from mackelab_toolbox.cgshim import typing as cgtyping
 
 import sinn
 import sinn.config as config

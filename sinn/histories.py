@@ -35,11 +35,13 @@ import theano_shim.sparse
 
 from typing import ClassVar, Tuple, Set, Optional, Any, Union
 from pydantic import validator, root_validator, BaseModel, Field
+from pydantic.typing import Type
+import mackelab_toolbox as mtb
+import mackelab_toolbox.typing
 from mackelab_toolbox.transform import Transform
 from mackelab_toolbox.typing import (
     Array, NPType, DType, Number, Integral, Real, PintValue, QuantitiesValue)
-from mackelab_toolbox.cgshim import typing as cgtyping
-FloatX = cgtyping.FloatX
+from mackelab_toolbox.typing import FloatX
 
 from mackelab_toolbox.utils import (
     Stash, fully_qualified_name, broadcast_shapes,

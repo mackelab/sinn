@@ -83,9 +83,7 @@ import mackelab_toolbox.units
 from typing import Callable, Optional, Any, Union, Type, ClassVar
 # from types import FunctionType
 from mackelab_toolbox.typing import (
-    Range, Sequence, Number, Integral, Real, NPType, Array)
-from mackelab_toolbox.cgshim import typing as cgtyping
-FloatX = cgtyping.FloatX
+    Range, Sequence, Number, Integral, Real, NPType, Array, FloatX)
 from pydantic import (
     validator, root_validator, BaseModel, ValidationError, Field)
 

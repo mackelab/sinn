@@ -19,12 +19,8 @@ import dataclasses  # For lighter structures that don't need validation
 from typing import Optional, Tuple, List, Type, Any, Union
 from numbers import Number
 import mackelab_toolbox as mtb
-from mackelab_toolbox.typing import NPType, Slice
-from mackelab_toolbox.cgshim import typing as cgtyping
+from mackelab_toolbox.typing import NPType, Slice, FloatX, Tensor
 from mackelab_toolbox.parameters import ParameterSet
-# FIXME: This will not update if floatX is changed
-FloatX = cgtyping.FloatX
-Tensor = cgtyping.Tensor
 
 import theano_shim as shim
 import sinn.common as com
@@ -105,7 +101,7 @@ class Kernel(ConvolveMixin, com.KernelBase, abc.ABC):
     name       : str
     shape      : Tuple[NPType[np.int16], ...]
     t0         : FloatX   = shim.cast_floatX(0.)
-    decay_const: Optional[cgtyping.Tensor[cgtyping.FloatX]]
+    decay_const: Optional[Tensor[FloatX]]
     memory_time: Optional[FloatX]
     dtype      : Type = np.dtype(shim.config.floatX)
     ndim       : NPType[np.int8] = None
@@ -579,7 +575,7 @@ class CompositeKernel(Kernel):
     name       : Optional[str]
     shape      : Optional[Tuple[NPType[np.int16], ...]]
     t0         : Optional[FloatX]
-    decay_const: Optional[cgtyping.Tensor[cgtyping.FloatX]]
+    decay_const: Optional[Tensor[FloatX]]
     memory_time: Optional[FloatX]
     dtype      : Optional[Type]
     ndim       : Optional[NPType[np.int8]]
@@ -689,9 +685,9 @@ class ExpKernel(Kernel):
     """
     # Second argument enforces the kernel expectation of 2D parameters
     memory_time: Optional[FloatX]
-    height     : cgtyping.Tensor[FloatX, 2]
-    decay_const: cgtyping.Tensor[FloatX, 2]
-    t_offset   : cgtyping.Tensor[FloatX, 2]
+    height     : Tensor[FloatX, 2]
+    decay_const: Tensor[FloatX, 2]
+    t_offset   : Tensor[FloatX, 2]
     shape      : Optional[Tuple[NPType[np.int16], ...]]
 
     # Internal variables
@@ -972,7 +968,7 @@ class KernelWrapper(Kernel):
     name       : Optional[str]
     shape      : Optional[Tuple[NPType[np.int16], ...]]
     t0         : Optional[FloatX]
-    decay_const: Optional[cgtyping.Tensor[cgtyping.FloatX]]
+    decay_const: Optional[Tensor[FloatX]]
     memory_time: Optional[FloatX]
     dtype      : Optional[Type]
     ndim       : Optional[NPType[np.int8]]

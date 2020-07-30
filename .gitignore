@@ -7,19 +7,14 @@ __pycache__
 *.egg*
 *.pyc
 dbggraph*.png
-scratch*
-local_runs
 *.db
 debuglog*
-data
-TMPNOTES
-venv
-snippets
 tmp*
 *.log*
 *.cprof
 _build
 _autosummary
+.pytest_cache
 *.coverage
 *.html
 *.cache
@@ -27,8 +22,12 @@ _autosummary
 *???final?.dat
 *???final?.dir
   # Theano graph cache files
-activate
-  # symbolic link to environment
 *.Rproj*
 .Rprofile
 .RData
+
+TMPNOTES
+snippets
+scratch*
+data
+local_runs

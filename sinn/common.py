@@ -15,8 +15,8 @@ from collections import namedtuple, deque
 from typing import Tuple
 import dataclasses
 import pydantic
-from mackelab_toolbox.cgshim import typing as cgtyping
-FloatX = cgtyping.FloatX
+import mackelab_toolbox as mtb
+from mackelab_toolbox.typing import FloatX
 
 import theano_shim as shim
 from ._globals import *
@@ -119,7 +119,7 @@ class TensorWrapper:
     Package an array along with some metadata indicating which axes are
     covariant/contravariant, and which are contractions.
     """
-    array: cgtyping.Tensor
+    array: mtb.typing.Tensor
     dims: TensorDims
 
     # # If we need to normalize inputs in the future, we can consider if the
