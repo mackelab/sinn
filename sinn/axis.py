@@ -25,9 +25,6 @@ passed through `shim` or explicitly disallowed and guarded by a check using
     - `index()`
     - `index_interval()`
 
-.. warning:: The section below documents some planned implementations; the
-current implementation is somewhat different.
-
 Todo
 ^^^^
 I would really like ``mapping.index_range[i]`` to guarantee that the return
@@ -42,7 +39,7 @@ checks to work as expected.
 The abstract `Index` implements `__new__`, which checks whether any argument
 is symbolic and calls the constructor of the appropriate index type. This
 allows for transparent casting to the index type: `mapping.Index(x)` will
-work for both symbolic and concrete `x`.
+work for both symbolic and numeric `x`.
 
 (Planned) The `AxisIndexDelta` and `AxisIndex` are mixin classes, and the
 construction of an `Index` type attached to a mapping is equivalent to:
@@ -59,12 +56,13 @@ created `Index` types are registered.
 
 Todo
 ^^^^
-- There currently is no Symbolic `AxisIndex` type.
 - An `AxisIndex` points back to its associated `Axis` (through its `Axis`
   attribute), but it would make a lot more sense for it to point to the
   associated `Mapping` instead. Because now `AxisIndex`, `Mapping` and `Axis`
   are all mutually entangled (and need special `copy()` functions to maintain
   their references), but at least `Axis` could be disentangled from that lot.
+- It would be really helpful when debugging if the printed representation of
+  an Axis included what it was attached to (i.e. model or history name).
 
 """
 
@@ -76,6 +74,7 @@ import abc
 from abc import abstractmethod
 from enum import Enum, auto
 from collections import namedtuple
+import inspect
 import numbers
 import numpy as np
 
@@ -838,7 +837,7 @@ class SpecAxisIndexMeta(type):
         # TODO: I'm not sure we really should save `step` as an Index attribute
         step = None if axis is None else rgetattr(axis, 'stops.step', None)
         class_attrs = {
-            '__slots__'       : (),
+            '__slots__'       : ('_plain', '_data_index'),
             '_created_indexes': abstract_class._created_indexes,
             'nptype'          : nptype,
             'axis'            : axis,
@@ -852,7 +851,7 @@ class SpecAxisIndexMeta(type):
         methods = {
             'convert'         : metacls._instance_convert,
             'get_abs_rel_args': metacls._instance_get_abs_rel_args,
-            # '__new__'         : metacls.__clsnew__,
+            '__new__'         : metacls.__clsnew__,
             '__init__'        : metacls.__clsinit__,
             '__eq__'          : metacls._instance___eq__,
             '__add__'         : metacls._instance___add__,
@@ -922,18 +921,35 @@ class SpecAxisIndexMeta(type):
     # def axis(self): raise AttributeError
 
     # The __new__ method for the generated class
-    # Doesn't actually do anything, but allows subclasses to specialize it
-    # @staticmethod
-    # def __clsnew__(cls, *a, **kw):
-    #     super().__new__(cls)
+    # Doesn't actually do anything, but allows subclasses to specialize __init__
+    @staticmethod
+    def __clsnew__(cls, *a, **kw):
+        # Problem: super(cls, cls) -> Infinite recursion
+        # HACK: Find the first cls in MRO for which the *next* cls is not AxisIndex
+        #       (super() starts looking at the next class)
+        base = cls  # First entry in cls.mro()
+        for C in cls.mro()[1:]:
+            if not issubclass(C, AbstractAxisIndexDelta):
+                break
+            base = C
+        new = super(base, cls).__new__
+        if new is object.__new__:
+            # object.__new__ takes no argument
+            return new(cls)
+        else:
+            # HACK: Remove any keyword args not expected by the parent's `new`
+            #       Note: we assume that all positional args need to be forwarded
+            sig = inspect.signature(new)
+            kw = {k:v for k,v in kw.items() if k in sig.parameters}
+            return new(cls, *a, **kw)
 
     # The __init__ method for the generated class
     @staticmethod
     def __clsinit__(self, x, *args, **kwargs):
         if (isinstance(x, (AbstractAxisIndex, AbstractAxisIndexDelta))
             and type(x) is not type(self)):
-            raise TypeError(f"Tried to construct an "
-                            "{type(self).__name__} from a different "
+            raise TypeError("Tried to construct an "
+                            f"{type(self).__name__} from a different "
                             "AxisIndex type.")
         # if allow_rounding:
         #     # Cast before checking bounds
@@ -971,7 +987,17 @@ class SpecAxisIndexMeta(type):
         """
         Remove the 'index' identity by casting `self` to `nptype`.
         """
-        return self.astype(self.dtype)
+        # We cache the return value so that symbolic values are always the same
+        # TODO?: Store as attribute when creating the instance ?
+        #        => See also SymbolicAxisIndexMeta._instance_plain
+        if not hasattr(self, '_plain'):
+            self._plain = self.astype(self.dtype)
+        else:
+            try:
+                assert shim.eval(self._plain) == shim.eval(self.astype(self.dtype))
+            except shim.graph.TooCostly:
+                pass
+        return self._plain
 
     #Instance: @property
     @staticmethod
@@ -985,8 +1011,22 @@ class SpecAxisIndexMeta(type):
         (I.e. an instant of the index's parent type.)
         """
         # FIXME: Accessing `mapping` through `axis` is dumb
+        # We cache the return value so that symbolic values are always the same
+        # TODO?: Store as attribute when creating the instance ?
         imin = self.nptype(self.axis.stops.index_range[0])
-        return shim.cast(self, self.nptype) - imin
+        self._check_in_bounds(self, imin, np.inf)
+            # We don't use self.in_bounds here, because we only check lower bound
+            # (Slicing up to upper bound inclusive requires upper bound + 1)
+        if not hasattr(self, '_data_index'):
+            # self._data_index = shim.cast(self, self.nptype) - imin
+            self._data_index = self.plain - imin
+        else:
+            try:
+                # assert shim.eval(self._data_index) == shim.eval(shim.cast(self, self.nptype) - imin)
+                assert shim.eval(self._data_index) == shim.eval(self.plain - imin)
+            except shim.graph.TooCostly:
+                pass
+        return self._data_index
 
     #Instance: @property
     @staticmethod
@@ -1323,7 +1363,7 @@ class SymbolicAxisIndexMeta(SpecAxisIndexMeta, shim.graph.GraphExpressionMeta):
                 x = shim.cast(x, self.nptype)  # Only casts if necessary
             else:
                 raise TypeError(f"Axis value {x} has dtype {x.dtype}, while this "
-                                f"axis expects {self.nptype}.")
+                                f"axis expects {np.dtype(self.nptype)}.")
             # TODO: Make a generic function in shim.graph
             name = x.name
             if name is None:
@@ -1346,7 +1386,10 @@ class SymbolicAxisIndexMeta(SpecAxisIndexMeta, shim.graph.GraphExpressionMeta):
         """
         Remove the 'index' identity by casting `self` to `nptype`.
         """
-        return self.copy()
+        if not hasattr(self, '_plain'):
+            self._plain = self.copy()
+            self._plain.name = self.name
+        return self._plain
             # We can't use `astype`, because that still returns an AxisIndex
             # Here `copy` adds an identity operation which has `self` as input
             # There may be ways to remove the `self` node from the graph
@@ -1553,8 +1596,10 @@ class SequenceMapping(BaseModel):
     # HACK: Because `keep_untouched` doesn't work, we forcefully remove
     # 'Index' from the returned dict.
     def dict(self, *args, **kwargs):
-        d = super().dict(*args, **kwargs)
-        del d['Index']
+        excl = kwargs.pop('exclude', None)
+        excl = set() if excl is None else set(excl)
+        excl.add('Index')
+        d = super().dict(*args, exclude=excl, **kwargs)
         # Cast pad_left, pad_right to plain integers to detach them from Index
         for pad_side in ('pad_left', 'pad_right'):
             pad = d[pad_side]
@@ -1916,6 +1961,17 @@ class SequenceMapping(BaseModel):
                 self.index_range[-self.pad_right-1])
             assert value.step is None or value.step == 1
             return slice(self.index(start), self.index(stop))
+        elif isinstance(value, np.ndarray):
+            if value.ndim == 0:
+                return np.array(self.index(x[()]))
+            else:
+                warn("Calling `index` on a `SequenceMapping` generates an "
+                     "array on every call. Consider using `ArrayMapping`. "
+                     "(Or improving `SequenceMapping` ;-P)")
+                # `index()` is undefined with higher dim arrays
+                assert value.ndim == 1
+                breakpoint
+                return np.array([self.index(x) for x in value])
         elif isinstance(value, self.Index):
             # Idempotent on indices
             return value
@@ -1939,9 +1995,6 @@ class SequenceMapping(BaseModel):
             # Type of `value` matches `x_dtype` – search for corresponding index
             # FIXME: All the tests above will be repeated in data_index
             if isinstance(value, np.ndarray) and value.ndim > 0:
-                warn("Calling `index` on a `SequenceMapping` generates an "
-                     "array on every call. Consider using `ArrayMapping`. "
-                     "(Or improving `SequenceMapping` ;-P)")
                 index_array = np.array(self.index_range)
                 return self.Index(index_array[self.data_index(value)])
             else:
