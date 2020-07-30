@@ -19,7 +19,6 @@ from types import SimpleNamespace
 import theano_shim as shim
 from mackelab_toolbox.transform import Transform
 import mackelab_toolbox.typing as mt
-import sinn.config as config
 import pint
 ureg = pint.UnitRegistry()
 
@@ -61,7 +60,7 @@ def _test_history_series_indexing(cgshim):
     with pytest.warns(UserWarning):
         # Padding non-empty history invalidates data
         x1.pad(4)
-    assert x1.cur_tidx == -1
+    assert x1.cur_tidx == -5
 
     # Padding should not affect detached taxis, or axis from another History
     assert x1.pad_left == 4
@@ -125,7 +124,7 @@ def _test_history_spiketrain_indexing(cgshim):
     with pytest.warns(UserWarning):
         # Padding non-empty history invalidates data
         x1.pad(4)
-    assert x1.cur_tidx == -1
+    assert x1.cur_tidx == -5
 
     # Padding should not affect detached taxis, or axis from another History
     assert x1.pad_left == 4
@@ -135,8 +134,8 @@ def _test_history_spiketrain_indexing(cgshim):
     assert taxis.padded_length == taxis.unpadded_length
     assert x1._get_num_csr().shape[0] == x1.time.padded_length
 
-    with pytest.warns(scipy.sparse.SparseEfficiencyWarning): # Silence expected warning
-        x1[:] = gen_spike_data(x1.time.padded_length, 9)
+    # with pytest.warns(scipy.sparse.SparseEfficiencyWarning): # Silence expected warning
+    x1[:] = gen_spike_data(x1.time.padded_length, 9)
     assert x1.cur_tidx == taxis.unpadded_length - 1
 
     x1.pad(4)  # No warning because no padding was added
@@ -144,8 +143,8 @@ def _test_history_spiketrain_indexing(cgshim):
         # Adding padding triggers warning again
         x1.pad(5)
 
-    with pytest.warns(scipy.sparse.SparseEfficiencyWarning): # Silence expected warning
-        x1[:] = gen_spike_data(x1.time.padded_length, 9)
+    # with pytest.warns(scipy.sparse.SparseEfficiencyWarning): # Silence expected warning
+    x1[:] = gen_spike_data(x1.time.padded_length, 9)
 
     first10 = x1._get_num_csr()[:10]  # 5 padding + 5 data
     # `.data` omits padding
@@ -181,7 +180,7 @@ def _test_history_series_updates(cgshim):
     x2 = Series(name='x2', time=taxis, shape=(3,), dtype=np.float64)
 
     hists = SimpleNamespace(x1=x1, x2=x2)
-    HistoryUpdateFunction.namespace = hists
+    # HistoryUpdateFunction.namespace = hists
 
     A = np.array([-0.1, 1.8, 0.5])
     x1_upd = HistoryUpdateFunction(
@@ -189,16 +188,19 @@ def _test_history_series_updates(cgshim):
         # indices, we need to set range_update_function.
         func = lambda tidx: A*shim.sin(x1.get_time(tidx).magnitude),
         inputs = [],
+        namespace = hists
         )
     x1_range_upd = HistoryUpdateFunction(
         # tidx is guaranteed to be a list of scalars
         func = lambda tidx: A*shim.sin(shim.stack(x1.get_time(tidx).magnitude)[:,np.newaxis]),
         inputs = [],
+        namespace = hists
         )
     x2_upd = HistoryUpdateFunction(
         func = Transform("tidx -> x2[tidx-1]*shim.exp(-x2.dt.magnitude) "
                          " + x1(tidx.plain)*x2.dt.magnitude"),
-        inputs = ['x1', 'x2']
+        inputs = ['x1', 'x2'],
+        namespace = hists
         )
 
     x1.update_function = x1_upd
@@ -250,9 +252,9 @@ def _test_history_series_updates(cgshim):
             # Numeric histories never detach _sym from _num
         assert len(updates) == 0
 
-    assert np.all(x2.trace == shim.eval(x2[x2.t0idx:x2.cur_tidx+1]))
+    assert np.all(x2.get_trace() == shim.eval(x2[x2.t0idx:x2.cur_tidx+1]))
     # TODO: solve ODE and compare with analytical soln
-    assert np.all(x2.trace == x2._num_data.get_value()[1:Ti+1+1])
+    assert np.all(x2.get_trace() == x2._num_data.get_value()[1:Ti+1+1])
 
     # Copies
     x2copy = x2.copy()
@@ -283,7 +285,7 @@ def _test_history_spiketrain_updates(cgshim):
     x2 = Spiketrain(name='x2', time=taxis, pop_sizes=(1,2,3))
 
     hists = SimpleNamespace(x1=x1, x2=x2)
-    HistoryUpdateFunction.namespace = hists
+    # HistoryUpdateFunction.namespace = hists
 
     rng = shim.config.RandomStreams()
 
@@ -294,17 +296,19 @@ def _test_history_spiketrain_updates(cgshim):
 
     x1_upd = HistoryUpdateFunction(
         func = lambda tidx:
-            [shim.nonzero(rng.binomial(n=1, p=0.2, size=x1.shape))[0]
+            [shim.nonzero(rng.binomial(n=1, p=0.9, size=x1.shape))[0]
              for ti in shim.atleast_1d(tidx)],
         # func = x1_fn,
         inputs = [],
+        namespace = hists
         )
     x2_upd = HistoryUpdateFunction(
         func = Transform("tidx -> [shim.nonzero(rng.binomial("
                          "     n=1, p=0.2*shim.exp( (10*x1(ti) + x2[ti-10:ti].sum(axis=0))/15 ),"
                          f"    size={x2.shape}))[0]"
                          "   for ti in shim.atleast_1d(tidx)]"),
-        inputs = ['x1', 'x2']
+        inputs = ['x1', 'x2'],
+        namespace = hists
         )
     x2_upd.func.simple.names['rng'] = rng
 
@@ -333,15 +337,16 @@ def _test_history_spiketrain_updates(cgshim):
     with pytest.raises(IndexError):
         x2(Ti)
     x2.pad(10)
+    x2[:0] = [np.array([], dtype=x2.dtype) for i in range(10)]
     x2(Ti)
 
     x2.eval()
 
-    assert x2.trace.sum() > 0
+    assert x2.get_trace().sum() > 0
         # This has essentially probability 1, and ensures that the tests below
         # don't succeed due to the updates not happening at all.
-    assert np.all(x2.trace == shim.eval(x2[x2.t0idx:x2.cur_tidx+1]))
-    assert not (x2.trace != x2._get_num_csr()[10:10+Ti+1]).data.any()
+    assert np.all(x2.get_trace() == shim.eval(x2[x2.t0idx:x2.cur_tidx+1]))
+    assert not (x2.get_trace() != x2._get_num_csr()[10:10+Ti+1]).data.any()
 
     # Copies
     x2copy = x2.copy()

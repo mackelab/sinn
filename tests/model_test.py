@@ -29,8 +29,8 @@ def _test_model(cgshim):
     # All sinn imports need to be guarded inside functions, to avoid
     # shim state being messed up
     shim.load(cgshim)
-    import sinn
     mtb.typing.freeze_types()
+    import sinn
 
     with pytest.warns(UserWarning):
         # Warns that Model has no 'State' class
@@ -66,8 +66,8 @@ def _test_model(cgshim):
 
     # Evaluate all the histories in the model
     model.eval()
-    assert model.spikes.trace.shape == (5,7)
-    assert len(model.λ.trace) == 5
+    assert model.spikes.get_trace().shape == (5,7)
+    assert len(model.λ.get_trace()) == 5
 
     # model.spikes.(model.time.tnidx)
     model.advance(model.time.tnidx)

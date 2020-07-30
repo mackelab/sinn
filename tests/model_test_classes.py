@@ -55,6 +55,7 @@ class TestModelNoState(Model):
 
     def initialize(self, initializer=None):
         self.λ.pad(1)
+        self.λ[-1] = np.zeros(self.λ.shape)
 
 class TestModel(TestModelNoState):
     class State:

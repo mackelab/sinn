@@ -194,6 +194,17 @@ def _test_map_axis(cglib):
     with pytest.raises(TypeError): # Can't pad with floats if no step
         axis2.pad(1*ureg.s)
 
+    # Data index and plain preserve identity
+    if cgshim == 'numpy':
+        kplain = shim.shared(4)  # Also test downcasting for plain data
+    else:
+        kplain = shim.shared(axis1.Index.nptype(4))  # Can't downcast symbolics
+    k = axis1.Index(kplain)
+    assert k.plain is k.plain
+    # FIXME: This should also work
+    # assert k.plain is kplain
+    assert k.data_index is k.data_index
+
     # Clean up state of symbolic updates
     shim.reset_updates()
 
@@ -318,6 +329,17 @@ def _test_regular_axis(cglib):
     # In contrast to MapAxis, can pad with real quantities
     axis2.pad(1*ureg.s)
     assert axis2.pad_left == 10
+
+    # Data index and plain preserve identity
+    if cgshim == 'numpy':
+        kplain = shim.shared(4)  # Also test downcasting for plain data
+    else:
+        kplain = shim.shared(axis1.Index.nptype(4))  # Can't downcast symbolics
+    k = axis1.Index(kplain)
+    assert k.plain is k.plain
+    # FIXME: This should also work
+    # assert k.plain is kplain
+    assert k.data_index is k.data_index
 
     # Clean up state of symbolic updates
     shim.reset_updates()
