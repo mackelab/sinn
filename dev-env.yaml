@@ -1,0 +1,22 @@
+name: sinn
+channels:
+  - conda-forge
+requirements:
+  - numpy
+  - pydantic
+  - theano
+  - tqdm   # Planned to be moved to dev packages
+  - packaging
+  - pip
+  - pip:
+    - odictliteral
+# Development packages
+# These are required either to run tests or examples, or build documentation
+  - pytest
+  - sphinx
+  - pint
+  - quantities
+  - scipy
+  - matplotlib
+  - seaborn
+  - pandas
