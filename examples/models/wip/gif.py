@@ -14,13 +14,14 @@ import logging
 import copy
 import operator
 
+import theano_shim as shim
+import mackelab_toolbox.typing
+mackelab_toolbox.typing.freeze_types()
+
 from typing import Type
 from pydantic import validator, root_validator
-from mackelab_toolbox.typing import NPType
-from mackelab_toolbox.cgshim import typing as cgtyping
-FloatX = cgtyping.FloatX
+from mackelab_toolbox.typing import NPType, FloatX
 
-import theano_shim as shim
 import mackelab_toolbox.utils as utils
 import sinn
 import sinn.config as config
@@ -168,7 +169,7 @@ class GIF(models.Model):
         # rng = shim.typing.RandomStream
 
     time :TimeAxis
-    rng  :cgtyping.RNG
+    rng  :typing.AnyRNG
 
     # ====================================
     # Model parameters

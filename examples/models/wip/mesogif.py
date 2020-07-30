@@ -14,13 +14,12 @@ import logging
 import copy
 import operator
 
-from typing import Type
-from pydantic import validator, root_validator
-from mackelab_toolbox.typing import NPType
-from mackelab_toolbox.cgshim import typing as cgtyping
-FloatX = cgtyping.FloatX
-
 import theano_shim as shim
+
+from typing import Type, ClassVar
+from pydantic import validator, root_validator
+from mackelab_toolbox.typing import NPType, FloatX
+
 import mackelab_toolbox.utils as utils
 import sinn
 import sinn.config as config
@@ -29,7 +28,6 @@ import sinn.kernels as kernels
 import sinn.models as models
 import sinn.popterm
 
-from typing import ClassVar
 
 logger = logging.getLogger("fsgif_model")
 
@@ -1176,7 +1174,7 @@ class mesoGIF(models.Model):
         data[:Atidx,:] = init_A
         self.A._data.set_value(data, borrow=True)
         self.A._sym_tidx.set_value(Atidx - 1)
-        self.A._num_tidx = self.A._sym_tidx
+        assert self.A._num_tidx is self.A._sym_tidx
 
     def init_latent_vars(self, init_state, t=None):
         """
@@ -1227,7 +1225,7 @@ class mesoGIF(models.Model):
             data[histtidx,:] = initval
             hist._data.set_value(data, borrow=True)
             hist._sym_tidx.set_value(histtidx)
-            hist._num_tidx = hist._sym_tidx
+            assert hist._num_tidx is hist._sym_tidx
 
         # # Make all neurons free neurons
         # idx = self.x.t0idx - 1; assert(idx >= 0)
