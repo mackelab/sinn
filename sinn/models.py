@@ -3,14 +3,17 @@
 Created on Thu Jan 17 2017
 
 Author: Alexandre René
-"""
 
-# TODO
-#   - Remove any use of '_refhist'. Package the (t0, tn, dt) -> time_array
-#     code (which is in histories.History) into an Axis class, and then give
-#     a proper axis to Model.
-#   - Have one dictionary/SimpleNamespace storing all compilation variables.
-#     See comment under `class Model`
+TODO
+----
+
+- At present, things link ``h for h not in model.statehists`` will use __eq__
+  for the ``in`` check, which for histories creates a dict and compares.
+  Iterables like `statehists` should be something like a ``set``, such that
+  this check then just compares identity / hashes.
+- Have one dictionary/SimpleNamespace storing all compilation variables.
+  See comment under `class Model`
+"""
 
 import numpy as np
 import scipy as sp
@@ -95,6 +98,12 @@ def get_model(modelname, *args, **kwargs):
     global _models
     return _models.get(modelname, *args, **kwargs)
 
+# Parameters
+
+class ModelParams(BaseModel):
+    class Config:
+        json_encoders = mtb.typing.json_encoders
+
 # Model decorators
 
 ## updatefunction decorator
@@ -115,16 +124,27 @@ def updatefunction(hist_nm, inputs):
     return dec
 
 ## initializer decorator
-
-def initializer(*fields, unintialized=None, pre=True, always=True, **dec_kwargs):
+def initializer(
+    *fields, unintialized=None, pre=True, always=False, **dec_kwargs
+) -> CallableT[[AnyCallable], classmethod]:
     """
     Specialized validator for writing more complex default initializers with
     less boilerplate. Does two things:
 
-    - Changes defaults for `pre` and `always` to ``True``.
+    - Changes the default for `pre` to ``True``.
+    - Always sets `always=True` (the `always` parameter is still accepted,
+      but with a slightly different meaning; see note below).
     - Allows model parameters to be specified as keyword arguments in the
       validator signature. This works with both model-level parameters, and
       the parameters defined in the `Parameters` subclass.
+
+    .. Note:: The point of an initializer is to replace a default value, so
+       it doesn't make sense to set `always=True`. However, by default an
+       initializer will *not* execute if a value is already provided.
+       (The logic being that if a value is provided, it doesn't need to be
+       initialized.) Thus, in analogy with `~pydantic.validator`, the `always`
+       keyword is provided to specify that an initializer should be run even if
+       a value for that parameter is provided.
 
     Example
     -------
@@ -159,18 +179,24 @@ def initializer(*fields, unintialized=None, pre=True, always=True, **dec_kwargs)
     ----------
     *fields
     pre (default: True)
-    always (default: True)
     each_item
     check_fields
     allow_reuse: As in `pydantic.validator`, although some arguments may not
         be so relevant.
+
+    always: bool
+        - `True`: Always run the initializer. This is the same as setting
+          `always=True` with a Pydantic `~pydantic.validator`.
+        - `False` (default): Only run the initializer when the value is **not**
+          provided. Note that this is the opposite effect to setting
+          `always=False` with a Pydantic `~pydantic.validator`.
 
     uninitialized: Any (default: None)
         The initializer is only executed when the parameter is equal to this
         value.
     """
 
-    val_fn = validator(*fields, pre=pre, always=always, **dec_kwargs)
+    val_fn = validator(*fields, pre=pre, always=True, **dec_kwargs)
 
     # Refer to pydantic.class_validators.make_generic_validator
     def dec(f: AnyCallable) -> classmethod:
@@ -193,49 +219,58 @@ def initializer(*fields, unintialized=None, pre=True, always=True, **dec_kwargs)
                 param_args.add(arg)
         for arg in param_args:
             opt_val_args.remove(arg)
-        if len(param_args) == 0:
-            # No param args => nothing to do
-            new_f = f
-        else:
-            def new_f(cls, v, values, field, config):
-                if v is not unintialized:
-                    return v
-                param_kwargs = {}
-                params = values.get('params', None)
-                if not isinstance(params, BaseModel):
-                    params = None  # We must not be within a sinn Model => 'params' does not have special meaning
-                for p in param_args:
-                    pval = values.get(p, None)  # Try module-level param
-                    if pval is None and params is not None:
-                        pval = getattr(params, p, None)
-                    if pval is None:
-                        raise AssertionError(
-                          f"'{p}' cannot be found within the model parameters. "
-                          "This may be because it is defined after "
-                          f"'{field.name}' in the list of parameters, or "
-                          "because its own validation failed.")
-                    param_kwargs[p] = pval
-
-                # Now assemble the expected standard arguments
-                if len(req_val_args) == 2:
-                    val_args = (cls, v)
+        def new_f(cls, v, values, field, config):
+            if not always and v is not unintialized:
+                return v
+            param_kwargs = {}
+            params = values.get('params', None)
+            if not isinstance(params, BaseModel):
+                params = None  # We must not be within a sinn Model => 'params' does not have special meaning
+            for p in param_args:
+                if p in values:  # Try module-level param first
+                    pval = values.get(p)
+                elif params is not None and hasattr(params, p):
+                    pval = getattr(params, p)
                 else:
-                    val_args = (v,)
-                val_kwargs = {}
-                if 'values' in opt_val_args: val_kwargs['values'] = values
-                if 'field' in opt_val_args: val_kwargs['field'] = field
-                if 'config' in opt_val_args: val_kwargs['config'] = config
+                    raise AssertionError(
+                      f"'{p}' cannot be found within the model parameters. "
+                      "This may be because it is "
+                      f"defined after '{field.name}' in the list of parameters, "
+                      "or because its own validation failed.")
+                param_kwargs[p] = pval
 
-                return f(*val_args, **val_kwargs, **param_kwargs)
+            # Now assemble the expected standard arguments
+            if len(req_val_args) == 2:
+                val_args = (cls, v)
+            else:
+                val_args = (v,)
+            val_kwargs = {}
+            if 'values' in opt_val_args: val_kwargs['values'] = values
+            if 'field' in opt_val_args: val_kwargs['field'] = field
+            if 'config' in opt_val_args: val_kwargs['config'] = config
 
-            # Can't use @wraps because we changed the signature
-            new_f.__name__ = f.__name__
-            new_f.__doc__ = f.__doc__
-            return val_fn(new_f)
+            return f(*val_args, **val_kwargs, **param_kwargs)
+
+        # Can't use @wraps because we changed the signature
+        new_f.__name__ = f.__name__
+        # Having a different qualname is required to avoid overwriting validators
+        # (Pydantic identifies them by name, and otherwise they all have `new_f`)
+        new_f.__qualname__ = f.__qualname__
+        new_f.__doc__ = f.__doc__
+
+        return val_fn(new_f)
 
     return dec
 
 class ModelMetaclass(pydantic.main.ModelMetaclass):
+    # Partial list of magical things done by this metaclass:
+    # - Transform a plain `Parameters` class into a pydantic BaseModel
+    #   (specifically, ModelParams)
+    # - Add the `params: Parameters` attribute to the annotatons.
+    #   Ensure in inherits from the changed `Parameters`
+    # - Move `params` to the front of the annotations list, so it is available
+    #   to validators.
+    # - Add the `time` annotation if it isn't already present.
     def __new__(metacls, cls, bases, namespace):
         # MRO resolution
         # We will need to retrieve attributes which may be anywhere in the MRO.
@@ -266,15 +301,6 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
                 f"your model, have a look at the comments above {info}, and "
                 "see if you can contribute a better solution.")
         mro = bases[0].mro()
-        Parameters = namespace.get('Parameters', None)  # First check namespace
-        Config = namespace.get('Config', None)
-        for C in mro:
-            if Parameters is not None and Config is not None:
-                break  # We've found both classes; no need to look further
-            if Parameters is None:
-                Parameters = getattr(C, 'Parameters', None)
-            if Config is None:
-                Config = getattr(C, 'Config', None)
 
         # Existing attributes
         # (ChainMap gives precedence to elements earlier in the list)
@@ -296,6 +322,7 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         new_annotations = {}
         _kernel_identifiers = inherited_kernel_identifiers
         _hist_identifiers = inherited_hist_identifiers
+        _model_identifiers = set()
         _pending_update_functions = inherited_pending_updates
             # pending updates use a dict to allow derived classes to override
 
@@ -314,36 +341,10 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         #     raise TypeError(f"Model {cls} does not define an `initialize` "
         #                     "method.")
 
-
-        # Sanity check Parameters subclass
-        # Parameters = namespace.get('Parameters', None)
-        if (not isinstance(Parameters, type)
-            or not issubclass(Parameters, BaseModel)):
-            raise TypeError(
-                f"Model {cls}: `Parameters` must inherit from pydantic."
-                f"BaseModel. `{cls}.Parameters.mro()`: {Parameters.mro()}.")
-
-        # Sanity check Config subclass, if present
-        # Config = namespace.get('Config', None)
-        # No warnings for Config: not required
-        if not isinstance(Config, type):
-            raise TypeError(f"Model {cls} `Config` must be a class, "
-                            f"not {type(Config)}.")
-
-        # Add 'params' variable if it isn't present, and place first in
-        # the list of variables so that initializers can find it.
-        if 'params' in annotations:
-            if annotations['params'] is not Parameters:
-                raise TypeError(f"Model {cls} defines `params` but it is not "
-                                f"of type `{cls}.Parameters`")
-            new_annotations['params'] = annotations.pop('params')
-        else:
-            new_annotations['params'] = Parameters
+        # Add module-level annotations
 
         # TODO?: Allow derived classes to redefine histories ?
         #        We would just need to add the inherited kernel/hists after this loop
-
-        # Add module-level annotations
         for nm, T in annotations.items():
             if nm in new_annotations:
                 raise TypeError("Name clash in {cls} definition: '{nm}'")
@@ -352,6 +353,8 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
                 _hist_identifiers.add(nm)
             elif isinstance(T, type) and issubclass(T, Kernel):
                 _kernel_identifiers.add(nm)
+            elif isinstance(T, type) and cls != 'Model' and issubclass(T, Model):
+                _model_identifiers.add(nm)
             elif isinstance(T, PendingUpdateFunction):
                 # FIXME: Remove. I don't remember why I originally put this branch
                 assert False
@@ -363,7 +366,12 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
             # Deactivate warnings for abstract models
             pass
         elif State is None:
-            warn(f"Model {cls} does not define a set of state variables.")
+            if len(_hist_identifiers) > 0:
+                # If there are no histories, it makes sense not to specify a State
+                # This can happen for models which just combine submodels
+                warn(f"Model {cls} does not define a set of state variables.")
+            State = type('State', (), {'__annotations__': {}})
+            namespace['State'] = State
         elif len(getattr(State, '__annotations__', {})) == 0:
             warn(f"Model {cls} has an empty `State` class.")
         else:
@@ -391,6 +399,109 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
                 #     raise TypeError(
                 #         f"Model {cls}: `State` defines '{nm}' with type '{T}', "
                 #         f"while the model defines it with type '{histT}'.")
+
+        # Get Parameters and Config: iterate through MRO and stop on 1st hit
+        Parameters = namespace.get('Parameters', None)  # First check namespace
+        Config = namespace.get('Config', None)
+        if Config is None:
+            Config = type("Config", (), {'keep_untouched': ()})
+        for C in mro:
+            if Parameters is not None:  # and Config is not None:
+                break  # We've found the Parameters classes; no need to look further
+            if Parameters is None:
+                Parameters = getattr(C, 'Parameters', None)
+            # if Config is None:
+            #     Config = getattr(C, 'Config', None)
+
+        # Sanity check Parameters subclass
+        # Parameters = namespace.get('Parameters', None)
+        if not isinstance(Parameters, type):
+            raise TypeError(f"Model {cls}: `Parameters` must be a class.")
+        # if (not isinstance(Parameters, type)
+        #     or not issubclass(Parameters, BaseModel)):
+        #     raise TypeError(
+        #         f"Model {cls}: `Parameters` must inherit from pydantic."
+        #         f"BaseModel. `{cls}.Parameters.mro()`: {Parameters.mro()}.")
+
+        # Ensure `Parameters` inherits from ModelParams
+        if not issubclass(Parameters, ModelParams):
+            # We can't have multiple inheritance if the parents don't have the
+            # same metaclass. Standard solution: Create a new metaclass, which
+            # inherits from the other two, and use *that* as a metaclass.
+            paramsmeta = type(ModelParams)
+            if paramsmeta is not type(Parameters):
+                paramsmeta = type("ParametersMeta_Subclass",
+                                  (paramsmeta, type(Parameters)),
+                                  {})
+            OldParameters = Parameters
+            if (not issubclass(Parameters, BaseModel)
+                and hasattr(Parameters, '__annotations__')):
+                # If `Parameters` is not even a subclass of BaseModel, we have
+                # to move its annotations to the derived class
+                params_namespace = {'__annotations__': Parameters.__annotations__}
+                # Also move any defined fields or default values
+                # We also need to catch validators, etc.
+                # FIXME: I haven't figured out a way to move validators. They
+                #        need to be of type 'classmethod' when pydantic sees
+                #        them, they only remain such during the creation of
+                #        the class. Afterwards, they are just 'methods'.
+                #        So, current approach is, if there are any non-dunder
+                #        attributes, we raise an error.
+                if [attr for attr in dir(Parameters) if attr[:2] != '__']:
+                    raise TypeError("A model's `Parameters` must subclass "
+                                    "`sinn.models.ModelParams`.")
+                # for attr in dir(Parameters):
+                #     if attr[:2] != '__':
+                #         params_namespace[attr] = getattr(Parameters, attr)
+                #         delattr(Parameters, attr)
+                Parameters.__annotations__= {}
+            else:
+                params_namespace = {}
+            Parameters = paramsmeta("Parameters", (OldParameters, ModelParams),
+                                    params_namespace)
+
+        # Sanity check Config subclass, if present
+        # Config = namespace.get('Config', None)
+        # No warnings for Config: not required
+        if not isinstance(Config, type):
+            raise TypeError(f"Model {cls} `Config` must be a class, "
+                            f"not {type(Config)}.")
+
+        # Rename State and Parameters classes for easier debugging/inspection
+        # Don't just append the class name, because classes can be nested and
+        # that could lead to multiple names
+        # It seems prudent to leave __qualname__ untouched
+        if getattr(State, '__name__', None) == "State":
+            State.__name__ = f"State ({cls})"
+        if getattr(Parameters, '__name__', None) == "Parameters":
+            Parameters.__name__ == f"Parameters ({cls})"
+
+        # Add 'params' variable if it isn't present, and place first in
+        # the list of variables so that initializers can find it.
+        if 'params' in new_annotations:
+            ann_params = new_annotations['params']
+            if new_annotations['params'] is not Parameters:
+                if isinstance(ann_params, type) and issubclass(Parameters, ann_params):
+                    new_annotations['params'] = Parameters
+                else:
+                    raise TypeError(f"Model {cls} defines `params` but it is "
+                                    f"not of type `{cls}.Parameters`")
+            new_annotations = {'params': new_annotations.pop('params'),
+                               **new_annotations}
+        elif issubclass(Parameters, abc.ABC):
+            # Most likely no Parameters class was defined, and we retrieved
+            # the abstract definition above.
+            # => We skip creating the 'params' attribute, since there is no
+            #    point in requiring it when the model defines no parameters
+            if len(_hist_identifiers) > 0:
+                # If there are no histories, it makes sense not to specify a State
+                # This can happen for models which just combine submodels
+                warn(f"Model '{type(self).__name__}' does not define a `Parameters` "
+                     "class, or its `Parameters` class inherits from `abc.ABC`.")
+            # Create a new type to minimize the risk of clobbering the base Parameters type
+            Parameters = type('Parameters', (Parameters,), {})
+        else:
+            new_annotations = {'params': Parameters, **new_annotations}
 
         # Add update functions to list
         for obj in namespace.values():
@@ -428,11 +539,14 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
                             init_autospiketrain)
                 else:
                     raise TypeError("Unrecognized history type; recognized "
-                        "types:\n\tSeries, Spiketrain")
+                        "types:\n    Series, Spiketrain")
 
         # Update namespace
+        namespace['Config'] = Config
+        namespace['Parameters'] = Parameters
         namespace['_kernel_identifiers'] = list(_kernel_identifiers)
         namespace['_hist_identifiers'] = list(_hist_identifiers)
+        namespace['_model_identifiers'] = list(_model_identifiers)
         namespace['_pending_update_functions'] = list(_pending_update_functions.values())
         namespace['__annotations__'] = new_annotations
 
@@ -480,34 +594,26 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     # ALTERNATIVE: Have a SimpleNamespace attribute `priv` in which to place
     #              private attributes, instead of listing them all here.
     __slots__ = ('graph_cache', 'compile_cache', '_pymc', 'batch_start_var', #'batch_size_var',
-                 '_num_tidx', '_curtidx', '_stoptidx_var', '_batchsize_var', '_advance_updates')
+                 '_num_tidx', '_curtidx', '_stoptidx_var', '_batchsize_var',
+                 '_advance_updates', '_compiled_advance_fns')
 
     class Config:
         # Allow assigning other attributes during initialization.
         extra = 'allow'
-        keep_untouched = (PendingUpdateFunction, class_or_instance_method)
+        keep_untouched = (ModelParams, PendingUpdateFunction, class_or_instance_method)
 
-    class Parameters(abc.ABC, BaseModel):
+    class Parameters(abc.ABC, ModelParams):
         """
         Models must define a `Parameters` class within their namespace.
-        Don't inherit from this class, just `BaseModel`; i.e. do::
+        Don't inherit from this class; i.e. do::
 
             class MyModel(Model):
-                class Parameters(BaseModel):
+                class Parameters:
                     ...
         """
         pass
 
     def __init__(self, initializer=None, **kwargs):
-        # Sanity check Parameters subclass
-        Parameters = type(self).Parameters  # `self` not properly initialized yet
-        assert isinstance(Parameters, type)  # Assured by metaclass
-        if issubclass(Parameters, abc.ABC):
-            # Most likely no Parameters class was defined, and we retrieved
-            # the abstract definition above.
-            raise ValueError(
-                f"Model {cls} does not define a `Parameters` class, or its "
-                "`Parameters` class inherits from `abc.ABC`.")
         # Initialize attributes with Pydantic
         super().__init__(**kwargs)
         # Attach update functions to histories, and set up __slots__
@@ -528,24 +634,32 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         m.initialize()
         return m
 
-    def _base_initialize(self):
+    def _base_initialize(self, shallow_copy=False):
         """
         Collects initialization that should be done in __init__, copy & parse_obj.
         """
-        # Attach history updates
-        HistoryUpdateFunction.namespace = self
-        for obj in self._pending_update_functions:
-            hist = getattr(self, obj.hist_nm)
-            hist.update_function = HistoryUpdateFunction(
-                func = partial(obj.upd_fn, self),  # Wrap history so `self` points to the model
-                inputs = obj.inputs,
-            )
+        # Attach history updates (don't do during shallow copy – histories are preserved then)
+        if not shallow_copy:
+            for obj in self._pending_update_functions:
+                hist = getattr(self, obj.hist_nm)
+                hist.update_function = HistoryUpdateFunction(
+                    namespace    = self,
+                    func         = partial(obj.upd_fn, self),  # Wrap history so `self` points to the model
+                    inputs       = obj.inputs,
+                    parent_model = self
+                )
         object.__setattr__(self, 'graph_cache',
-                           GraphCache('sinn.models', type(self),
+                           GraphCache('.sinn.graphcache/models', type(self),
                                       modules=('sinn.models',)))
         object.__setattr__(self, 'compile_cache',
-                           CompiledGraphCache('sinn.models.compilecache'))
+                           CompiledGraphCache('.sinn.graphcache/models.compilecache'))
             # TODO: Add other dependencies within `sinn.models` ?
+        object.__setattr__(self, '_advance_updates', {})
+        object.__setattr__(self, '_compiled_advance_fns', {})
+            # Keys of these dictionary are tuples of histories passed to `integrate(histories=…)`,
+            # i.e. extra histories to integrate along with the state.
+            # Values of the first are update dictionaries
+            # Values of the second are compiled Theano functions.
         # Create symbolic variables for batches
         if shim.cf.use_theano:
             # # Any symbolic function on batches should use these, that way
@@ -560,16 +674,21 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             # #     # Must be large enough so that test_value slices are not empty
 
     @abc.abstractmethod
-    def initialize(self, initializer :Any=None):
+    def initialize(self, initializer: Any=None):
         """
         Models must define an `initialize` method. This is where you can add
         padding to histories, pre-compute kernels, etc. – anything which should
         be done whenever parameters changed.
 
         It takes one optional keyword argument, `initializer`, which can be of
-        any form. This could be e.g. a string flag, to indicate one of multiple
+        any form; the model will accept an `initializer` argument at
+        instantiation and pass it along to this method.
+        This argument can be e.g. a string flag, to indicate one of multiple
         initialization protocols, or a dictionary with multiple initialization
         parameters.
+
+        .. important:: Any left-padded history should be filled up to -1 after
+           a call to `initialize`.
 
         Arguably this could be implemented as a `root_validator`, but for at
         least for now having a method with exactly this name is required.
@@ -615,7 +734,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         if hists is None: return values
         for h in hists:
             input_rng = [inp for inp in h.update_function.inputs
-                         if isinstance(inp, cgshim.typing.RNG)]
+                         if isinstance(inp, mtb.typing.AnyRNG)]
             if len(input_rng) > 0:
                 Model.output_rng(h, input_rng)
         return values
@@ -691,7 +810,15 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                  "(hist name: random input)\n" + useless)
 
     #############
-    # Attribute access and (disabled) pickling
+    # Specializations of standard dunder methods
+
+    def __str__(self):
+        name = getattr(self, '__name__', type(self).__name__)
+        return "Model '{}' (t0: {}, tn: {}, dt: {})" \
+            .format(name, self.t0, self.tn, self.dt)
+
+    def __repr__(self):
+        return self.summarize()
 
     def __getattribute__(self, attr):
         """
@@ -751,17 +878,31 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     # FIXME: what to do with histories which aren't part of model (e.g.
     #        returned from an operation between hists) ?
     @property
-    def histories(self):
+    def nonnested_histories(self):
         return {nm: getattr(self, nm) for nm in self._hist_identifiers}
     @property
-    def history_set(self):
+    def nonnested_history_set(self):
         return {getattr(self, nm) for nm in self._hist_identifiers}
     @property
-    def kernels(self):
+    def history_set(self):
+        return set(chain(self.nonnested_history_set,
+                         *(m.history_set for m in self.nested_models_list)))
+    @property
+    def nonnested_kernels(self):
         return {nm: getattr(self, nm) for nm in self._kernel_identifiers}
     @property
-    def kernel_list(self):
+    def nonnested_kernel_list(self):
         return [getattr(self, nm) for nm in self._kernel_identifiers]
+    @property
+    def kernel_list(self):
+        return list(chain(self.nonnested_kernel_list,
+                          *(m.kernel_list for m in self.nested_models_list)))
+    @property
+    def nested_models(self):
+        return {nm: getattr(self, nm) for nm in self._model_identifiers}
+    @property
+    def nested_models_list(self):
+        return [getattr(self, nm) for nm in self._model_identifiers]
 
     @property
     def t0(self):
@@ -784,9 +925,12 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
     @property
     def statehists(self):
+        nested_len = sum(len(m.statehists) for m in self.nested_models_list)
         return utils.FixedGenerator(
-            (getattr(self, varname) for varname in self.State.__annotations__),
-            len(self.State.__annotations__) )
+            chain(
+                (getattr(self, varname) for varname in self.State.__annotations__),
+                *(m.statehists for m in self.nested_models_list)),
+            nested_len + len(self.State.__annotations__) )
 
     @property
     def unlocked_statehists(self):
@@ -813,19 +957,39 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
     @property
     def rng_inputs(self):
-        all_input_names = set().union(*(set(h.update_function.input_names)
-                                        for h in self.unlocked_histories))
-        all_inputs = [getattr(self, nm) for nm in all_input_names]
-        return [inp for inp in all_inputs
-                if isinstance(inp, shim.config.RNGTypes)]
+        rng_inputs = []
+        for h in self.unlocked_histories:
+            for nm in h.update_function.input_names:
+                inp = getattr(h.update_function.namespace, nm)
+                if (isinstance(inp, shim.config.RNGTypes)
+                    and inp not in rng_inputs):
+                    rng_inputs.append(inp)
+        return rng_inputs
+
+    @property
+    def rng_hists(self):
+        rng_hists = []
+        for h in self.unlocked_histories:
+            for nm in h.update_function.input_names:
+                inp = getattr(h.update_function.namespace, nm)
+                if isinstance(inp, shim.config.RNGTypes):
+                    rng_hists.append(h)
+                    break
+        return rng_hists
 
     @property
     def cur_tidx(self):
         """
         Return the earliest time index for which all histories are computed.
         """
-        return min(h.cur_tidx.convert(self.time.Index)
-                   for h in self.statehists)
+        try:
+            return min(h.cur_tidx.convert(self.time.Index)
+                       for h in self.statehists)
+        except IndexError as e:
+            raise IndexError(
+                "Unable to determine a current index for "
+                f"{type(self).__name__}. This usually happens accessing "
+                "`cur_tidx` before a model is initialized.") from e
 
     # Symbolic variables for use when compiling unanchored functions
     # Building as `shim.tensor(np.array(...))` assigns a test value to the
@@ -842,6 +1006,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
         Always returns the same object, so that it can be substituted in
         computational graphs.
+
+        .. Note:: Like all user-facing indices, this should be treated as an
+           *axis index*, not a data index.
         """
         # It's important to guard with hasattr, because `self.curtidx_var`
         # must always return the same variable.
@@ -858,6 +1025,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
         Always returns the same object, so that it can be substituted in
         computational graphs.
+
+        .. Note:: Like all user-facing indices, this should be treated as an
+           *axis index*, not a data index.
         """
         if not hasattr(self, '_stoptidx_var'):
             object.__setattr__(self, '_stoptidx_var',
@@ -890,6 +1060,17 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         computational graphs.
 
         Raises `RuntimeError` if histories are not all synchronized.
+
+        .. WARNING::
+           This does not return an AxisIndex, so always wrap this variable
+           with [model].time.Index or [model].time.Index.Delta before using
+           it to index into a history.
+
+        .. Dev note::
+           If someone can suggest a way to make SymbolicAxisIndexMeta._instance_plain
+           return the original underlying symbolic variable (the one which
+           appears in graphs), I will gladly change this method to return a
+           proper symbolic index.
         """
         if not self.histories_are_synchronized():
             raise RuntimeError(
@@ -910,10 +1091,17 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         Return True if all unlocked state hists are computed to the same time
         point, and all locked histories at least up to that point.
         """
-        tidcs = [h.cur_tidx.convert(self.time.Index)
-                 for h in self.unlocked_statehists]
+        try:
+            tidcs = [h.cur_tidx.convert(self.time.Index)
+                     for h in self.unlocked_statehists]
+        except IndexError:
+            # If conversion fails, its because the converted index would be out
+            # of the range of the new hist => hists clearly not synchronized
+            return False
         locked_tidcs = [h.cur_tidx.convert(self.time.Index)
                         for h in self.locked_statehists]
+        if len(tidcs) == 0:
+            return True
         earliest = min(tidcs)
         latest = max(tidcs)
         if earliest != latest:
@@ -925,25 +1113,47 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
     @class_or_instance_method
     def summarize(self, hists=None):
+        nested_models = self._model_identifiers
         if isinstance(self, type):
             nameline = "Model '{}'".format(self.__name__)
-            paramline = "Parameters: " + ', '.join(self.Parameters.__annotations__)
+            paramline = "Parameters: " + ', '.join(self.Parameters.__annotations__) + "\n"
+            if len(nested_models) == 0:
+                nestedline = ""
+            else:
+                nestedline = "Nested models:\n    " + '\n    '.join(nested_models)
+                nestedline = nestedline + "\n"
+            nested_summaries = []
         else:
             assert isinstance(self, Model)
-            name = getattr(self, '__name__', type(self).__name__)
-            nameline = "Model '{}' (t0: {}, tn: {}, dt: {})" \
-                .format(name, self.t0, self.tn, self.dt)
-            paramline = str(self.params)
-        nameline += '\n' + '-'*len(nameline)  # Add separating line under name
+            nameline = str(self)
+            if hasattr(self, 'params'):
+                paramline = f"Parameters: {self.params}\n"
+            else:
+                paramline = "Parameters: None\n"
+            if len(nested_models) == 0:
+                nestedline = ""
+            else:
+                nestedlines = [f"    {attr} -> {type(cls).__name__}"
+                               for attr, cls in self.nested_models.items()]
+                nestedline = "Nested models:\n" + '\n'.join(nestedlines) + "\n"
+            nested_summaries = [model.summarize(hists)
+                                for model in self.nested_models.values()]
+        nameline += '\n' + '-'*len(nameline) + '\n'  # Add separating line under name
         stateline = "State variables: " + ', '.join(self.State.__annotations__)
-        return (nameline + '\n' + stateline + '\n' + paramline + '\n\n'
-                + self.update_summary(hists))
+        stateline = stateline + "\n"
+        summary = (nameline + stateline + paramline + nestedline
+                   + '\n' + self.summarize_updates(hists))
+        return '\n'.join((summary, *nested_summaries))
 
     @class_or_instance_method
-    def update_summary(self, hists=None):
+    def summarize_updates(self, hists=None):
         """
         Return a string summarizing the update function. By default, returns those of `self.state`.
         May be called on the class itself, or an instance.
+
+        FIXME
+        -----
+        hists
 
         Parameters
         ----------
@@ -955,16 +1165,39 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # Default for when `hists=None`
         if hists is None:
             hists = list(self.State.__annotations__.keys())
-        # Normalize to all strings
-        names = [h.name if isinstance(h, History) else h for h in hists]
+        # Normalize to all strings; take care that identifiers may differ from the history's name
+        histsdict = {}
+        nonnested_hists = getattr(self, 'nonnested_histories', None)
+        for h in hists:
+            if isinstance(h, History):
+                h_id = None
+                for nm, hist in nonnested_hists.items():
+                    if hist is h:
+                        h_id = nm
+                        break
+                if h_id is None:
+                    continue
+                h_nm = h.name
+            else:
+                assert isinstance(h, str)
+                if h not in self.__annotations__:
+                    continue
+                h_id = h
+                h_nm = h
+            histsdict[h_id] = h_nm
+        hists = histsdict
+        funcs = {pending.hist_nm: pending.upd_fn
+                 for pending in self._pending_update_functions}
         if not all(isinstance(h, str) for h in hists):
             raise ValueError(
                 "`hists` must be a list of histories or history names.")
-        funcs = [pending.upd_fn for pending in self._pending_update_functions]
 
         # For each function, retrieve its source
         srcs = []
-        for name, fn in zip(names, funcs):
+        for hist_id, hist_nm in hists.items():
+            fn = funcs.get(hist_id, None)
+            if fn is None:
+                continue
             src = inspect.getsource(fn)
             # Check that the source defines a function as expected:
             # first non-decorator line should start with 'def'
@@ -979,9 +1212,12 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 else:
                     break
             # TODO: Remove indentation common to all lines
-            if name is not None:
-                # Replace the `def` line by a more explicit string
-                src = "Update function for {}:".format(name) + '\n' + src.split('\n', 1)[1]
+            if hist_id != hist_nm:
+                hist_desc = f"{hist_id} ({hist_nm})"
+            else:
+                hist_desc = hist_id
+            # Replace the `def` line by a more explicit string
+            src = f"Update function for {hist_desc}:\n" + src.split('\n', 1)[1]
             srcs.append(src)
 
         # Join everything together and return
@@ -993,33 +1229,21 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             return self.time.index(t, allow_rounding=allow_rounding)
         else:
             assert self.time.is_compatible_index(t)
+            if (isinstance(t, sinn.axis.AbstractAxisIndexDelta)
+                and not isinstance(t, sinn.axis.AbstractAxisIndex)):
+                raise TypeError(
+                    "Attempted to get the absolute time index corresponding to "
+                    f"{t}, but it is an index delta.")
             return self.time.Index(t)
-        # if self._refhist is not None:
-        #     if shim.istype(t, 'int'):
-        #         return t
-        #     else:
-        #         return self._refhist.get_tidx(t, allow_rounding) - self._refhist.t0idx + self.t0idx
-        # else:
-        #     raise AttributeError("The reference history for this model was not set.")
     get_tidx.__doc__ = History.get_tidx.__doc__
 
     def get_tidx_for(self, t, target_hist, allow_fractional=False):
         raise DeprecationWarning("Use the `convert` method attached to the AxisIndex.")
-        # if self._refhist is not None:
-        #     ref_tidx = self.get_tidx(t) - self.t0idx + self._refhist.t0idx
-        #     return self._refhist.get_tidx_for(
-        #         ref_tidx, target_hist, allow_fractional=allow_fractional)
-        # else:
-        #     raise AttributeError("Reference history for this model is not set.")
 
     def index_interval(self, Δt, allow_rounding=False):
         return self.time.index_interval(value, value2,
                                         allow_rounding=allow_rounding,
                                         cast=cast)
-        # if self._refhist is not None:
-        #     return self._refhist.index_interval(Δt, allow_rounding)
-        # else:
-        #     raise AttributeError("The reference history for this model was not set.")
     index_interval.__doc__ = TimeAxis.index_interval.__doc__
 
     def get_time(self, t):
@@ -1032,15 +1256,6 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             # `t` is already a time value -> just return it
             return t
 
-        # if self._refhist is not None:
-        #     if shim.istype(t, 'float'):
-        #         return t
-        #     else:
-        #         assert(shim.istype(t, 'int'))
-        #         tidx = t - self.t0idx + self._refhist.t0idx
-        #         return self._refhist.get_time(tidx)
-        # else:
-        #     raise AttributeError("The reference history for this model was not set.")
     get_time.__doc__ = History.get_time.__doc__
 
     ###################
@@ -1050,6 +1265,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         for hist in self.history_set:
             hist.lock()
     def clear(self):
+        shim.reset_updates()
         for hist in self.unlocked_histories:
             hist.clear()
 
@@ -1127,8 +1343,29 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # # Ensure that we actually removed updates from the update dictionary
         # assert len(shimupdates) == len(shim.get_updates())
 
-    def theano_reset(self):
-        """Put model back into a clean state, to allow building a new Theano graph."""
+    def theano_state_is_clean(self):
+        if shim.pending_updates():
+            return False
+        for hist in self.unlocked_histories:
+            if (hist._num_tidx is not hist._sym_tidx
+                or hist._num_data is not hist._sym_data):
+                return False
+        for rng in self.rng_inputs:
+            if (isinstance(rng, shim.config.SymbolicRNGType)
+                and len(rng.state_updates) > 0):
+                return False
+        return True
+
+    def theano_reset(self, warn_rng=True):
+        """
+        Put model back into a clean state, to allow building a new Theano graph.
+        :param warn_rng: If True (default), emit a warning if updates to a
+            random number generator were cleared.
+
+        **Side-effecs**: Clears all shim symbolic updates in shim.
+        """
+        shim.reset_updates()
+
         for hist in self.unlocked_histories:
             hist.theano_reset()
         for kernel in self.kernel_list:
@@ -1137,15 +1374,14 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         for rng in self.rng_inputs:
             # FIXME: `.state_updates` is Theano-only
             if (isinstance(rng, shim.config.SymbolicRNGType)
-                and len(rng.state_updates) > 0):
-                logger.warning("Erasing random number generator updates. Any "
-                               "other graphs using this generator are likely "
-                               "invalidated.\n"
-                               "RNG: {}".format(rng))
+                and len(rng.state_updates) > 0 and warn_rng):
+                rng_name = getattr(rng, 'name', str(rng))
+                if rng_name is None: rng_name = str(rng)
+                warn("Erasing random number generator updates. Any "
+                     "other graphs using this generator are likely "
+                     "invalidated.\n"
+                     "RNG: {}".format(rng))
             rng.state_updates = []
-        #sinn.theano_reset() # theano_reset on histories will be called twice,
-                            # but there's not much harm
-        shim.reset_updates()
 
     def update_params(self, new_params, **kwargs):
         """
@@ -1244,9 +1480,11 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
         self.clear_unlocked_histories()
         if clear_advance_fn:
-            # Only clear advance functio when necessary, since it forces a
+            # Only clear advance function when necessary, since it forces a
             # recompilation of the graph.
-            self.clear_advance_function()
+            # We need to do this if any of the parameters change identity (e.g.
+            # replaced by another shared variable).
+            self._compiled_advance_fns.clear()
 
     def clear_unlocked_histories(self):
         """Clear all histories that have not been explicitly locked."""
@@ -1257,89 +1495,29 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             if not hist.locked:
                 self.clear_history(hist)
 
-    def clear_advance_function(self):
-        """
-        Removes the compiled advance function, if present, forcing it to be
-        recompiled if called again.
-        We need to do this if any of the parameters change identity (e.g.
-        replaced by another shared variable).
-        """
-        if hasattr(self, '_advance_fn'):
-            del self._advance_fn
-
-    def clear_other_histories(self):
-        """
-        Clear unlocked histories that are not explicitly part of this model
-        (but may be inputs).
-        """
-        # Implemented as a wrapper around clear_unlocked_histories:
-        # first lock of this model's histories, clear histories, and then
-        # revert to the original locked/unlocked status
-        old_status = {hist: hist.locked for hist in self.history_set}
-        for hist in self.history_set:
-            if not hist.locked:
-                hist.lock(warn=False)
-        self.clear_unlocked_histories()
-        for hist, status in old_status.items():
-            if status == False:
-                hist.unlock()
-
-    def clear_history(self, history):
-        # Clear the history, and remove any cached operations related to it
-        # In contrast to `update_params`, we don't write these operations to
-        # disk, because histories are data structures: there's no way of knowing
-        # if they're equivalent to some already computed case other than comparing
-        # the entire data.
-        logger.monitor("Clearing history " + history.name)
-        history.clear()
-        #if history in self.history_inputs.union(sinn.inputs):
-        if history in self.history_inputs:
-            # HACK: Removal of sinn.inputs is a more drastic version attempt
-            #       at correcting the same problem as fsgif.remove_other_histories
-            for obj in list(self.history_inputs) + self.kernel_list:
-                for op in obj.cached_ops:
-                    if hash(history) in op.cache:
-                        del op.cache[hash(history)]
-        else:
-            for obj in list(self.history_inputs) + self.kernel_list:
-                for op in obj.cached_ops:
-                    if hash(history) in op.cache:
-                        logger.error("Uncached history {} is member of cached "
-                                     "op {}. This may indicate a memory leak."
-                                     .format(history.name, str(op)))
-
-    # def remove_other_histories(self):
-    #     """HACK: Remove histories from sinn.inputs that are not in this model.
-    #     Can remove this once we store dependencies in histories rather than in
-    #     sinn.inputs."""
-    #     histnames = [h.name for h in self.history_set]
-    #     dellist = []
-    #     for h in sinn.inputs:
-    #         if h.name not in histnames:
-    #             dellist.append(h)
-    #     for h in dellist:
-    #         del sinn.inputs[h]
-
-    def apply_updates(self, update_dict):
-        """
-        Theano functions which produce updates (like scan) naturally will not
-        update the history data structures. This method applies those updates
-        by replacing the internal _sym_data and _sym_tidx attributes of the history
-        with the symbolic expression of the updates, allowing histories to be
-        used in subsequent calculations.
-        """
-        # Update the history data
-        for history in self.history_set:
-            if history._num_tidx in update_dict:
-                assert(history._num_data in update_dict)
-                    # If you are changing tidx, then surely you must change _sym_data as well
-                object.__setattr__(history, '_sym_tidx', update_dict[history._num_tidx])
-                object.__setattr__(history, '_sym_data', update_dict[history._num_data])
-            elif history._num_data in update_dict:
-                object.__setattr__(history, '_sym_data', update_dict[history._num_data])
-
-        # Update the shim update dictionary
-        shim.add_updates(update_dict)
+    # def apply_updates(self, update_dict):
+    #     """
+    #     Theano functions which produce updates (like scan) naturally will not
+    #     update the history data structures. This method applies those updates
+    #     by replacing the internal _sym_data and _sym_tidx attributes of the history
+    #     with the symbolic expression of the updates, allowing histories to be
+    #     used in subsequent calculations.
+    #
+    #     .. Note:: The necessity of this function is unclear, given the improved
+    #        compilation in sinn v0.2.
+    #     """
+    #     # Update the history data
+    #     for history in self.history_set:
+    #         if history._num_tidx in update_dict:
+    #             assert(history._num_data in update_dict)
+    #                 # If you are changing tidx, then surely you must change _sym_data as well
+    #             object.__setattr__(history, '_sym_tidx', update_dict[history._num_tidx])
+    #             object.__setattr__(history, '_sym_data', update_dict[history._num_data])
+    #         elif history._num_data in update_dict:
+    #             object.__setattr__(history, '_sym_data', update_dict[history._num_data])
+    #
+    #     # Update the shim update dictionary
+    #     shim.add_updates(update_dict)
 
     def eval_updates(self, givens=None):
         """
@@ -1358,9 +1536,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             f()
             for h in self.history_set:
                 if h._sym_tidx != h._num_tidx:
-                    h._sym_tidx = h._num_tidx
+                    object.__setattr__(h, '_sym_tidx', h._num_tidx)
                 if h._sym_data != h._num_data:
-                    h._sym_data = h._num_data
+                    object.__setattr__(h, '_sym_data', h._num_data)
 
     # def get_loglikelihood(self, *args, **kwargs):
     #
@@ -1433,7 +1611,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         ti = self.cur_tidx
         return self.State(*(h[ti-self.t0idx+h.t0idx] for h in self.statehists))
 
-    def advance(self, end):
+    def advance(self,
+                upto: Union[int, float],
+                histories: Union[Tuple[History],History]=()):
         """
         Advance (i.e. integrate) a model.
         For a non-symbolic model the usual recursion is used – it's the
@@ -1446,9 +1626,26 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
         Parameters
         ----------
-        end: int, float
+        upto: int, float
             Compute history up to this point (inclusive).
+            May also be the string 'end'
+        histories: Tuple of histories to integrate. State histories do not need to
+            be included; they are added automatically.
+            If only one history is specified, it doesn't need to be wrapped in
+            a tuple.
         """
+        end = upto
+        if isinstance(histories, History):
+            histories = (histories,)
+        # Remove any locked histories
+        if any(h.locked for h in histories):
+            locked_hists = tuple
+            warn("You requested to integrate the following histories, but they "
+                 f"are locked: {[h.name for h in histories if h.locked]}.")
+            histories = tuple(h for h in histories if not h.locked)
+        # Remove redundant histories, so cache keys are consistent
+        histories = tuple(h for h in histories if h not in self.statehists)
+
 
         # TODO: Rename endtidx -> endidx
         if end == 'end':
@@ -1461,13 +1658,20 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             if hist.locked:
                 tnidx = hist._num_tidx.get_value()
                 if tnidx < endtidx.convert(hist.time):
-                    endtidx = tnidx.convert(self.time)
-                    logger.warning("Locked history '{}' is only provided "
-                                   "up to t={}. Output will be truncated."
-                                   .format(hist.name, self.get_time(endtidx)))
+                    endtidx = hist.time.Index(tnidx).convert(self.time)
+                    if not endtidx.in_bounds:
+                        assert endtidx < hist.time.t0idx  # I don't see how we could exceed the upper bound
+                        warn("History '{}' was locked before being computed. "
+                             "Integration aborted.".format(hist.name))
+                    else:
+                        warn("Locked history '{}' is only provided "
+                             "up to t={}. Output will be truncated."
+                             .format(hist.name, self.get_time(endtidx)))
 
         if not shim.config.use_theano:
             for hist in self.statehists:
+                hist._compute_up_to(endtidx.convert(hist.time))
+            for hist in histories:
                 hist._compute_up_to(endtidx.convert(hist.time))
 
         else:
@@ -1489,7 +1693,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             assert(curtidx >= -1)
 
             if curtidx < endtidx:
-                self._advance(curtidx, endtidx+1)
+                self._advance(histories)(curtidx, endtidx+1)
                 # _advance applies the updates, so should get rid of them
                 self.theano_reset()
     integrate = advance
@@ -1520,14 +1724,18 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 "(`shim.get_updates()`)".forma(hlist))
         return no_updates
 
-    @property
-    def _advance(self):
+    def _advance(self, histories=()):
         """
-        Attribute which  the compilation of the advance function.
+        Attribute which memoizes the compilation of the advance function.
+
+        Parameters
+        ----------
+        histories: Set of histories to update. State histories do not need to
+            be included; they are added automatically.
         """
-        if not hasattr(self, '_advance_updates'):
-            object.__setattr__(self, '_advance_updates',
-                               self.get_advance_updates())
+        if histories not in self._advance_updates:
+            self._advance_updates[histories] = self.get_advance_updates(histories)
+        _advance_updates = self._advance_updates[histories]
             # DEBUG
             # for i, s in enumerate(['base', 'value', 'start', 'stop']):
             #     self._advance_updates[self.V._num_data].owner.inputs[i] = \
@@ -1537,32 +1745,40 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             #         shim.print(self._advance_updates[self.n._num_data]
             #                    .owner.inputs[i], s + ' n')
         if self.no_updates:
-            if not hasattr(self, '_advance_fn'):
+            if histories not in self._compiled_advance_fns:
                 logger.info("Compiling the update function")
-                self._advance_fn = self.cached_compile(
-                    [self.curtidx_var, self.stoptidx_var], [], self._advance_updates)
+                self._compiled_advance_fns[histories] = self.cached_compile(
+                    [self.curtidx_var, self.stoptidx_var], [], _advance_updates)
                 logger.info("Done.")
-            _advance_fn = self._advance_fn
+            _advance_fn = self._compiled_advance_fns[histories]
         else:
-            # TODO: Find reasonable way of caching these compilations ?
+            # TODO: Use _compiled_advance_fns to cache these compilations
             # We would need to cache the compilation for each different
             # set of symbolic updates.
+            if histories != ():
+                raise NotImplementedError(
+                    "Not hard to implement; I am just waiting for a case where this is needed.")
             advance_updates = OrderedDict(
                 (var, shim.graph.clone(upd, replace=shim.get_updates()))
-                for var, upd in self._advance_updates.items())
+                for var, upd in _advance_updates.items())
 
             logger.info("Compiling the update function")
             _advance_fn = self.cached_compile(
                 [self.curtidx_var, self.stoptidx_var], [], advance_updates)
             logger.info("Done.")
 
-        return _advance_fn
+        return lambda curtidx, stoptidx: _advance_fn(curtidx, stoptidx)
 
-    def get_advance_updates(self):
+    def get_advance_updates(self, histories=()):
         """
         Returns a 'blank' update dictionary. Update graphs do not include
         any dependencies from the current state, such as symbolic/transformed
         initial conditions.
+
+        Parameters
+        ----------
+        histories: Set of histories to update. State histories do not need to
+            be included; they are added automatically.
         """
         cur_tidx = self.cur_tidx
 
@@ -1574,10 +1790,12 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         shim.reset_updates()
 
         # Get advance updates
-        updates = self.advance_updates(self.curtidx_var, self.stoptidx_var)
+        updates = self.advance_updates(self.curtidx_var, self.stoptidx_var, histories)
         # Reset symbolic updates to their previous state
         shim.reset_updates()
-        self.theano_reset()
+        self.theano_reset(warn_rng=False)
+            # theano_reset() is half redundant with reset_updates(), but we
+            # still need to reset the RNG updates
         for h in self.statehists:
             h.stash.pop()
         shim.config.symbolic_updates = updates_stash
@@ -1614,7 +1832,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             logger.info("Compiled advance function loaded from cache.")
         return fn
 
-    def advance_updates(self, curtidx, stoptidx):
+    def advance_updates(self, curtidx, stoptidx, histories=()):
         """
         Compute model updates from curtidx to stoptidx.
 
@@ -1626,6 +1844,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             ``curtidx + 1``)
         stoptidx: symbolic (int)
             We want to compute the model up to this point exclusive.
+        histories: Set of histories to update. State histories do not need to
+            be included; they are added automatically.
 
         Returns
         -------
@@ -1638,10 +1858,14 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
            in the internal documentation: :doc:`/docs/internal/Building an integration graph.ipynb`.
         """
 
+        histories += tuple(h for h in self.unlocked_statehists if h not in histories)
         # Build the update dictionary by computing each history forward by one step.
-        for h in self.unlocked_statehists:
+        for h in histories:
             h(h._num_tidx+1)
-        return self.convert_point_updates_to_scan(shim.get_updates(), curtidx, stoptidx)
+            # The way we do this, at time point k, we evaluate k+1
+            # => Start iterations at the _current_ k, and stop one early
+            # => curtidx is included below, and we do stoptidx-1
+        return self.convert_point_updates_to_scan(shim.get_updates(), curtidx, stoptidx-1)
 
     def convert_point_updates_to_scan(self, updates=None, curtidx=None, stoptidx=None):
         """
@@ -1665,9 +1889,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             `curtidx` to `stoptidx`.
         curtidx: symbolic (int):
             Default: `self.curtidx_var`
-            We want to compute the model starting from this point exclusive.
-            (`curtidx` is the latest already computed point, so we start at
-            ``curtidx + 1``)
+            We want to compute the model starting from this point inclusive.
         stoptidx: symbolic (int)
             Default: `self.stoptidx_var`
             We want to compute the model up to this point exclusive.
@@ -1694,6 +1916,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
            You can find a documented explanation of the function's algorithm
            in the internal documentation: :doc:`/docs/internal/Building an integration graph.ipynb`.
         """
+        # TODO: Replace curtidx by startidx everywhere appropriate
         # Default values
         if updates  is None: updates = shim.get_updates()
         if curtidx  is None: curtidx = self.curtidx_var
@@ -1705,16 +1928,17 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                             "This can happen if e.g. a history uses `int32` for "
                             "its time indices while `stoptidx` is `int64`.")
 
-        if len(list(self.unlocked_statehists)) == 0:
-            raise NotImplementedError
-
+        if len(list(self.unlocked_histories)) == 0:
+            pass
+            # raise NotImplementedError(
+            #     "Cannot build a function iterating over time points if there "
+            #     "are no unlocked histories.")
         try:
             assert( shim.get_test_value(curtidx) >= -1 )
                 # Iteration starts at startidx + 1, and will break for indices < 0
         except AttributeError:
             # Unable to find test value; just skip check
             pass
-
 
         # First, declare a “anchor” time index
         anchor_tidx = self.num_tidx
@@ -1743,14 +1967,11 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                             for k,g in updates.items()}
 
         # Now we build the step function that will be passed to `scan`.
-        # We found that Theano can get confused when the sequence variable
-        # `tidx` appears in more than one graph. To work around this, we track
-        # an explicit variable `tidxm1` (equal `tidx - 1`) instead.
-        def onestep(tidx, tidxm1):
+        def onestep(tidx):
             step_updates = OrderedDict(
-                            (k, shim.graph.clone(g, replace={anchor_tidx: tidxm1}))
-                            for k,g in anchored_updates.items())
-            return [tidx], step_updates
+                (k, shim.graph.clone(g, replace={anchor_tidx: tidx}))
+                for k,g in anchored_updates.items())
+            return [], step_updates
 
         # Check that there are no missing inputs: Theano's error messages
         # for this are nasty. We want to catch the mistake first and print
@@ -1766,9 +1987,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # Now we can construct the scan graph.
         # We discard outputs since everything is in the updates
         _, upds = shim.scan(onestep,
-                           sequences = [shim.arange(curtidx+1, stoptidx,
+                           sequences = [shim.arange(curtidx, stoptidx,
                                                     dtype=self.tidx_dtype)],
-                           outputs_info = [curtidx],
+#                           outputs_info = [curtidx],
                            name = f"scan ({type(self).__name__})")
 
         return upds
@@ -1796,6 +2017,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
         The returned function r takes two arguments, ``curtidx`` and ``batch_size``
 
+        **Side-effects**
+            State updates are added to the global update dictionary.
+
         Parameters
         ----------
         start_offset: Axis index delta | int
@@ -1814,13 +2038,13 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             def accumulated_function(curtidx, batchsize):
                 # Ensuring this works correctly with shared variables would require more testing
                 assert shim.is_pure_symbolic(curtidx) and shim.is_pure_symbolic(batchsize)
-                # TODO: Make c a symbolic variable, and pass it to scan as `outputs_info`
+                # TODO: Make cost a symbolic variable, and pass it to scan as `outputs_info`
                 # time index anchor
                 numtidx = self.num_tidx  # Raises RuntimeError if errors are not synchronized
-                if not self.time.Index(numtidx+1).in_bounds:
+                if not self.time.Index(numtidx+start_offset).in_bounds:
                     raise RuntimeError(
                         "In order to compute a scan function, the model must "
-                        "have at least one uncomputed time point.")
+                        f"have at least {start_offset} uncomputed time point.")
                 # Accumulator variable for the cost. Initialized to zero.
                 cost = shim.shared(np.array(0, dtype='float64'), f"accumulator ({f.__name__})")
                 # Build the computational graph for the step update of the cost
@@ -1832,12 +2056,13 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 # Return the final cost, along with the rest of the updates
                 # Caller can decide if they want to apply updates or discard them
                 cost_total = updates.pop(cost)
-                return cost_total, updates
+                shim.add_updates(updates)
+                return cost_total, shim.get_updates()
             accumulated_function.__name__ = f"accumulated_{f.__name__}"
             accumulated_function.__doc__ = ("This function accumulates (sums) the values "
-                                            f"of the function {f.__name__} from "
-                                            "`curtidx+1` to `stoptidx`.\n\n"
-                                            "--------------------------------------------"
+                                            f"of the function `{f.__name__}` from "
+                                            f"`curtidx+{start_offset}` to `curtidx+{start_offset}+stoptidx`.\n\n"
+                                            "--------------------------------------------\n"
                                             f"Docstring for {f.__name__}:\n\n{f.__doc__}")
             return accumulated_function
         return wrapped_acc
@@ -1852,8 +2077,22 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
         Intended uses:
             - Training a model with back propagation through time.
+
+        Example
+        -------
+        Mean-squared error between a target `y` and the variable `x` of a model
+        `model`.
+        Note the use of round brackets (`model.x(tidx)`) to ensure that the
+        update computations for `x` are triggered.
+        >>> model = Model(...)
+        >>> y = np.array(...)
+        >>> @model.accumulate
+        >>> def mse(tidx):
+        >>>     return (y[tidx] - model.x(tidx))**2
         """
-        return self.accumulate_with_offset(1)(f)
+        acc_f = self.accumulate_with_offset(1)(f)
+        acc_f._accumulator = 'accumulate'
+        return acc_f
 
     def static_accumulate(self, f):
         """
@@ -1867,11 +2106,14 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
         Intended for:
             - Evaluating a function on an already computed history.
+            - Optimizating the evolution of a latent variable.
 
         *Not* intended for:
             - Training the model dynamics.
         """
-        return self.accumulate_with_offset(0)(f)
+        acc_f = self.accumulate_with_offset(0)(f)
+        acc_f._accumulator = 'static_accumulate'
+        return acc_f
 
 class BinomialLogpMixin:
     """
