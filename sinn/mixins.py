@@ -18,7 +18,8 @@ class CachedOperation(BaseModel):
     #     object.__setattr__(self, 'cached_ops', [])
     #     super().__init__(*a, **kw)
     def copy(self, *a, **kw):
-        excl = set(kw.pop('exclude', set()))
+        excl = kw.pop('exclude', None)
+        excl = set() if excl is None else set(excl)
         excl.add('cached_ops')
         m = super().copy(*a, exclude=excl, **kw)
         m.cached_ops = []
@@ -30,21 +31,23 @@ class CachedOperation(BaseModel):
         m.cached_ops = []
         # object.__setattr__(m, 'cached_ops', [])
         return m
-    def dict(cls, *a, **kw):
-        excl = set(kw.pop('exclude', set()))
+    def dict(self, *a, **kw):
+        excl = kw.pop('exclude', None)
+        excl = set() if excl is None else set(excl)
         excl.add('cached_ops')
         return super().dict(*a, exclude=excl, **kw)
-    def json(cls, *a, **kw):
-        excl = set(kw.pop('exclude', set()))
+    def json(self, *a, **kw):
+        excl = kw.pop('exclude', None)
+        excl = set() if excl is None else set(excl)
         excl.add('cached_ops')
         return super().json(*a, exclude=excl, **kw)
 
-    def clear(self):
+    def clear(self, *a, **kw):
         # All cached binary ops are now invalid, so delete them
         # (`clear` can be called in the middle of `copy`, when cached_ops isn't set)
         for op in getattr(self, 'cached_ops', []):
             op.clear()
         try:
-            super().clear()
+            super().clear(*a, **kw)
         except AttributeError:
             pass

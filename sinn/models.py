@@ -515,9 +515,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # Run the model initializer
         self.initialize(initializer)
 
-    def copy(self, *args, **kwargs):
-        m = super().copy(*args, **kwargs)
-        m._base_initialize()
+    def copy(self, *args, deep=False, **kwargs):
+        m = super().copy(*args, deep=deep, **kwargs)
+        m._base_initialize(shallow_copy=not deep)
         m.initialize()
         return m
 

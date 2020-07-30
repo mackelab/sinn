@@ -188,11 +188,11 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
 
         # Set the cur_idx. If tidx was less than the current index, then the latter
         # is *reduced*, since we no longer know whether later history is valid.
-        self._sym_tidx = newidx
+        object.__setattr__(self, '_sym_tidx', newidx)
         if shim.is_theano_object(self._num_tidx):
             shim.add_update(self._num_tidx, self._sym_tidx)
         else:
-            self._num_tidx = self._sym_tidx
+            object.__setattr__(self, '_num_tidx', self._sym_tidx)
 
     def pad(self, before, after=0):
         """
@@ -249,7 +249,7 @@ class Spiketimes(ConvolveMixin, PopulationHistory):
                 self._data[i] = spike_list
 
         self._num_tidx.set_value(self.t0idx + len(self) - 1)
-        self._sym_tidx = self._num_tidx
+        object.__setattr__(self, '_sym_tidx', self._num_tidx)
         return self
 
 
@@ -487,7 +487,7 @@ class SpiketrainCOO(ConvolveMixin, PopulationHistory):
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))
         assert not shim.pending_update(self._num_data)
-        self._sym_data = self.initialized_data(None)
+        object.__setattr__(self, '_sym_data', self.initialized_data(None))
         assert shim.graph.is_computable(self._sym_data)
         object.__setattr__(self, '_num_data', self._sym_data)
         super().clear()

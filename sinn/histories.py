@@ -168,8 +168,8 @@ class HistoryUpdateFunction(BaseModel):
         As a convenience, it is also possible to specify the histories
         themselves.
     namespace: Model | SimpleNamespace
-        Any object which permits attribute access. This is where the list
-        of inputs is retrieved from.
+        Any object which permits attribute access. This is where the inputs
+        are retrieved from.
     cast: bool
         (Default: True) True indicates to cast the result of a the update
         function to the expected type. Only 'same_kind' casts are permitted.
@@ -199,11 +199,11 @@ class HistoryUpdateFunction(BaseModel):
     >>> s.update_function = s_upd
     """
     # __slots__ = ('_history_namespace',)
-    namespace    : ClassVar[Any] = SimpleNamespace()
+    namespace    : Any
     func         : Callable
     input_names  : Set[str] = Field(..., alias='inputs')
     cast         : bool = True
-    return_dtype: Optional[DType]
+    return_dtype : Optional[DType]
 
     # ---------------
     # Initializers & validators
@@ -212,16 +212,54 @@ class HistoryUpdateFunction(BaseModel):
         super().__init__(**kw)
         # self.validate_namespace(namespace)
         # object.__setattr__(self, '_history_namespace', namespace)
-        namespace = kw.pop('namespace', None)
-        if namespace is not None:
-            if self.namespace == SimpleNamespace():
-                # Initialize the namespace
-                HistoryUpdateFunction.namespace = namespace
-            elif self.namespace is not namespace:
-                raise RuntimeError(
-                    "`HistoryUpdateFunction.namespace` is a class variable "
-                    "and can only be set once.")
+        # namespace = kw.pop('namespace', None)
+        # if namespace is not None:
+        #     if self.namespace == SimpleNamespace():
+        #         # Initialize the namespace
+        #         HistoryUpdateFunction.namespace = namespace
+        #     elif self.namespace is not namespace:
+        #         raise RuntimeError(
+        #             "`HistoryUpdateFunction.namespace` is a class variable "
+        #             "and can only be set once.")
         self.update_Transform_namespace()
+    # def copy(self, *a, **kw):
+    #     # Make a shallow copy of the namespace; in general namespace is a
+    #     # module, class or Model, and we don't want to copy it.
+    #     # In particular if it is a Model, this prevents ∞-recursion
+    #     excl = kw.pop('exclude', None)
+    #     excl = set() if excl is None else set(excl)
+    #     excl.add('namespace')
+    #     d = super().dict(*a, exclude=excl, **kw)
+    #     d['namespace'] = self.namespace
+    #     return d
+    def dict(self, *a, **kw):
+        # Make a shallow copy of the namespace; in general namespace is a
+        # module, class or Model, and we don't want to copy it.
+        # In particular if it is a Model, this prevents ∞-recursion
+
+        # if not isinstance(self.func, Transform):
+        #     warn(
+        #         f"The update function `{self}` is of type {type(self.func)}, "
+        #         " which is not serializable. If you are attempting to export "
+        #         " to JSON, use a Transform object, which supports serialization.")
+        excl = kw.pop('exclude', None)
+        excl = set() if excl is None else set(excl)
+        excl.add('namespace')
+        d = super().dict(*a, exclude=excl, **kw)
+        d['namespace'] = self.namespace
+        return d
+    def json(self, *a, **kw):
+        # Exclude namespace from JSON
+        excl = kw.pop('exclude', None)
+        excl = set() if excl is None else set(excl)
+        excl.add('namespace')
+        if 'func' not in excl and not isinstance(self.func, Transform):
+            raise RuntimeError(
+                f"Cannot export the update function `{self}` to JSON: the "
+                f"function is of type {type(self.func)}, which is not "
+                "serializable. To allow serialization, use a Transform object.")
+        return super().json(*a, exclude=excl, **kw)
+
     def parse_obj(self, *a, **kw):
         m = super().parse_obj(*a, **kw)
         m.update_Transform_namespace()
@@ -237,17 +275,20 @@ class HistoryUpdateFunction(BaseModel):
         return input_names
 
 
-    def validate_namespace(self):
+    @validator('input_names')
+    def validate_namespace(cls, input_names, values):
         """
         Raises `ValueError` if `HistoryUpdateFunction.namespace` does not
         contain all the histories in `self.inputs`.
         Not called automatically during initialization, to allow specifying
         an update function before the namespace is complete.
         """
-        for nm in self.input_names:
+        namespace = values.get('namespace', None)
+        for nm in input_names:
             if not hasattr(namespace, nm):
                 raise ValueError(f"History {nm} is not defined in the "
                                  "provided namespace.")
+        return input_names
 
     def update_Transform_namespace(self):
         """
@@ -265,6 +306,16 @@ class HistoryUpdateFunction(BaseModel):
                         simple.names[nm] = hist  # Allow for indexing []
                     if nm not in simple.functions:
                         simple.functions[nm] = hist  # Allow for calling ()
+
+    # ---------------
+    # Standard dunders
+
+    def __str__(self):
+        input_names = ",".join(self.input_names)
+        return f"f({input_names}) -> {self.return_dtype}"
+    def __repr__(self):
+        s = str(self)
+        return f"{s} (within {self.namespace})"
 
     # ---------------
     # Properties
@@ -331,6 +382,10 @@ class History(HistoryBase, abc.ABC):
        is an input.
        Assigning `None` unsets the update function.
 
+       The `~sinn.models.Model` class provides the `~sinn.models.updatefunction`
+       decorator, which makes defining update functions more convenient within
+       models.
+
     The `range_update_function` is set in the same way.
 
     Parameters
@@ -385,12 +440,18 @@ class History(HistoryBase, abc.ABC):
        always copies inputs, one would have to go out of their way to
        associate one `TimeAxis` to two `History` instances.
 
+    .. Note:: Histories are **not** copied when passed as arguments to a
+       `pydantic.BaseModel` (e.g. ~`sinn.models.Model`). Although this differs
+       from Pydantic's conventions, for most users this is likely the most
+       intuitive behaviour, and it allows the important use case of setting
+       model histories by passing them as arguments.
+
     """
     instance_counter: ClassVar[int] = 0
     __slots__ = ('ndim', 'stash',
                  '_sym_data', '_num_data',  # Symbolic and concrete (shared) data
                  '_sym_tidx', '_num_tidx',  # Trackers for the current symbolic & concrete time indices
-                 '_update_pos', '_update_pos_stop'  # See _compute_up_to
+                 '_update_pos', '_update_pos_stop',  # See _compute_up_to
                  '_update_function', '_range_update_function'
                  )
     @property
@@ -410,6 +471,9 @@ class History(HistoryBase, abc.ABC):
     # ------------
     # Hack to allow property setters
     # (otherwise Pydantic overrides them and says the attribute is undefined)
+    # Also, allows assigning to attributes in __slots__ without Pydantic
+    # complaining about them being undefined
+    # (required by implementation of Stash)
 
     def __setattr__(self, attr, v):
         clsattr = getattr(History, attr, None)
@@ -419,6 +483,8 @@ class History(HistoryBase, abc.ABC):
                 raise AttributeError("can't set attribute")
             else:
                 return clsattr.fset(self, v)
+        elif attr in self.__slots__:
+            object.__setattr__(self, attr, v)
         else:
             super().__setattr__(attr, v)
 
@@ -426,8 +492,9 @@ class History(HistoryBase, abc.ABC):
     # Initializer and validators
 
     class Config:
-        # TODO: Remove extra: 'allow'
-        extra = 'allow'
+        # # TODO: Remove extra: 'allow'
+        # extra = 'allow'
+        json_encoders = mtb.typing.json_encoders
 
     def __init__(self, *,
                  template :History=None,
@@ -505,10 +572,10 @@ class History(HistoryBase, abc.ABC):
         # memory location
         # data may be stored as an array (Series) or tuple of arrays (Spiketrain)
         if shim.isarray(self._num_data):
-            num_copy = shim.copy(self._num_data)
+            num_copy = deepcopy(self._num_data)
         else:
             assert isinstance(self._num_data, tuple)
-            num_copy = tuple(shim.copy(v) for v in self._num_data)
+            num_copy = tuple(deepcopy(v) for v in self._num_data)
         object.__setattr__(m, '_num_data', num_copy)
         object.__setattr__(m, '_sym_data', m._num_data)
         object.__setattr__(m, '_num_tidx',
@@ -525,7 +592,7 @@ class History(HistoryBase, abc.ABC):
         return m
 
     def dict(self, *args, **kwargs):
-        d = super().dict()
+        d = super().dict(*args, **kwargs)
         d['update_function'] = self.update_function
         d['range_update_function'] = self.range_update_function
         d['data'] = self.data
@@ -561,6 +628,15 @@ class History(HistoryBase, abc.ABC):
             m, 'stash', Stash(m, ('_sym_tidx', '_num_tidx'),
                                  ('_sym_data', '_num_data')))
         return m
+
+    # Overwrite `validate` so that Histories are not copied when passed as arguments
+    # See https://github.com/samuelcolvin/pydantic/issues/1246#issuecomment-623399241
+    @classmethod
+    def validate(cls: Type['Model'], value: Any) -> 'Model':
+        if isinstance(value, cls):
+            return value
+        else:
+            return super().validate(value)
 
     @validator('name', pre=True, always=True)
     def default_name(cls, v):
@@ -805,8 +881,8 @@ class History(HistoryBase, abc.ABC):
                     accepted_str += ", ".join(*[f"'{s}'" for s in accepted[:-1]])
                     accepted_str += f" and '{accepted[-1]}'."
                 else:
-                    accepted_str = "The only accepted string value is "
-                    accepted_str += f"'{accepted[0]}'."
+                    accepted_str = ("The only accepted string value is "
+                                    f"'{accepted[0]}'.")
                 raise ValueError("Unrecognized string argument. "
                                  + accepted_str)
 
@@ -945,12 +1021,6 @@ class History(HistoryBase, abc.ABC):
             - `key` is symbolic
         RuntimeError:
             - If there are pending symbolic updates.
-
-
-        **Side-effets**
-            Same as :py:meth:`self.update`: if `value` is symbolic, the internal
-            call to :py:meth:`self.update` should update the symbolic updates
-            dictionary with the new value.
         """
         axis_index = self.time.index(key)
             # axis_index may be scalar, slice or array, but always positive.
@@ -992,7 +1062,7 @@ class History(HistoryBase, abc.ABC):
         """
         return self.get_trace()
 
-    def clear(self):
+    def clear(self,after=None):
         """
         Invalidate the history data, forcing it to be recomputed the next time it is queried.
         Functionally equivalent to clearing the data, keeping the padding.
@@ -1000,12 +1070,22 @@ class History(HistoryBase, abc.ABC):
 
         *Note* If this history is part of a model, you should use that
         model's :py:meth:`~Model.clear_history()` method instead.
+
+        Parameters
+        ----------
+        after: AxisIndex
+            If given, history will only be cleared after this point.
+            `cur_tidx` will be set to `after`, rather than `t0idx-1`.
         """
         if self.locked:
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))
-        self._num_tidx.set_value(self.t0idx - 1)
-        self._sym_tidx = self._num_tidx
+        if after is not None:
+            after = self.time.Index(after)
+            self._num_tidx.set_value(after)
+        else:
+            self._num_tidx.set_value(self.t0idx - 1)
+        object.__setattr__(self, '_sym_tidx', self._num_tidx)
 
         self.theano_reset()
 
@@ -1039,17 +1119,22 @@ class History(HistoryBase, abc.ABC):
 
     def unlock(self):
         """Remove the history lock."""
-        warn(f"Unlocking history {self.name}. Note that unless you are "
-             "debugging, you shouldn't call this function, since sinn assumes "
-             "that locked histories will never change.")
-        self.locked = False
+        # warn(f"Unlocking history {self.name}. Note that unless you are "
+        #      "debugging, you shouldn't call this function, since sinn assumes "
+        #      "that locked histories will never change.")
+        if shim.pending_updates():
+            warn(f"Failed unlocking history {self.name}. Histories cannot be "
+                 "unlocked while there are pending updates.\n"
+                 f"Pending updates: {shim.get_updates().keys()}")
+        else:
+            self.locked = False
 
     def truncate(self, start, end=None, allow_rounding=True, inplace=False):
         """
         .. Note:: Padding is always removed.
 
         Parameters
-        ----------
+        ---------   -
         start: idx | time
             If `None`, no initial truncation. In particular, keeps any padding.
             If `end` is given, initial time of the truncated history.
@@ -1095,11 +1180,11 @@ class History(HistoryBase, abc.ABC):
 
         if (shim.issparse(hist._sym_data)
             and not isinstance(hist._sym_data, sp.sparse.lil_matrix)):
-            hist._sym_data = self._sym_data.tocsr()[imin:imax+1].tocoo()
+            object.__setattr__(hist, '_sym_data', self._sym_data.tocsr()[imin:imax+1].tocoo())
                 # CSC matrices can also be indexed by row, but even if _sym_data
                 # is CSC, converting to CSR first doesn't impact performance
         else:
-            hist._sym_data = self._sym_data[imin:imax+1]  # +1 because imax must be included
+            object.__setattr__(hist, '_sym_data', self._sym_data[imin:imax+1])  # +1 because imax must be included
         # TODO: use `set_value` ?
         object.__setattr__(hist, '_num_data', hist._sym_data)
         hist._tarr = self._tarr[imin:imax+1]
@@ -1263,9 +1348,9 @@ class History(HistoryBase, abc.ABC):
             warn("Theano history updates are not meant for filling them "
                  "recursively, but rather for generating an update graph "
                  "(which can be fed into a scan). You are asking to create "
-                 "an update graph with {} steps; be advised that this may "
+                 f"an update graph with {Δidx} steps; be advised that this may "
                  "require large amounts of memory and extremely long "
-                 "compilation times.".format(Δidx))
+                 "compilation times.")
 
         # From this point on we can assume somthing needs to be calculated
 
@@ -1282,8 +1367,13 @@ class History(HistoryBase, abc.ABC):
             # we must have:
             #   - That we are evaluating at a point we have already calculated
             #   - That the end point is no further than a point we have already calculated
-            assert absstart < self._update_pos   # Yes, these are redundant;
-            assert absstop  < self._update_pos   # that's experimental code for you: verbosity + easier to track errors
+            if (absstart >= self._update_pos      # Yes, these are redundant;
+                or absstop  >= self._update_pos): # that's experimental code for you: verbosity + easier to track errors
+                raise AssertionError(
+                    f"The update function for history '{self.name}' seems to "
+                    "break the causality assumption. This can happen if the "
+                    "update for time point 't' requires the value at 't'."
+                )
             # Since absstart < self.update_pos, there's nothing to do.
             # => skip clean-up of recursion variables since we didn't set them.
         else:
@@ -1421,14 +1511,18 @@ class History(HistoryBase, abc.ABC):
         **Side-effects**
             Removes updates from :attr:`theano_shim.config.symbolic_updates`.
         """
-        if self._num_tidx is self._sym_tidx:
-            assert self._num_data is self._sym_data
+        # Adapted from History.eval. See History.eval for docstring
+        if self._num_data is self._sym_data:
+            assert self._num_tidx is self._sym_tidx
             # Nothing to do
             return
+        # Note: permissible to have symbolic data & numeric tidx, but
+        #       not permissible to have numeric data & symbolic tidx
         kwargs = {'max_cost': max_cost, 'if_too_costly': if_too_costly}
         updates = shim.get_updates()
         # All symbolic updates should be in shim's updates dict
-        assert self._num_tidx in updates
+        if self._num_tidx in updates:
+            assert self._sym_tidx is updates[self._num_tidx]
         assert self._num_data in updates
         assert self._sym_tidx is updates[self._num_tidx]
         assert self._sym_data is updates[self._num_data]
@@ -1439,7 +1533,8 @@ class History(HistoryBase, abc.ABC):
         self._num_data.set_value(data)
         object.__setattr__(self, '_sym_tidx', self._num_tidx)
         object.__setattr__(self, '_sym_data', self._num_data)
-        del updates[self._num_tidx]
+        if self._num_tidx in updates:
+            del updates[self._num_tidx]
         del updates[self._num_data]
 
     def time_interval(self, Δt):
@@ -1533,7 +1628,9 @@ class History(HistoryBase, abc.ABC):
         """Allow theano functions to be called again.
         TODO: Add argument to clear shim.config.symbolic_updates ?
         """
-        assert not shim.pending_update(self._num_tidx, self._num_data)
+        if shim.pending_update(self._num_tidx, self._num_data):
+            raise RuntimeError("There are pending updates in `theano_shim`. "
+                               "Clear those first with `shim.reset_updates`.")
         if self.locked:
             raise RuntimeError("Cannot modify the locked history {}."
                                .format(self.name))
@@ -2025,17 +2122,24 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
                                symbolic = self.symbolic)
         return data, cur_tidx
 
-    def clear(self, init_data=None):
+    def clear(self, init_data=None, after=None):
         """Spiketrains shouldn't just be invalidated, since then multiple runs
         would make them more and more dense."""
         if self.locked:
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))
+        if init_data is not None and after is not None:
+            raise ValueError("[Spiketrain.clear()]: Cannot specify both "
+                             "`init_data` and `after`.")
+        elif after is not None:
+            after = self.time.Index(after)
+            init_data = self.get_trace(time_slice=np.s_[:after],
+                                       include_padding=True)
         assert not shim.pending_update(self._num_data)
-        self._sym_data = self.initialized_data(None)
+        object.__setattr__(self, '_sym_data', self.initialized_data(init_data))
         assert shim.graph.is_computable(self._sym_data)
         object.__setattr__(self, '_num_data', self._sym_data)
-        super().clear()
+        super().clear(after=after)
 
     def get_trace(self, pop=None, neuron=None,
                   time_slice=slice(None, None), include_padding=False):
@@ -2220,7 +2324,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
                         "Indices of neurons to update must be given as a "
                         f"list of 1D arrays.\nIndices: {repr(neuron_idcs)}.")
             neuron_idcs = [shim.atleast_1d(ni) for ni in neuron_idcs]
-            if not all(ni.ndim == 1 for ni in neuron_idcs):
+            if not all(getattr(ni, 'ndim', None) == 1 for ni in neuron_idcs):
                 raise ValueError(
                     "Indices of neurons to update must be given as a "
                     f"list of 1D arrays.\nIndices: {repr(neuron_idcs)}.")
@@ -2376,18 +2480,22 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         assert self._sym_data is self._num_data
         # object.__setattr__(self, '_num_data', (data, indices, indptr))
         # object.__setattr__(self, '_sym_data', self._num_data)
+        self._sym_tidx.set_value(self._sym_tidx.get_value(borrow=True) - before_len, borrow=True)
+        assert self._num_tidx is self._sym_tidx
 
     def eval(self, max_cost :Optional[int]=None, if_too_costly :str='raise'):
         # Adapted from History.eval. See History.eval for docstring
-        if self._num_tidx is self._sym_tidx:
-            assert self._num_data is self._sym_data
+        if self._num_data is self._sym_data:
+            assert self._num_tidx is self._sym_tidx
             # Nothing to do
             return
+        # Note: permissible to have symbolic data & numeric tidx, but
+        #       not permissible to have numeric data & symbolic tidx
         kwargs = {'max_cost': max_cost, 'if_too_costly': if_too_costly}
         updates = shim.get_updates()
         # All symbolic updates should be in shim's updates dict
-        assert self._num_tidx in updates
-        assert self._sym_tidx is updates[self._num_tidx]
+        if self._num_tidx in updates:
+            assert self._sym_tidx is updates[self._num_tidx]
         for nv, sv in zip(self._num_data, self._sym_data):
             assert nv in updates
             assert updates[nv] is sv
@@ -2399,7 +2507,8 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         self._num_data[2].set_value(indptr)
         object.__setattr__(self, '_sym_data', self._num_data)
         object.__setattr__(self, '_sym_tidx', self._num_tidx)
-        del updates[self._num_tidx]
+        if self._num_tidx in updates:
+            del updates[self._num_tidx]
         for nv in self._num_data:
             del updates[nv]
 
@@ -2694,8 +2803,8 @@ class Series(ConvolveMixin, History):
             #    perform a symbolic update.
 
             # Should only have Theano updates with Theano original data
-            assert shim.isshared(self._num_data)
-            assert shim.isshared(self._num_tidx)
+            assert isinstance(self._num_data, shim.config.SymbolicSharedType)
+            assert isinstance(self._num_tidx, shim.config.SymbolicSharedType)
 
             if (not shim.is_theano_object(latestidx, value)
                 and (latestidx == tidx or not shim.is_theano_object(tidx.start))
@@ -2714,7 +2823,7 @@ class Series(ConvolveMixin, History):
                 self._num_data.set_value(tmpdata, borrow=True)
                 # Update both the running/symbolic and base time indices
                 self._num_tidx.set_value(shim.cast(latestidx, self.tidx_dtype))
-                self._sym_tidx = self._num_tidx
+                object.__setattr__(self, '_sym_tidx', self._num_tidx)
             else:
                 # 2 : There are symbolic dependencies => update just the running
                 # vars (_sym_tidx & _sym_data) and add to the update dictionary
@@ -2770,7 +2879,7 @@ class Series(ConvolveMixin, History):
 
             assert self._sym_data is self._num_data
             assert self._sym_tidx is self._num_tidx
-            # self._sym_tidx = self._num_tidx
+            # oject.__setattr__(self, '_sym_tidx', self._num_tidx)
                 # If we updated in the past, this will reduce _sym_tidx
                 # – which is what we want
 
@@ -2820,6 +2929,8 @@ class Series(ConvolveMixin, History):
                                            previous_tarr_shape + self.shape,
                                            pad_width, **kwargs),
                                   borrow=True)
+        self._sym_tidx.set_value(self._sym_tidx.get_value(borrow=True) - before_len, borrow=True)
+        assert self._num_tidx is self._sym_tidx
 
     def zero(self, mode='all'):
         """Zero out the series. Unless mode='all', the initial data point will NOT be zeroed"""
@@ -2866,14 +2977,16 @@ class Series(ConvolveMixin, History):
                                "Reset history {} before trying to obtain its time array."
                                .format(self.name))
 
-        if time_slice is None:
-            time_slice = slice(None)
-        tslice = self.time.data_index_slice(time_slice,
-                                            include_padding=include_padding)
+        if not self.cur_tidx.in_bounds:
+            tslice = slice(self.time.t0idx, self.time.t0idx)
+        else:
+            if time_slice is None:
+                time_slice = slice(None)
+            tslice = self.time.data_index_slice(time_slice,
+                                                include_padding=include_padding)
 
-        if self.cur_tidx.data_index < tslice.stop - 1:
-            tslice = slice(tslice.start, self.cur_tidx.data_index+1)
-
+            if self.cur_tidx.data_index < tslice.stop - 1:
+                tslice = slice(tslice.start, self.cur_tidx.data_index+1)
 
         data = self._num_data.get_value()
         if component is None:

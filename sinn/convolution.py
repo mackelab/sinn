@@ -65,6 +65,7 @@ class ConvolveMixin(CachedOperation):
     # __slots__ = ('_conv_cache',)
         # Setting __slots__ causes TypeError: multiple bases have instance lay-out conflict
         # We use the same pattern as `CachedOperation`
+    # FIXME: I think this is creating a class variable
     _conv_cache : Any
 
     def __init__(self, *args, **kwargs):
@@ -77,7 +78,7 @@ class ConvolveMixin(CachedOperation):
 
         super().__init__(*args, **kwargs)
 
-        self._conv_cache = com.OpCache(self, self.convolve_batch_wrapper)
+        object.__setattr__(self, '_conv_cache', com.OpCache(self, self.convolve_batch_wrapper))
         # object.__setattr__(self, '_conv_cache',
         #                    com.OpCache(self, self.convolve_batch_wrapper))
             # Store convolutions so they don't have to be recalculated.
@@ -88,26 +89,29 @@ class ConvolveMixin(CachedOperation):
             # This allows it to be pruned later, if one of the op's members changes
 
     def copy(self, *a, **kw):
-        excl = set(kw.pop('_conv_cache', set()))
+        excl = kw.pop('exclude', None);
+        excl = set() if excl is None else set(excl)
         excl.add('_conv_cache')
         m = super().copy(*a, exclude=excl, **kw)
-        m._conv_cache = com.OpCache(m, m.convolve_batch_wrapper)
+        object.__setattr__(m, '_conv_cache', com.OpCache(m, m.convolve_batch_wrapper))
         # object.__setattr__(m, '_conv_cache',
         #                    com.OpCache(m, m.convolve_batch_wrapper))
         return m
     @classmethod
     def parse_obj(cls, *a, **kw):
         m = super().parse_obj(*a, **kw)
-        m._conv_cache = com.OpCache(m, m.convolve_batch_wrapper)
+        object.__setattr__(m, '_conv_cache', com.OpCache(m, m.convolve_batch_wrapper))
         # object.__setattr__(m, '_conv_cache',
         #                    com.OpCache(m, m.convolve_batch_wrapper))
         return m
-    def dict(cls, *a, **kw):
-        excl = set(kw.pop('exclude', set()))
-        excl.add('_conv_cach')
+    def dict(self, *a, **kw):
+        excl = kw.pop('exclude', None);
+        excl = set() if excl is None else set(excl)
+        excl.add('_conv_cache')
         return super().dict(*a, exclude=excl, **kw)
-    def json(cls, *a, **kw):
-        excl = set(kw.pop('exclude', set()))
+    def json(self, *a, **kw):
+        excl = kw.pop('exclude', None);
+        excl = set() if excl is None else set(excl)
         excl.add('_conv_cache')
         return super().json(*a, exclude=excl, **kw)
 

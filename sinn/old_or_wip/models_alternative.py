@@ -1501,9 +1501,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             f()
             for h in self.history_set:
                 if h._sym_tidx != h._num_tidx:
-                    h._sym_tidx = h._num_tidx
+                    object.__setattr__(h, '_sym_tidx', h._num_tidx)
                 if h._sym_data != h._num_data:
-                    h._sym_data = h._num_data
+                    object.__setattr__(h, '_sym_data', h._num_data)
 
     # def get_loglikelihood(self, *args, **kwargs):
     #
