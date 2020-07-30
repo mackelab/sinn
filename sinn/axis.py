@@ -80,6 +80,7 @@ import numbers
 import numpy as np
 
 import mackelab_toolbox as mtb
+import mackelab_toolbox.units
 from typing import Callable, Optional, Any, Union, Type, ClassVar
 # from types import FunctionType
 from mackelab_toolbox.typing import (
@@ -97,20 +98,16 @@ from mackelab_toolbox.transform import Transform, Bijection
 from sinn import config
 import sinn
 
-# The unitless object
-class UnitlessT(int, metaclass=Singleton):
-    """
-    The unitless object is assigned as the `unit` to an axis with no units.
-    This allows us to test for presence of units simply writing
-    ``axis.units is unitless``.
-    Instantiating with ``1`` allows us to use ``value * self.unit`` wherever
-    we want.
-    The use of the :class:`~utils.Singleton` metaclass ensures that ``is``
-    checks are always valid. It is important to use ``is`` and not ``==``
-    because a lot of things can be equal to 1.
-    """
-    pass
-unitless = UnitlessT(1)
+# The unitless object is assigned as the `unit` to an axis with no units.
+# This allows us to test for presence of units simply writing
+# ``axis.units is unitless``.
+# Instantiating with ``1`` allows us to use ``value * self.unit`` wherever
+# we want.
+# The use of the :class:`~utils.Singleton` metaclass ensures that ``is``
+# checks are always valid. It is important to use ``is`` and not ``==``
+# because a lot of things can be equal to 1.
+UnitlessT = mtb.units.UnitlessT
+unitless = mtb.units.unitless
 
 # Unit conversion methods; one `check` and one `convert` method are attached
 # to the the Axis object by `set_unit_methods`
@@ -122,6 +119,9 @@ def _unit_check_factory(axis, unit_library):
     """
     axisunit = axis.unit
     if unit_library == 'pint':
+        if hasattr(axisunit, 'u'):
+            # Replace Quantity by Unit
+            axisunit = axisunit.u
         def unit_check(*values):
             return all(hasattr(v, 'compatible_units')
                        and axisunit in v.compatible_units() for v in values)
@@ -141,45 +141,21 @@ def _unit_check_factory(axis, unit_library):
             # raise TypeError("Unable to check units: axis unit '{}' unrecognized."
             #                 .format(type(axisunit)))
     return unit_check
-def _detect_unit_library(value: Any):
-    """
-    Return the unit libary on which `value` depends.
-    We detect types with duck typing rather than testing
-    against the actual types for two reasons:
-      - Testing against types would force importing all quantities
-        libraries, and therefore installing them.
-      - In theory other libraries could implement these methods, and
-        they would work as well.
-
-    Parameters
-    ----------
-    value: Any scalar | tuple | list | set
-        Any value is accepted; if the type isn't recognized, ``False`` is
-        returned.
-        `tuple`, `list` and `set` are iterated through, and return a list of
-        same length where elements are either 'pint', 'quantities' or None.
-
-    Returns
-    -------
-    - 'pint' | 'quantities' | 'none'
-          Returns ``None`` if no unit library is recognized.
-    - List of the [ 'pint' | 'quantities' | 'none' ]
-    """
-    if isinstance(value, (list, tuple, set)):
-        return [_detect_unit_library(v) for v in value]
-    elif hasattr(value, 'compatible_units'):
-        return 'pint'
-    elif hasattr(value, 'simplified'):
-        return 'quantities'
-    else:
-        return 'none'
 def _unit_convert_factory(axis, unit_library):
     axisunit = axis.unit
     if unit_library == 'pint':
         def unit_convert(value):
+            if isinstance(value, list):
+                return [unit_convert(v for v in value)]
+            elif isinstance(value, tuple):
+                return tuple(unit_convert(v for v in value))
             return value.to(axisunit)
     elif unit_library == 'quantities':
         def unit_convert(value):
+            if isinstance(value, list):
+                return [unit_convert(v for v in value)]
+            elif isinstance(value, tuple):
+                return tuple(unit_convert(v for v in value))
             return value.rescale(axisunit)
     else:
         assert axisunit is unitless
@@ -427,7 +403,7 @@ class Axis(BaseModel, abc.ABC):
             kind = np.dtype(type(value)).kind
         return (
             kind == np.dtype(self.stops_dtype).kind
-            and _detect_unit_library(value) == _detect_unit_library(self.unit)
+            and mtb.units.detect_unit_library(value) == mtb.units.detect_unit_library(self.unit)
             and np.can_cast(value, self.stops_dtype))
 
     def is_compatible_index(self, value):
@@ -450,7 +426,7 @@ class Axis(BaseModel, abc.ABC):
         #     kind = np.dtype(type(value)).kind
         # return (
         #     kind == 'i'  # Only allow integers
-        #     and _detect_unit_library(value) == 'none'  # Disallow units (redundant?)
+        #     and mtb.units.detect_unit_library(value) == 'none'  # Disallow units (redundant?)
         #     and (not isinstance(value, (AbstractAxisIndex, AbstractAxisIndexDelta))
         #          or isinstance(self.stops.Index.Delta, self.stops.Index))
         #          # Only allow axis types from this axis
@@ -3492,17 +3468,32 @@ class RangeAxis(MapAxis):
                            ('stops', 'min', 'max'))
         if (step is None) == (stops is None):
             raise ValueError(
-                "You must specify either `step` or `stops`.")
+                "You must specify either `step` or `stops`, and not both.")
         if stops is None:
             if None in (min, max, step):
                 raise ValueError("You must specify all of `min`, `max` and "
                                  "`step`.")
-            nsteps = int_if_close((max-min) / step, allow_power10=False)
+            nsteps = (max-min) / step
+            if not mtb.units.is_dimensionless(nsteps):
+                warn("While creating a RangeAxis, the value of `(max-min)/step` "
+                     "should be dimensionless, but it has dimensions of "
+                     f"{nsteps.dimensionality}. The units will be dropped, but "
+                     "you should fix the parameters to ensure their units cancel.")
+                nsteps = nsteps.magnitude
+            nsteps = np.float64(nsteps)  # One of many ways to cast 'nsteps' to a proper NumPy type
+            nsteps = int_if_close(nsteps, allow_power10=False)
                 # If we just use `int` to apply the floor function, we run into
                 # issues, e.g. int(10/0.1) == 99 (because 0.1 == 0.1+ε in binary)
                 # int_if_close ensures small differences are rounded towards
                 # the integer.
             L = int(nsteps) + 1
+            # Remove all units from arguments – already stored in the axis 'unit' attribute
+            unit = kwargs.get('unit', None)
+            if unit is not None:
+                min = mtb.units.unit_convert(min, unit).magnitude
+                max = mtb.units.unit_convert(max, unit).magnitude
+                step = mtb.units.unit_convert(step, unit).magnitude
+            kwargs['min'] = min; kwargs['max'] = max; kwargs['step'] = step
             idx_dtype = determine_index_dtype(L)
             Index = get_AxisIndex(None, dtype=idx_dtype)
             stops = RangeMapping(index_range=range(0, L),
@@ -3573,14 +3564,13 @@ class RangeAxis(MapAxis):
         """
         if value2 is None:
             if not self.unit_check(value):
-                values = (value,)
-                raise TypeError("Provided value(s) ({}) do not have the expected "
-                                "units ({}).".format(values, self.unit))
+                raise TypeError("Provided value ({}) do not have the expected "
+                                "units ({}).".format(value, self.unit))
             value = self.unit_remove(self.unit_convert(value))
         else:
             if not self.unit_check(value, value2):
                 values = (value, value2)
-                raise TypeError("Provided value(s) ({}) do not have the expected "
+                raise TypeError("Provided values ({}) do not have the expected "
                                 "units ({}).".format(values, self.unit))
             value  = self.unit_remove(self.unit_convert(value))
             value2 = self.unit_remove(self.unit_convert(value2))
