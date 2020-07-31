@@ -40,8 +40,8 @@ import mackelab_toolbox as mtb
 import mackelab_toolbox.typing
 from mackelab_toolbox.transform import Transform
 from mackelab_toolbox.typing import (
-    Array, NPType, DType, Number, Integral, Real, PintValue, QuantitiesValue)
-from mackelab_toolbox.typing import FloatX
+    Array, NPType, DType, Number, Integral, Real, PintValue, QuantitiesValue,
+    FloatX)
 
 from mackelab_toolbox.utils import (
     Stash, fully_qualified_name, broadcast_shapes,
@@ -79,19 +79,78 @@ r is NotComputed.Expired
 
 ########################
 
-class TimeAxisMixin(DiscretizedAxis):
+class TimeAxis(RangeAxis):
     """
-    Mixin class for Axis which adds the following defaults:
+    Subclass of :ref:`RangeAxis <API-RangeAxis-User>`
+    with following defaults:
+
+      - `~RangeAxis.label`: ``'t'``
+      - `~RangeAxis.unit` : `TimeAxis.time_unit`
+      - `~RangeAxis.step` : `TimeAxis.time_step`
+
+    `TimeAxis.time_unit` and `TimeAxis.time_step` can be changed by assigning
+    values directly to the class (i.e. ``TimeAxis.time_step = 0.1``). This
+    may be more convenient than specifying them when creating a `TimeAxis`,
+    since most of the time histories will all share the same time units and
+    steps. Values are initially set to:
+
+      - `TimeAxis.time_step` : ``None``  (invalid – must be set)
+      - `TimeAxis.time_unit` : ``None``  (leave unchanged to ignore units)
+
+    .. note:: In a fully consistent naming convention, this class would be
+       named :class:`TimeRangeAxis`. Since this is should be viewed as the
+       default, and the one we want to use 99% of the time, we choose to hide
+       the `RangeAxis` implementation detail and just name this `TimeAxis`.
+    """
+    ## TimeAxisMixin ##
+    # This is stuff shared with TimeArrayAxis, and originally was in the form
+    # of a mixin class. However, that caused hard to track diamond inheritance
+    # bugs with Pydantic, and even if I could find a way to get it to work
+    # nicely, it would obscure the inheritance more than it is useful to.
+    label: str = 't'
+    time_unit: ClassVar[Union[PintValue,QuantitiesValue]] = unitless
+    unit : Optional[mtb.typing.AnyUnitType]
+    @validator('unit', pre=True, always=True)
+    def set_unit_default(cls, unit):
+        if unit is None:
+            unit = cls.time_unit
+        return unit
+
+    # Interface change to make it time-like
+    @property
+    def t0idx(self): return self.x0idx
+    @property
+    def tnidx(self): return self.xnidx
+    @property
+    def dt(self): return self.step
+    @property
+    def t0(self): return self[self.x0idx]
+    @property
+    def tn(self): return self[self.xnidx]
+    pass
+
+    ## TimeRangeAxis ##
+    time_step: ClassVar[Real] = None
+    def __init__(self, step=None, **kwargs):
+        if 'stops' not in kwargs and step is None:
+            step = TimeAxis.time_step
+        super().__init__(step=step, **kwargs)
+
+class TimeArrayAxis(ArrayAxis):
+    """
+    Subclass of :ref:`ArrayAxis <API-ArrayAxis-User>` with the following defaults:
         - `~RangeAxis.label`: ``'t'``
         - `~RangeAxis.unit` : `TimeAxis.time_unit`
 
-    `TimeAxis.time_unit` can be changed by assigning values directly to the
-    class (i.e. ``TimeAxis.time_unit = ureg.s``). This is generally more
-    convenient than specifying them when creating a `TimeAxis`, since most of
-    the time histories will all share the same time units.
+    `TimeArrayAxis.time_unit` can be changed by assigning values directly to the
+    class (i.e. ``TimeArrayAxis.time_unit = ureg.s``). This is may be more
+    convenient than specifying them when creating a `TimeArrayAxis`, since most
+    of the time histories will all share the same time units.
     Values is initially set to:
-      - `TimeAxis.time_unit` : ``None``  (leave unchanged to ignore units)
+      - `TimeArrayAxis.time_unit` : ``None``  (leave unchanged to ignore units)
     """
+    ## TimeAxisMixin ##
+    # See comment in TimeAxis
     label: str = 't'
     time_unit: ClassVar[Union[PintValue,QuantitiesValue]] = unitless
     unit : Optional[Any]
@@ -112,32 +171,6 @@ class TimeAxisMixin(DiscretizedAxis):
     def t0(self): return self[self.x0idx]
     @property
     def tn(self): return self[self.xnidx]
-
-class TimeAxis(TimeAxisMixin,RangeAxis):
-    """
-    Subclass of :ref:`RangeAxis <API-RangeAxis-User>`
-    with following defaults:
-
-      - `~RangeAxis.label`: ``'t'``
-      - `~RangeAxis.unit` : `TimeAxis.time_unit`
-      - `~RangeAxis.step` : `TimeAxis.time_step`
-
-    `TimeAxis.time_unit` and `TimeAxis.time_step` can be changed by assigning
-    values directly to the class (i.e. ``TimeAxis.time_step = 0.1``). This is
-    generally more convenient than specifying them when creating a `TimeAxis`,
-    since most of the time histories will all share the same time units and
-    steps. Values are initially set to:
-
-      - `TimeAxis.time_step` : ``None``  (invalid – must be set)
-      - `TimeAxis.time_unit` : ``None``  (leave unchanged to ignore units)
-    """
-    time_step: ClassVar[Real] = None
-    def __init__(self, step=None, **kwargs):
-        if 'stops' not in kwargs and step is None:
-            step = TimeAxis.time_step
-        super().__init__(step=step, **kwargs)
-
-class TimeArrayAxis(TimeAxisMixin,ArrayAxis):
     pass
 
 # TODO: Move `batch_computable` attribute to HistoryUpdateFunction
@@ -260,6 +293,7 @@ class HistoryUpdateFunction(BaseModel):
                 "serializable. To allow serialization, use a Transform object.")
         return super().json(*a, exclude=excl, **kw)
 
+    @classmethod
     def parse_obj(self, *a, **kw):
         m = super().parse_obj(*a, **kw)
         m.update_Transform_namespace()
@@ -273,7 +307,6 @@ class HistoryUpdateFunction(BaseModel):
         input_names = set([inp.name if isinstance(inp, History) else inp
                            for inp in input_names])
         return input_names
-
 
     @validator('input_names')
     def validate_namespace(cls, input_names, values):
@@ -476,7 +509,7 @@ class History(HistoryBase, abc.ABC):
     # (required by implementation of Stash)
 
     def __setattr__(self, attr, v):
-        clsattr = getattr(History, attr, None)
+        clsattr = getattr(type(self), attr, None)
         if isinstance(clsattr, builtins.property):
             fset = clsattr.fset
             if fset is None:
@@ -595,7 +628,7 @@ class History(HistoryBase, abc.ABC):
         d = super().dict(*args, **kwargs)
         d['update_function'] = self.update_function
         d['range_update_function'] = self.range_update_function
-        d['data'] = self.data
+        d['data'] = self.get_trace(include_padding=True)
         return d
 
     @classmethod
@@ -604,25 +637,27 @@ class History(HistoryBase, abc.ABC):
         data       = obj.pop('data')
         upd_f      = obj.pop('update_function')
         rg_upd_f   = obj.pop('range_update_function')
-        ndim       = len(shape)
         m = super().parse_obj(obj)
         name = m.name
         time = m.time
         shape = m.shape
+        ndim  = len(shape)
         object.__setattr__(m, 'ndim'            , ndim)
         # Initialize symbolic & concrete data & index
         data, tidx = m.initialized_data(data)
-        object.__setattr__(self, '_num_data', data)
-        object.__setattr__(self, '_sym_data', self._num_data)
-        object.__setattr__(self, '_num_tidx', tidx)
-        assert not shim.is_pure_symbolic(self._num_data)
-        assert shim.isshared(self._num_tidx)
+        object.__setattr__(m, '_num_data', data)
+        object.__setattr__(m, '_sym_data', self._num_data)
+        object.__setattr__(m, '_num_tidx', tidx)
+        assert not shim.is_pure_symbolic(m._num_data)
+        assert shim.isshared(m._num_tidx)
         # Initialize dynamic update trackers
         object.__setattr__(m, '_update_pos'     , None)
         object.__setattr__(m, '_update_pos_stop', None)
         # The update_function setter takes care of attaching history
-        m.update_function = HistoryUpdateFunction.parse_obj(upd_f)
-        m.range_update_function = HistoryUpdateFunction.parse_obj(rg_upd_f)
+        if upd_f is not None:
+            m.update_function = HistoryUpdateFunction.parse_obj(upd_f)
+        if rg_upd_f is not None:
+            m.range_update_function = HistoryUpdateFunction.parse_obj(rg_upd_f)
         # Stash
         object.__setattr__(
             m, 'stash', Stash(m, ('_sym_tidx', '_num_tidx'),
@@ -2032,15 +2067,22 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
 
     dtype       : DType = np.dtype('int8')
 
+    class Config:
+        # json_encoders overrides (is not merged) parent option
+        json_encoders = {**History.Config.json_encoders,
+                         shim.sparse.csr_matrix_wrapper:
+                            shim.sparse.csr_matrix_wrapper.json_encoder}
+
     @History.update_function.setter
-    def update_function(cls, f :HistoryUpdateFunction):
+    def update_function(self, f: Optional[HistoryUpdateFunction]):
         """
         Spiketrain expects an index for its update function
         -> different return dtype than History.attach_update_function
         """
-        assert isinstance(f, HistoryUpdateFunction)
-        f._return_dtype = self.idx_dtype
-        return f
+        cls = type(self)
+        super(cls, cls).update_function.fset(self, f)
+        if f is not None:
+            self.update_function._return_dtype = self.idx_dtype
 
     # Called by History.__init__
     # Like an @validator, returns the value instead of setting attribute directly
@@ -2078,7 +2120,9 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         # Determine the data type
         if init_data is not None:
             data_dtype = getattr(init_data, 'dtype', None)
-            if dtype is None and data_dtype is None:
+            if data_dtype is None and dtype is not None:
+                pass
+            elif dtype is None and data_dtype is None:
                 raise ValueError("The provided data of type {} does have a 'dtype' "
                                  "attribute. In this case you must provide it to "
                                  "Spiketrain.initialize().".format(type(init_data)))
@@ -2091,6 +2135,13 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             raise ValueError(f"Spiketrain {self.name}: `dtype` is inspecified.")
 
         # Initialize the data
+        if (init_data is not None
+            and not shim.issparse(init_data)
+            and not isinstance(init_data, np.ndarray)):
+            # Because of parse_obj hackery, we need to emulate Pydantic coercion
+            # It may be a list of args to CSR, rather than a (sparse) array
+            init_data = shim.sparse.csr_matrix_wrapper.validate(
+                init_data, field=SimpleNamespace(name='init_data'))
         shape = (time.padded_length, nneurons)
         empty_csr = shim.sparse.csr_matrix(f'{self.name} - empty seed array',
                                            shape,
@@ -2105,11 +2156,15 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             # We use `scipy` here because we want true numpy arrays
         if init_data is None:
             # csrdata, csridcs, csrindptr = mtydata, mtyidcs, mtyindptr
-            tidx_val = self.time.t0idx - 1
+            cur_datatidx = self.time.t0idx - 1
+        elif shim.issparse(init_data):
+            assert shim.eval(init_data.shape[1]) == nneurons
+            cur_datatidx = init_data.shape[0]
+            init_csr[:cur_datatidx,:] = init_data
         else:
             assert shim.eval(init_data.shape[1]) == nneurons
-            tidx_val = len(init_data)
-            init_csr[:tidx_val,:] = scipy.sparse.csr_from_dense(init_data.astype(dtype))
+            cur_datatidx = len(init_data)
+            init_csr[:cur_datatidx,:] = scipy.sparse.csr_from_dense(init_data.astype(dtype))
             # This may throw an efficiency warning, but we can ignore it since
             # init_csr is empty
             init_csr.eliminate_zeros()
@@ -2117,7 +2172,8 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
                 shim.shared(init_csr.indices, name=f'{self.name} - indices'),
                 shim.shared(init_csr.indptr, name=f'{self.name} - indptr')
                 )
-        cur_tidx = shim.shared(np.array(tidx_val, dtype=self.time.index_dtype),
+        cur_tidx = shim.shared(np.array(cur_datatidx-self.time.t0idx,
+                                        dtype=self.time.index_dtype),
                                name = 't idx (' + self.name + ')',
                                symbolic = self.symbolic)
         return data, cur_tidx
@@ -2136,7 +2192,12 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             init_data = self.get_trace(time_slice=np.s_[:after],
                                        include_padding=True)
         assert not shim.pending_update(self._num_data)
-        object.__setattr__(self, '_sym_data', self.initialized_data(init_data))
+        data, tidx = self.initialized_data(init_data)
+        if after is not None:
+            assert shim.eval(tidx) == after
+        else:
+            assert shim.eval(tidx) == self.time.pad_left - 1
+        object.__setattr__(self, '_sym_data', data)
         assert shim.graph.is_computable(self._sym_data)
         object.__setattr__(self, '_num_data', self._sym_data)
         super().clear(after=after)
@@ -2173,10 +2234,15 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
                                "Reset history {} before trying to obtain its trace."
                                .format(self.name))
 
-        tslice = self.time.data_index_slice(time_slice,
-                                            include_padding=include_padding)
-
-        tslice = slice(tslice.start, min(self.cur_tidx.data_index+1, tslice.stop))
+        if not self.cur_tidx.in_bounds:
+            tslice = slice(self.time.t0idx, self.time.t0idx)
+        else:
+            if time_slice is None:
+                time_slice = slice(None)
+            tslice = self.time.data_index_slice(time_slice,
+                                                include_padding=include_padding)
+            if self.cur_tidx.data_index < tslice.stop - 1:
+                tslice = slice(tslice.start, self.cur_tidx.data_index+1)
 
         # shape = (self.time.padded_length, self.shape[0])
         # data_arr = scipy.sparse.csr_matrix(tuple(shim.eval(self._num_data)),
@@ -2211,8 +2277,8 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             data indices: i in [0, ..., self.padded_length].
         """
         shape = (self.time.padded_length, self.shape[0])
-        return shim.sparse.CSR(*tuple(shim.eval(self._num_data)), shape,
-                               symbolic=False)
+        return shim.sparse.CSR(*tuple(shim.eval(self._num_data)),
+                               shape=shape, symbolic=False)
     def _get_sym_csr(self):
         """
         Construct the symbolic sparse array based on the current symbolic
@@ -2228,7 +2294,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             If symbolic is True.
         """
         shape = (self.time.padded_length, self.shape[0])
-        return shim.sparse.CSR(*self._sym_data, shape)
+        return shim.sparse.CSR(*self._sym_data, shape=shape)
 
     def _getitem_internal(self, axis_index):
         """
@@ -2661,6 +2727,14 @@ class Series(ConvolveMixin, History):
             tidx_val = self.time.t0idx-1
         else:
             assert not shim.is_symbolic(init_data)
+            if not shim.isarray(init_data):
+                if len(init_data) == 0:
+                    # 0 length arrays are flattened when exporting
+                    init_data = np.zeros((0,*self.shape))
+                else:
+                    # Because of parse_obj hackery, must emulate Pydantic coercion
+                    init_data = mtb.typing.Array[self.dtype].validate(
+                        init_data, field=SimpleNamespace(name='init_data'))
             assert shim.eval(init_data.shape[1:]) == self.shape
             if shim.isshared(init_data):
                 # Use shared variables as-is
@@ -2984,7 +3058,6 @@ class Series(ConvolveMixin, History):
                 time_slice = slice(None)
             tslice = self.time.data_index_slice(time_slice,
                                                 include_padding=include_padding)
-
             if self.cur_tidx.data_index < tslice.stop - 1:
                 tslice = slice(tslice.start, self.cur_tidx.data_index+1)
 
@@ -3354,7 +3427,6 @@ class DataView(HistoryBase):
 # Registrations
 #############################
 
-TimeAxisMixin.update_forward_refs()
 TimeAxis.update_forward_refs()
 TimeArrayAxis.update_forward_refs()
 HistoryUpdateFunction.update_forward_refs()

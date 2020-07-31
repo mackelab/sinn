@@ -83,7 +83,7 @@ import mackelab_toolbox.units
 from typing import Callable, Optional, Any, Union, Type, ClassVar
 # from types import FunctionType
 from mackelab_toolbox.typing import (
-    Range, Sequence, Number, Integral, Real, NPType, Array, FloatX)
+    Range, Sequence, Number, Integral, Real, NPType, Array, FloatX, AnyUnitType)
 from pydantic import (
     validator, root_validator, BaseModel, ValidationError, Field)
 
@@ -224,7 +224,7 @@ class Axis(BaseModel, abc.ABC):
                        "`label` is required if `transform` is not provided.")
     min_      : Optional[Number] = Field(None, alias='min')
     max_      : Optional[Number] = Field(None, alias='max')
-    unit      : Any = unitless
+    unit      : Union[AnyUnitType] = unitless
     unit_label: Optional[str]
 
     class Config:
@@ -852,6 +852,7 @@ class SpecAxisIndexMeta(type):
             '__new__'         : metacls.__clsnew__,
             '__init__'        : metacls.__clsinit__,
             '__eq__'          : metacls._instance___eq__,
+            '__ne__'         : metacls._instance___ne__,
             '__add__'         : metacls._instance___add__,
             '__sub__'         : metacls._instance___sub__,
             '__mul__'         : metacls._instance___mul__,
@@ -1217,6 +1218,10 @@ class SpecAxisIndexMeta(type):
             return self.plain == other.plain
     # Instance method
     @staticmethod
+    def _instance___ne__(self, other):
+        return not self.__eq__(other)
+    # Instance method
+    @staticmethod
     def _instance___add__(self, other):
         if not self.is_compatible(other): raise IndexTypeOperationError
         other = self.Delta.make_index(other)
@@ -1576,6 +1581,8 @@ class SequenceMapping(BaseModel):
         # The AxisIndex must be provided at each runtime.
         # We need Optional here because sometimes (at the moment, only in
         # SequenceMapping.transform) we need a mapping with no axis.
+        # Recall: 'Optional' just allows the value to be None, but `None` still
+        #         needs to be provided.
 
     # Maximum allowable length
     # This is a heuristic, and could be changed if needed
@@ -1590,6 +1597,7 @@ class SequenceMapping(BaseModel):
 
     class Config:
         keep_untouched = (type,)  # FIXME: This doesn't work with `type`
+        json_encoders = mtb.typing.json_encoders
 
     # HACK: Because `keep_untouched` doesn't work, we forcefully remove
     # 'Index' from the returned dict.
@@ -1624,6 +1632,13 @@ class SequenceMapping(BaseModel):
         # END HACK
         object.__setattr__(m, 'Index', self.Index)
         return m
+
+    @classmethod
+    def parse_obj(self, *args, **kwargs):
+        raise RuntimeError(
+            "A *Mapping must be tied to an axis, and is not instantiatable on "
+            "its own. Instead, use `parse_obj` or `parse_raw` from one of the "
+            "*Axis classes.")
 
     @validator('Index')
     def set_index_type(cls, index_type):
@@ -2291,7 +2306,10 @@ class RangeMapping(SequenceMapping):
     ----------
     index_range
     index_map
-    Index :  See SequenceMapping
+    index_type
+    pad_left
+    pad_right :
+        See SequenceMapping
 
     x0: Value of the index at i0.
     i0: Lowest(?) index. Can be negative.
@@ -2308,7 +2326,7 @@ class RangeMapping(SequenceMapping):
     #         - Add to __slots__ so pydantic lets us assign the name
     #         - After class creation, del RangeMapping.__fields__['index_map']
     #           (Super Hacky !!)
-    #         - In __init__, assign `self._index_map` to `self.index_map`t
+    #         - In __init__, assign `self._index_map` to `self.index_map`
     #         - Do the same in copy()
     __slots__ = ('index_map',)# + ('step_dtype', 'imin', 'imax')
         # `step_dtype` provides fast access to self.__fields__['step'].type_
@@ -2396,9 +2414,9 @@ class RangeMapping(SequenceMapping):
         Get `step64` from `step`.
         """
         step = values.get('step', None)
-        if not isinstance(step, np.float64) and step is not None:
+        if not isinstance(step, (np.float64, float)) and step is not None:
             warn("[RangeMapping] `step` should be given as float64. "
-                           f"(Type received: {type(step)}")
+                 f"(Type received: {type(step)}")
         if step64 is None and step is not None:
             step64 = step
         return step64
@@ -3520,6 +3538,25 @@ class RangeAxis(MapAxis):
         if (step is None) == (stops is None):
             raise ValueError(
                 "You must specify either `step` or `stops`, and not both.")
+
+        # Extract 'unit' from keyword args and emulate Pydantic parsing
+        # If we weren't doing hackery with Index, we could do the min, max
+        # stuff with validators, and we wouldn't have to parse `unit`
+        unit = kwargs.get('unit', None)
+        parsedunit = None
+        for unitT in mtb.typing._AllUnitTypes:
+            for validator in unitT.__get_validators__():
+                try:
+                    parsedunit = validator(unit)
+                except (ValueError, TypeError, AssertionError):
+                    pass
+                else:
+                    break
+            if parsedunit is not None:
+                break
+        unit = parsedunit
+        assert unit is not None
+
         if stops is None:
             if None in (min, max, step):
                 raise ValueError("You must specify all of `min`, `max` and "
@@ -3539,8 +3576,7 @@ class RangeAxis(MapAxis):
                 # the integer.
             L = int(nsteps) + 1
             # Remove all units from arguments – already stored in the axis 'unit' attribute
-            unit = kwargs.get('unit', None)
-            if unit is not None:
+            if unit is not unitless:
                 min = mtb.units.unit_convert(min, unit).magnitude
                 max = mtb.units.unit_convert(max, unit).magnitude
                 step = mtb.units.unit_convert(step, unit).magnitude
@@ -3550,6 +3586,17 @@ class RangeAxis(MapAxis):
             stops = RangeMapping(index_range=range(0, L),
                                  i0=0, x0=min, step=step,
                                  index_type=Index)
+            kwargs['stops'] = stops
+            super().__init__(**kwargs)
+            Index.attach_axis(self)  # After self.stops has been defined
+        elif isinstance(stops, dict) and 'index_type' not in stops:
+            # We reach this point when parsing the dict or json export of an Axis
+            # Export doesn't include 'Index' because it is tied to the Axis
+            # (see SequenceMapping)
+            L = len(stops['index_range'])
+            idx_dtype = determine_index_dtype(L)
+            Index = get_AxisIndex(None, dtype=idx_dtype)
+            stops = RangeMapping(**stops, index_type=Index)
             kwargs['stops'] = stops
             super().__init__(**kwargs)
             Index.attach_axis(self)  # After self.stops has been defined

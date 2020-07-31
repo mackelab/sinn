@@ -17,10 +17,13 @@ import scipy.sparse
 from types import SimpleNamespace
 
 import theano_shim as shim
+import mackelab_toolbox as mtb
 from mackelab_toolbox.transform import Transform
-import mackelab_toolbox.typing as mt
+import mackelab_toolbox.typing
+import mackelab_toolbox.cgshim
 import pint
 ureg = pint.UnitRegistry()
+mtb.typing.PintValue.ureg = ureg
 
 # Series.__fields__
 
@@ -37,7 +40,7 @@ import pytest
 def _test_history_series_indexing(cgshim):
 
     shim.load(cgshim)
-    mt.freeze_types()
+    mtb.typing.freeze_types()
     from sinn.histories import (
         TimeAxis, HistoryUpdateFunction, Series, Spiketrain, NotComputed)
 
@@ -94,7 +97,7 @@ def _test_history_series_indexing(cgshim):
 
 def _test_history_spiketrain_indexing(cgshim):
     shim.load(cgshim)
-    mt.freeze_types()
+    mtb.typing.freeze_types()
     from sinn.histories import (
         TimeAxis, HistoryUpdateFunction, Series, Spiketrain, NotComputed)
 
@@ -166,7 +169,7 @@ def _test_history_spiketrain_indexing(cgshim):
 
 def _test_history_series_updates(cgshim):
     shim.load(cgshim)
-    mt.freeze_types()
+    mtb.typing.freeze_types()
     from sinn.histories import (
         TimeAxis, HistoryUpdateFunction, Series, Spiketrain, NotComputed)
 
@@ -271,7 +274,7 @@ def _test_history_series_updates(cgshim):
 def _test_history_spiketrain_updates(cgshim):
     shim.load(cgshim)
     shim.load('theano')
-    mt.freeze_types()
+    mtb.typing.freeze_types()
     from sinn.histories import (
         TimeAxis, HistoryUpdateFunction, Series, Spiketrain, NotComputed)
 
@@ -360,6 +363,73 @@ def _test_history_spiketrain_updates(cgshim):
         x2copy(Ti+1)  # Trying to compute new values raises RuntimeError,
                     # because update_function is not set
 
+def _test_history_serialization(cgshim):
+
+    shim.load(cgshim)
+    mtb.typing.freeze_types()
+    from sinn.histories import (
+        TimeAxis, HistoryUpdateFunction, Series, Spiketrain, NotComputed)
+
+
+    TimeAxis.time_unit = ureg.s
+    TimeAxis.time_step = np.float64(2**-8)   #~0.0039. Powers of 2 are more numerically stable
+    taxis = TimeAxis(min=0., max=1.)
+
+    TimeAxis.parse_raw(taxis.json())
+
+    # We actually don't need to call `taxis.copy()`, because Pydantic copies all inputs
+    series1 = Series(name='series1', time=taxis, shape=(3,), dtype=np.float64)
+    spikes1 = Spiketrain(name='spikes1', time=taxis, pop_sizes=(3,2,4))
+
+    # Test serialization without any update function
+    series_noupd_json = series1.json()
+    spikes_noupd_json = spikes1.json()
+
+    series2 = Series.parse_raw(series_noupd_json)
+    spikes2 = Spiketrain.parse_raw(spikes_noupd_json)
+
+    # TODO: Test with non default values
+    assert series1.name == series2.name
+    assert series1.shape == series2.shape
+    assert series1.dtype == series2.dtype
+    assert series1.iterative == series2.iterative
+    assert series1.symbolic == series2.symbolic
+    assert series1.locked == series2.locked
+    assert series1.cur_tidx != series2.cur_tidx
+    assert series1.cur_tidx.plain == series2.cur_tidx.plain
+    assert np.all(series1.data) == np.all(series2.data)
+    assert series1._cur_tidx.get_value() is not series2._cur_tidx.get_value()
+    assert series1._num_data.get_value() is not series2._num_data.get_value()
+    assert series1.time is not series2.time
+    assert series1.time == series2.time
+    # assert series1.time.name == series2.time.name
+    # assert np.all(series1.time.stops_array == series2.time.stops_array)
+    # assert series1.time.pad_left  == series2.time.pad_left
+    # assert series1.time.pad_right == series2.time.pad_right
+
+
+
+    ## Test serialization with an update function attached by assignment ##
+    # Series
+    hists = SimpleNamespace(series1=series1)
+    A = np.array([-0.1, 1.8, 0.5])
+    def x1_upd_noinputs_func(tidx):
+        A*shim.sin(x1.get_time(tidx).magnitude)
+    def x1_upd_withinputs_func(tidx):
+        series1[tidx-1] * A*shim.sin(x1.get_time(tidx).magnitude)
+    x1_upd_noinputs = HistoryUpdateFunction(
+        func=x1_upd_noinputs_func, inputs=[], namespace=hists)
+    x1_upd_withinputs = HistoryUpdateFunction(
+        func=x1_upd_withinputs_func, inputs=[series1], namespace=hists)
+    x1_λupd = HistoryUpdateFunction(
+        func = lambda tidx: A*shim.sin(series1.get_time(tidx).magnitude),
+        inputs = [], namespace = hists)
+
+    # series2.update_function =
+
+    # Spiketrains
+
+
 def test_numhistory_series_indexing():
     return _test_history_series_indexing('numpy')
 def test_symhistory_series_indexing():
@@ -376,3 +446,5 @@ def test_numhistory_spiketrain_updates():
     return _test_history_spiketrain_updates('numpy')
 def test_symhistory_spiketrain_updates():
     return _test_history_spiketrain_updates('theano')
+def test_numhistory_serialization():
+    return _test_history_serialization('numpy')
