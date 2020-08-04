@@ -13,6 +13,7 @@ import sinn
 import sinn.common as com
 import sinn.config as config
 from sinn.mixins import CachedOperation
+from sinn.utils.pydantic import add_exclude_mask
 
 def deduce_convolve_result_shape(hist, hist_or_kernel, t):
     """
@@ -90,8 +91,7 @@ class ConvolveMixin(CachedOperation):
 
     def copy(self, *a, **kw):
         excl = kw.pop('exclude', None);
-        excl = set() if excl is None else set(excl)
-        excl.add('_conv_cache')
+        excl = add_exclude_mask(excl, {'_conv_cache'})
         m = super().copy(*a, exclude=excl, **kw)
         object.__setattr__(m, '_conv_cache', com.OpCache(m, m.convolve_batch_wrapper))
         # object.__setattr__(m, '_conv_cache',
@@ -106,14 +106,13 @@ class ConvolveMixin(CachedOperation):
         return m
     def dict(self, *a, **kw):
         excl = kw.pop('exclude', None);
-        excl = set() if excl is None else set(excl)
-        excl.add('_conv_cache')
+        excl = add_exclude_mask(excl, {'_conv_cache'})
         return super().dict(*a, exclude=excl, **kw)
-    def json(self, *a, **kw):
-        excl = kw.pop('exclude', None);
-        excl = set() if excl is None else set(excl)
-        excl.add('_conv_cache')
-        return super().json(*a, exclude=excl, **kw)
+    # def json(self, *a, **kw):
+    #     excl = kw.pop('exclude', None);
+    #     excl = set() if excl is None else set(excl)
+    #     excl.add('_conv_cache')
+    #     return super().json(*a, exclude=excl, **kw)
 
     def theano_reset(self):
         self._conv_cache.theano_reset()

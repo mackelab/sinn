@@ -15,6 +15,8 @@ import pint
 ureg = pint.UnitRegistry()
 import mackelab_toolbox as mtb
 import mackelab_toolbox.typing
+mtb.typing.PintValue.ureg = ureg
+mtb.typing.PintUnit.ureg = ureg
 
 import pytest
 

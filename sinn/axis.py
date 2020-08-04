@@ -163,6 +163,7 @@ def _unit_convert_factory(axis, unit_library):
             # raise TypeError("Unable to convert units: axis unit '{}' unrecognized."
             #                 .format(type(axisunit)))
     return unit_convert
+
 class Axis(BaseModel, abc.ABC):
     """
     Abstract axis class. Only stores label, unit, and optional min and max
@@ -297,8 +298,9 @@ class Axis(BaseModel, abc.ABC):
     def default_unit(cls, unit):
         """Convert plain values of '1' (int, float, numpy type) to `unitless`."""
         # Since `unitless` subclasses int, it may be written out as `1`.
-        if isinstance(unit, numbers.Number):
-            assert unit == 1
+        if mtb.units.detect_unit_library(unit) == 'none':
+            if isinstance(unit, numbers.Number):
+                assert unit == 1
             unit = unitless
         return unit
 
@@ -325,16 +327,19 @@ class Axis(BaseModel, abc.ABC):
     #     they would work as well.
     # @validator('unit')
     def set_unit_methods(self, unit):
-        if hasattr(unit, 'compatible_units') and hasattr(1*unit, 'to'):
-            object.__setattr__(self, '_unit_check', _unit_check_factory(self, 'pint'))
-            object.__setattr__(self, '_unit_convert', _unit_convert_factory(self, 'pint'))
-        elif (hasattr(unit, 'simplified') and hasattr(unit, 'dimensionality')
-              and hasattr(unit, 'rescale')):
-            object.__setattr__(self, '_unit_check', _unit_check_factory(self, 'quantities'))
-            object.__setattr__(self, '_unit_convert', _unit_convert_factory(self, 'quantities'))
-        else:
-            object.__setattr__(self, '_unit_check', _unit_check_factory(self, None))
-            object.__setattr__(self, '_unit_convert', _unit_convert_factory(self, None))
+        unitlib = mtb.units.detect_unit_library(unit)
+        object.__setattr__(self, '_unit_check', _unit_check_factory(self, unitlib))
+        object.__setattr__(self, '_unit_convert', _unit_convert_factory(self, unitlib))
+        # if hasattr(unit, 'compatible_units') and hasattr(1*unit, 'to'):
+        #     object.__setattr__(self, '_unit_check', _unit_check_factory(self, 'pint'))
+        #     object.__setattr__(self, '_unit_convert', _unit_convert_factory(self, 'pint'))
+        # elif (hasattr(unit, 'simplified') and hasattr(unit, 'dimensionality')
+        #       and hasattr(unit, 'rescale')):
+        #     object.__setattr__(self, '_unit_check', _unit_check_factory(self, 'quantities'))
+        #     object.__setattr__(self, '_unit_convert', _unit_convert_factory(self, 'quantities'))
+        # else:
+        #     object.__setattr__(self, '_unit_check', _unit_check_factory(self, None))
+        #     object.__setattr__(self, '_unit_convert', _unit_convert_factory(self, None))
 
     # Placeholder unit check, unit convert methods
     def unit_convert(self, value :float):
@@ -1983,7 +1988,6 @@ class SequenceMapping(BaseModel):
                      "(Or improving `SequenceMapping` ;-P)")
                 # `index()` is undefined with higher dim arrays
                 assert value.ndim == 1
-                breakpoint
                 return np.array([self.index(x) for x in value])
         elif isinstance(value, self.Index):
             # Idempotent on indices
@@ -3593,7 +3597,13 @@ class RangeAxis(MapAxis):
             # We reach this point when parsing the dict or json export of an Axis
             # Export doesn't include 'Index' because it is tied to the Axis
             # (see SequenceMapping)
-            L = len(stops['index_range'])
+            index_range = stops['index_range']
+            if isinstance(index_range, (list, tuple)):
+                # Was not parsed by Pydantic
+                # FIXME: Should be parsed by Pydantic, no ?
+                index_range = Range.validate(index_range)
+            assert isinstance(index_range, range)
+            L = len(index_range)
             idx_dtype = determine_index_dtype(L)
             Index = get_AxisIndex(None, dtype=idx_dtype)
             stops = RangeMapping(**stops, index_type=Index)

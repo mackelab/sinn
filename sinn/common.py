@@ -165,7 +165,7 @@ def clip_probabilities(prob_array, min_prob = None, max_prob = None):
     assert(None not in (min_prob, max_prob))
     min_prob = np.asarray(min_prob).astype(dtype)
     max_prob = np.asarray(max_prob).astype(dtype)
-    if not config.use_theano():
+    if shim.config.library == 'numpy':
         if np.any(prob_array > 1) or np.any(prob_array < 1):
             log_queue(logger.warning, "Some probabilities were clipped.")
         elif np.any(prob_array > max_prob) or np.any(prob_array < min_prob):
@@ -516,7 +516,7 @@ class OpCache:
         #      or any(shim.is_theano_variable(arg) for arg in args) ):
         # FIXME: At present practically nothing will be cached. For kernels,
         #        instead of checking 'locked' state, should check if parameter set corresponds
-        if ( config.use_theano()
+        if ( shim.config.library != 'numpy'
              or not getattr(self.source, 'locked', True)
              or not getattr(other, 'locked', True) ):
             return shim.stack( [ self.op(other, arg) for arg in args ] )
@@ -617,7 +617,7 @@ class OpCache:
                         k += 1
 
                 # Create the new data cache
-                if config.use_theano():
+                if shim.config.library != 'numpy':
                     assert(self.old_cache is None)
                     # Keep the old cache in memory, otherwise updates mechanism will break
                     self.old_cache[hash(other)] = self.cache[hash(other)].data

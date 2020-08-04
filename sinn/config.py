@@ -17,9 +17,9 @@ debug_level = 2
    # 1 - Basic tests, which add minimal execution time
    # 2 - Include tests using eval on Theano variables. This will slow execution
    # 3 - Asserts are added to the Theano graph. This may prevent certain Theano optimizations
-   # NOTE: The debug_level is new, and only a few functions yet use it.
+   # NOTE: The debug_level was forgotten, and only a few functions yet use it.
 
-max_eval_cost = 20
+# max_eval_cost = 20
     # Provided as argument when calling `shim.eval()` to prevent locking
 
 disk_cache_file = ""
@@ -33,7 +33,9 @@ disk_cache_file = ""
 # `config.librairies.add('packagename')`
 # `config.reload`   (TODO)
 
-librairies = set()
+# librairies = set()
+
+trust_all_inputs = False
 
 #floatX = 'float32'
 #cast_floatX = float
@@ -43,43 +45,43 @@ abs_tolerance = 1e-8
 
 logging_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-def load_librairies(library_list):
-    global librairies#, floatX, cast_floatX
-
-    library_set = set(library_list)
-    if 'theano' in library_set.difference(librairies):
-        try:
-            shim.load(load_theano=True, reraise=True)
-        except ImportError as e:
-            logger.error("Unable to load Theano.")
-            logger.error(str(e))
-            library_set.remove('theano')
-
-    librairies = librairies.union(set(library_list))
-    set_floatX()
-
-def unload_librairies(library_list):
-    global librairies
-
-    if 'theano' in set(library_list):
-        shim.load(load_theano=False)
-
-    librairies.difference_update(library_list)
-    set_floatX()
-
-def load_theano(flag=True):
-    """
-    Call this to activate Theano in Theano-aware modules.
-    Best done at the top of a script, right after the imports.
-    """
-    if flag:
-        load_librairies(['theano'])
-    else:
-        unload_librairies(['theano'])
-
-def use_theano():
-    """Flag method: returns True if Theano is used."""
-    return shim.config.use_theano
+# def load_librairies(library_list):
+#     global librairies#, floatX, cast_floatX
+#
+#     library_set = set(library_list)
+#     if 'theano' in library_set.difference(librairies):
+#         try:
+#             shim.load(load_theano=True, reraise=True)
+#         except ImportError as e:
+#             logger.error("Unable to load Theano.")
+#             logger.error(str(e))
+#             library_set.remove('theano')
+#
+#     librairies = librairies.union(set(library_list))
+#     set_floatX()
+#
+# def unload_librairies(library_list):
+#     global librairies
+#
+#     if 'theano' in set(library_list):
+#         shim.load(load_theano=False)
+#
+#     librairies.difference_update(library_list)
+#     set_floatX()
+#
+# def load_theano(flag=True):
+#     """
+#     Call this to activate Theano in Theano-aware modules.
+#     Best done at the top of a script, right after the imports.
+#     """
+#     if flag:
+#         load_librairies(['theano'])
+#     else:
+#         unload_librairies(['theano'])
+#
+# def use_theano():
+#     """Flag method: returns True if Theano is used."""
+#     return shim.config.use_theano
 
 # Compatibility version
 class CompatVersion:

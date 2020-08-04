@@ -22,7 +22,7 @@ import operator
 import logging
 logger = logging.getLogger("sinn.history")
 import hashlib
-from functools import lru_cache
+from functools import lru_cache, partial
 from enum import Enum, auto
 import builtins  # Only for __setattr__ hack in History
 from types import SimpleNamespace
@@ -33,6 +33,7 @@ import scipy.sparse
 import theano_shim as shim
 import theano_shim.sparse
 
+from types import FunctionType, MethodType
 from typing import ClassVar, Tuple, Set, Optional, Any, Union
 from pydantic import validator, root_validator, BaseModel, Field
 from pydantic.typing import Type
@@ -42,6 +43,8 @@ from mackelab_toolbox.transform import Transform
 from mackelab_toolbox.typing import (
     Array, NPType, DType, Number, Integral, Real, PintValue, QuantitiesValue,
     FloatX)
+
+from inspect import signature
 
 from mackelab_toolbox.utils import (
     Stash, fully_qualified_name, broadcast_shapes,
@@ -53,6 +56,9 @@ import sinn.mixins as mixins
 from sinn.axis import unitless, DiscretizedAxis, RangeAxis, ArrayAxis
 from sinn.convolution import ConvolveMixin, deduce_convolve_result_shape
 import sinn.popterm as popterm
+from sinn.utils.pydantic import initializer, add_exclude_mask
+from sinn.utils import function_serialization
+
 
 _NoValue     = sinn._NoValue
 SinnOptional = config.SinnOptional
@@ -231,30 +237,42 @@ class HistoryUpdateFunction(BaseModel):
                                       inputs=None)
     >>> s.update_function = s_upd
     """
-    # __slots__ = ('_history_namespace',)
+    ## Not intended for use by users — Set by Model to make the `updatefunction`
+    ## decorator available when deserializing a function.
+    ## Conceivably be used as a hook to place other variables in scope
+    _deserialization_locals: dict = {}
+
     namespace    : Any
-    func         : Callable
     input_names  : Set[str] = Field(..., alias='inputs')
+    func         : Callable
     cast         : bool = True
     return_dtype : Optional[DType]
+    ## Not intended for use by users
+    include_namespace: bool = None  # Set by validators
+
+    class Config:
+        validate_assignment = True  # In order to re-run update_Transform_namespace
+        allow_population_by_field_name = True  # Make serialize->deserialize work
+        json_encoders = {**function_serialization.json_encoders,
+                         **mtb.typing.json_encoders}
 
     # ---------------
     # Initializers & validators
 
-    def __init__(self, **kw):
-        super().__init__(**kw)
-        # self.validate_namespace(namespace)
-        # object.__setattr__(self, '_history_namespace', namespace)
-        # namespace = kw.pop('namespace', None)
-        # if namespace is not None:
-        #     if self.namespace == SimpleNamespace():
-        #         # Initialize the namespace
-        #         HistoryUpdateFunction.namespace = namespace
-        #     elif self.namespace is not namespace:
-        #         raise RuntimeError(
-        #             "`HistoryUpdateFunction.namespace` is a class variable "
-        #             "and can only be set once.")
-        self.update_Transform_namespace()
+    # def __init__(self, **kw):
+    #     super().__init__(**kw)
+    #     # self.validate_namespace(namespace)
+    #     # object.__setattr__(self, '_history_namespace', namespace)
+    #     # namespace = kw.pop('namespace', None)
+    #     # if namespace is not None:
+    #     #     if self.namespace == SimpleNamespace():
+    #     #         # Initialize the namespace
+    #     #         HistoryUpdateFunction.namespace = namespace
+    #     #     elif self.namespace is not namespace:
+    #     #         raise RuntimeError(
+    #     #             "`HistoryUpdateFunction.namespace` is a class variable "
+    #     #             "and can only be set once.")
+    #     self.update_Transform_namespace()
     # def copy(self, *a, **kw):
     #     # Make a shallow copy of the namespace; in general namespace is a
     #     # module, class or Model, and we don't want to copy it.
@@ -276,28 +294,28 @@ class HistoryUpdateFunction(BaseModel):
         #         " which is not serializable. If you are attempting to export "
         #         " to JSON, use a Transform object, which supports serialization.")
         excl = kw.pop('exclude', None)
-        excl = set() if excl is None else set(excl)
-        excl.add('namespace')
+        exclude_namespace = excl is not None and ('namespace' in excl)
+        excl = add_exclude_mask(excl, {'namespace'})
         d = super().dict(*a, exclude=excl, **kw)
-        d['namespace'] = self.namespace
+        if not exclude_namespace:
+            d['namespace'] = self.namespace
         return d
     def json(self, *a, **kw):
         # Exclude namespace from JSON
         excl = kw.pop('exclude', None)
-        excl = set() if excl is None else set(excl)
-        excl.add('namespace')
-        if 'func' not in excl and not isinstance(self.func, Transform):
-            raise RuntimeError(
-                f"Cannot export the update function `{self}` to JSON: the "
-                f"function is of type {type(self.func)}, which is not "
-                "serializable. To allow serialization, use a Transform object.")
+        excl = add_exclude_mask(excl, {'namespace'})
+        # if 'func' not in excl and not isinstance(self.func, Transform):
+        #     raise RuntimeError(
+        #         f"Cannot export the update function `{self}` to JSON: the "
+        #         f"function is of type {type(self.func)}, which is not "
+        #         "serializable. To allow serialization, use a Transform object.")
         return super().json(*a, exclude=excl, **kw)
 
-    @classmethod
-    def parse_obj(self, *a, **kw):
-        m = super().parse_obj(*a, **kw)
-        m.update_Transform_namespace()
-        return m
+    # @classmethod
+    # def parse_obj(self, *a, **kw):
+    #     m = super().parse_obj(*a, **kw)
+    #     m.update_Transform_namespace()
+    #     return m
 
     @validator('input_names', pre=True)
     def set_input_names(cls, input_names):
@@ -323,22 +341,96 @@ class HistoryUpdateFunction(BaseModel):
                                  "provided namespace.")
         return input_names
 
-    def update_Transform_namespace(self):
+    @initializer('func', always=True)
+    def parse_func_from_str(cls, func, namespace):
+        """
+        Allows initializing `func` with a string representation. If `func` is
+        not passed as a string, this has no effect.
+        There are two possible string formats:
+
+        - Serialized `~mackelab_toolbox.transform.Transform`.
+          Recognized by having no newlines, and containing the string '->'.
+        - Python source.
+          Recognized by starting with the string 'def ', discounting preceding
+          whitespace and decorators.
+
+        .. remark::
+           Transforms are executed with `simpleeval` and should be reasonably
+           safe. Python source is executed with `exec`, which with untrusted
+           inputs is a major security risk. For this reason, it is only
+           attempted if the configuration flag `sinn.config.trust_all_inputs`
+           is set to ``True``.
+        """
+        if isinstance(func, str):
+            if "->" in func.split('\n', 1)[0]:
+                func = Transform(func)
+            else:
+                func = function_serialization.deserialize(
+                    func, globals={}, locals=cls._deserialization_locals)
+        return func
+
+    @initializer('func', pre=False, always=True)
+    def update_Transform_namespace(self, func, namespace, input_names):
         """
         If `func` is a Transform, the input histories need to be added
         to its namespace.
         """
-        if isinstance(self.func, Transform):
-            for nm in self.input_names:
-                if hasattr(self.namespace, nm):
+        if isinstance(func, Transform):
+            for nm in input_names:
+                if hasattr(namespace, nm):
                     # This hasattr condition is there because we want to allow
-                    # specifying update function before namespace
-                    simple = self.func.simple
-                    hist = getattr(self.namespace, nm)
+                    # specifying the update function before the namespace
+                    simple = func.simple
+                    hist = getattr(namespace, nm)
                     if nm not in simple.names:
                         simple.names[nm] = hist  # Allow for indexing []
                     if nm not in simple.functions:
                         simple.functions[nm] = hist  # Allow for calling ()
+        return func
+
+    @initializer('include_namespace')
+    def check_func_signature(cls, include_namespace, func, namespace):
+        if isinstance(func, (FunctionType, partial)):
+            sig = signature(func)
+            if len(sig.parameters) == 1:
+                warn(f"The function {func} (signature: {sig}) "
+                     "defines only a time index argument, meaning that the "
+                     "`namespace` attribute is ignored. To access variables in "
+                     "the namespace, define the function with two arguments "
+                     "(typically ``(self, tidx)``), and access namespace variables "
+                     "with ``self.varname``.")
+                include_namespace = False
+            elif len(sig.parameters) == 2:
+                include_namespace = True
+            else:
+                raise ValueError(
+                    f"The function {func.__qualname__} (signature: {sig}) "
+                    "should accept two arguments (typically ``(self, tidx)``), "
+                    f"but is defined with {len(sig.parameters)}.")
+        elif isinstance(func, MethodType):
+            if not isinstance(namespace, func.__class__):
+                # If they aren't the same, should we use the object or
+                # `namespace` as namespace ? Best to disallow the possibility.
+                raise ValueError("When a method used as an update function, "
+                                 "the specified namespace must be the object "
+                                 "containing that method.\n"
+                                 f"Namespace: {namespace}\nMethod: {func}\n"
+                                 f"Class containing method: {func.__class__}")
+            elif func not in namespace.__dict__:
+                # We passed a method, but are rebinding it to a new class instance
+                # This happens during model copy.
+                include_names = True
+                func = func.__func__  # Extract bare function from method
+            else:
+                # The 'self' argument is already set by the method
+                include_names = False
+        else:
+            if not isinstance(func, Transform):
+                raise TypeError(f"Argument `func` (value: {func}, type: "
+                                f"{type(func)}) is neither a function, a "
+                                "method nor a Transform.")
+            include_namespace = False
+        return include_namespace
 
     # ---------------
     # Standard dunders
@@ -360,7 +452,7 @@ class HistoryUpdateFunction(BaseModel):
     # -------------
     # Function call
 
-    def __call__(self, tidx :Integral):
+    def __call__(self, tidx: Integral):
         """
         Small wrapper around `func`; serves to normalize the input to a
         history's `update` method. Does two things:
@@ -381,7 +473,11 @@ class HistoryUpdateFunction(BaseModel):
             elif self.return_dtype is None:
                 pass
             elif self.cast:
-                result = shim.cast(result, self.return_dtype.type, same_kind=True)
+                # Normally set 'same_kind' to True, with the exception that
+                # we allow int to be cast to uint.
+                same_kind = not (shim.istype(result, 'int')
+                                 and np.issubdtype(self.return_dtype, np.integer))
+                result = shim.cast(result, self.return_dtype.type, same_kind=same_kind)
             else:
                 if result.dtype != self.return_dtype:
                     raise TypeError("Update function for history '{}' returned a "
@@ -390,7 +486,10 @@ class HistoryUpdateFunction(BaseModel):
                                     .format(self.name, result.dtype, return_dtype))
             return result
 
-        return shim.atleast_1d(cast_result(self.func(tidx)))
+        if self.include_namespace:
+            return shim.atleast_1d(cast_result(self.func(self.namespace, tidx)))
+        else:
+            return shim.atleast_1d(cast_result(self.func(tidx)))
 
 # FIXME: Currently `discretize_kernel()` CANNOT be used with Theano – it does
 #        not preserve the computational graph
@@ -482,7 +581,7 @@ class History(HistoryBase, abc.ABC):
     """
     instance_counter: ClassVar[int] = 0
     __slots__ = ('ndim', 'stash',
-                 '_sym_data', '_num_data',  # Symbolic and concrete (shared) data
+                 '_sym_data', '_num_data',  # Symbolic and numeric (shared) data
                  '_sym_tidx', '_num_tidx',  # Trackers for the current symbolic & concrete time indices
                  '_update_pos', '_update_pos_stop',  # See _compute_up_to
                  '_update_function', '_range_update_function'
@@ -527,7 +626,8 @@ class History(HistoryBase, abc.ABC):
     class Config:
         # # TODO: Remove extra: 'allow'
         # extra = 'allow'
-        json_encoders = mtb.typing.json_encoders
+        json_encoders = {**HistoryUpdateFunction.Config.json_encoders,
+                         **mtb.typing.json_encoders}
 
     def __init__(self, *,
                  template :History=None,
@@ -541,6 +641,13 @@ class History(HistoryBase, abc.ABC):
                 kwargs['shape'] = template.shape
         super().__init__(**kwargs)
         # Set internal variables
+
+        # The update_function setter takes care of attaching history
+        # (This clears the data, so do it before assigning to tidx & data)
+        self.update_function       = update_function
+        self.range_update_function = range_update_function
+
+        # Initialize symbolic & concrete data & index
         object.__setattr__(self, 'ndim', len(self.shape))
         data, tidx = self.initialized_data(data)
         object.__setattr__(self, '_num_data', data)
@@ -556,9 +663,6 @@ class History(HistoryBase, abc.ABC):
         # `None`, same as _num_tidx is always initialized to _sym_tidx
         object.__setattr__(self, '_update_pos'     , None)
         object.__setattr__(self, '_update_pos_stop', None)
-
-        self.update_function       = update_function
-        self.range_update_function = range_update_function
 
         # Following allows to stash Theano updates
         object.__setattr__(
@@ -626,8 +730,22 @@ class History(HistoryBase, abc.ABC):
 
     def dict(self, *args, **kwargs):
         d = super().dict(*args, **kwargs)
-        d['update_function'] = self.update_function
-        d['range_update_function'] = self.range_update_function
+        exclude = kwargs.pop('exclude', None)
+        if isinstance(exclude, set):
+            # Need to convert to dict for nested 'exclude' arg
+            exclude = {attr:... for attr in exclude}
+        upd_fn = self.update_function
+        if upd_fn is None:
+            d['update_function'] = upd_fn
+        else:
+            d['update_function'] = upd_fn.dict(
+                *args, exclude=exclude.get('update_function', None), **kwargs)
+        rg_upd_fn = self.range_update_function
+        if rg_upd_fn is None:
+            d['range_update_function'] = rg_upd_fn
+        else:
+            d['range_update_function'] = rg_upd_fn.dict(
+                *args, exclude=exclude.get('range_update_function', None), **kwargs)
         d['data'] = self.get_trace(include_padding=True)
         return d
 
@@ -643,26 +761,37 @@ class History(HistoryBase, abc.ABC):
         shape = m.shape
         ndim  = len(shape)
         object.__setattr__(m, 'ndim'            , ndim)
+        # The update_function setter takes care of attaching history
+        # (This clears the data, so do it before assigning to tidx & data)
+        if upd_f is not None:
+            m.update_function = HistoryUpdateFunction.parse_obj(upd_f)
+        if rg_upd_f is not None:
+            m.range_update_function = HistoryUpdateFunction.parse_obj(rg_upd_f)
         # Initialize symbolic & concrete data & index
         data, tidx = m.initialized_data(data)
         object.__setattr__(m, '_num_data', data)
-        object.__setattr__(m, '_sym_data', self._num_data)
+        object.__setattr__(m, '_sym_data', m._num_data)
         object.__setattr__(m, '_num_tidx', tidx)
+        object.__setattr__(m, '_sym_tidx', m._num_tidx)
         assert not shim.is_pure_symbolic(m._num_data)
         assert shim.isshared(m._num_tidx)
         # Initialize dynamic update trackers
         object.__setattr__(m, '_update_pos'     , None)
         object.__setattr__(m, '_update_pos_stop', None)
-        # The update_function setter takes care of attaching history
-        if upd_f is not None:
-            m.update_function = HistoryUpdateFunction.parse_obj(upd_f)
-        if rg_upd_f is not None:
-            m.range_update_function = HistoryUpdateFunction.parse_obj(rg_upd_f)
         # Stash
         object.__setattr__(
             m, 'stash', Stash(m, ('_sym_tidx', '_num_tidx'),
                                  ('_sym_data', '_num_data')))
         return m
+
+    def json(self, *a, **kw):
+        # Exclude namespace from update_function JSON
+        excl = kw.pop('exclude', None)
+        if excl is not None and not isinstance(excl, (dict, set)):
+            raise TypeError(f"Method 'json' of history '{self}': argument "
+                            "'exclude' should be either a set or dict.")
+        excl = add_exclude_mask(excl, {'update_function': {'namespace'}})
+        return super().json(*a, exclude=excl, **kw)
 
     # Overwrite `validate` so that Histories are not copied when passed as arguments
     # See https://github.com/samuelcolvin/pydantic/issues/1246#issuecomment-623399241
@@ -810,7 +939,10 @@ class History(HistoryBase, abc.ABC):
             f.return_dtype = self.dtype
         object.__setattr__(self, '_update_function', f)
         # Invalidate any existing data
-        self.clear()
+        if hasattr(self, '_num_data'):
+            # During instantiation, update function is assigned before creating
+            # the data structure; nothing to clear in that case.
+            self.clear()
     @property
     def range_update_function(self):
         """
@@ -835,7 +967,10 @@ class History(HistoryBase, abc.ABC):
             f.return_dtype = self.dtype
         object.__setattr__(self, '_range_update_function', f)
         # Invalidate any existing data
-        self.clear()
+        if hasattr(self, '_num_data'):
+            # During instantiation, update function is assigned before creating
+            # the data structure; nothing to clear in that case.
+            self.clear()
 
     def __hash__(self):
         """
@@ -1031,9 +1166,9 @@ class History(HistoryBase, abc.ABC):
 
     def __setitem__(self, key, value):
         """
-        Essentially this is a wrapper for `self.update(key, value)`
-        The only tricky bit it broadcasting `value`, to allow expressions
-        like `history[0] = 1`
+        Essentially this is a wrapper for `self.update(key, value)`.
+        The history may implement `update` such that it automatically broadcasts
+        `value`, to allow expressions like ``history[0] = 1``.
 
         Parameters
         ----------
@@ -1598,9 +1733,21 @@ class History(HistoryBase, abc.ABC):
         t: AxisIndex | time
             If a time, `t` must have the appropriate units.
         """
-        # TODO: Is it OK to enforce single precision ?
         # NOTE: Copy changes to this function in Model.get_time()
-        if self.time.is_compatible_index(t):
+        # FIXME: Should AxisIndex have a check for "index-like" ?
+        #        Experience has taught us that relying on the int type for this
+        #        is fraught with issues...
+        #        is_compatible_index() is wrong, because it checks for suitability
+        #        for arithmetic operations (so absolute conversions are disallowed,
+        #        but relative conversions are allowed, which is the opposite
+        #        of what we want)
+        if shim.istype(t, 'int'):
+            # Either we have a bare int, or an AxisIndex
+            if isinstance(t, sinn.axis.AbstractAxisIndex):
+                t = t.convert(self.time)
+            elif isinstance(t, sinn.axis.AbstractAxisIndexDelta):
+                raise TypeError(f"Can't retrieve the time corresponding to {t}: "
+                                "it's a relative, not absolute, time index.")
             return self.time[t]
         else:
             assert self.time.is_compatible_value(t)
@@ -1629,7 +1776,9 @@ class History(HistoryBase, abc.ABC):
         if self.time.is_compatible_value(t):
             return self.time.index(t, allow_rounding=allow_rounding)
         else:
-            assert self.time.is_compatible_index(t)
+            # assert self.time.is_compatible_index(t)
+            assert shim.istype(t, 'int')
+            # FIXME: See fixme in `get_time` regarding "index-like" test.
             return self.time.Index(t)
 
     def get_tidx_for(self, t, target_hist, allow_fractional=False):
@@ -2068,7 +2217,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
     dtype       : DType = np.dtype('int8')
 
     class Config:
-        # json_encoders overrides (is not merged) parent option
+        # json_encoders overrides (is not merged) with parent option
         json_encoders = {**History.Config.json_encoders,
                          shim.sparse.csr_matrix_wrapper:
                             shim.sparse.csr_matrix_wrapper.json_encoder}
@@ -2082,7 +2231,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         cls = type(self)
         super(cls, cls).update_function.fset(self, f)
         if f is not None:
-            self.update_function._return_dtype = self.idx_dtype
+            self.update_function.return_dtype = self.idx_dtype
 
     # Called by History.__init__
     # Like an @validator, returns the value instead of setting attribute directly
@@ -2159,12 +2308,12 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             cur_datatidx = self.time.t0idx - 1
         elif shim.issparse(init_data):
             assert shim.eval(init_data.shape[1]) == nneurons
-            cur_datatidx = init_data.shape[0]
-            init_csr[:cur_datatidx,:] = init_data
+            cur_datatidx = init_data.shape[0] - 1
+            init_csr[:cur_datatidx+1,:] = init_data
         else:
             assert shim.eval(init_data.shape[1]) == nneurons
-            cur_datatidx = len(init_data)
-            init_csr[:cur_datatidx,:] = scipy.sparse.csr_from_dense(init_data.astype(dtype))
+            cur_datatidx = len(init_data) - 1
+            init_csr[:cur_datatidx+1,:] = scipy.sparse.csr_from_dense(init_data.astype(dtype))
             # This may throw an efficiency warning, but we can ignore it since
             # init_csr is empty
             init_csr.eliminate_zeros()
@@ -2196,7 +2345,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         if after is not None:
             assert shim.eval(tidx) == after
         else:
-            assert shim.eval(tidx) == self.time.pad_left - 1
+            assert shim.eval(tidx) == self.t0idx - 1
         object.__setattr__(self, '_sym_data', data)
         assert shim.graph.is_computable(self._sym_data)
         object.__setattr__(self, '_num_data', self._sym_data)
@@ -2532,16 +2681,21 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
 
         before_len, after_len = self.time.pad(pad_left, pad_right)
 
+        indptr = self._num_data[2]
         if before_len > 0 and self.cur_tidx >= self.t0idx:
             warn("Added non-zero left padding - invalidating the data "
                  f"associated with history {self.name}.")
             self.clear()
-        # newshape = (self.time.padded_length,) + self.shape
-        data, indices, indptr = self._num_data
-        indptr = np.concatenate((np.zeros(before_len, dtype=indptr.dtype),
-                                 indptr.get_value(borrow=True)))
-            # move index pointers forward by the number that were added
-            # index pointers themselves don't change, since data didn't change
+            # clearing will already update the indptr, because self.time has
+            # already been updated, so no need for 'concatenate'
+            data, indices, indptr = self._num_data
+        else:
+            data, indices, indptr = self._num_data
+            indptr = np.concatenate((np.zeros(before_len, dtype=indptr.dtype),
+                                     indptr.get_value(borrow=True)))
+                # move index pointers forward by the number that were added
+                # index pointers themselves don't change, since data didn't change
+        assert shim.eval(indptr).shape[0] == self.time.padded_length + 1
         self._num_data[2].set_value(indptr, borrow=True)
         assert self._sym_data is self._num_data
         # object.__setattr__(self, '_num_data', (data, indices, indptr))
@@ -2786,7 +2940,9 @@ class Series(ConvolveMixin, History):
         Store a new time slice.
 
         As a convenience for initializing data, if both `tidx` and `value`
-        are non-symbolic, `value` can omit the time dimension.
+        are non-symbolic, `value` can omit the time dimension, or be specified
+        as a single scalar, in which case it is broadcast to
+        ``(len(tidx), self.shape)``.
 
         Parameters
         ----------
@@ -2807,6 +2963,10 @@ class Series(ConvolveMixin, History):
         # If both tidx and value are numeric, figure out the expected
         # shape of `value` and broadcast if necessary
         if not shim.is_graph_object(tidx, value):
+            # First check if value is a scalar – this is common when initializing
+            if shim.isscalar(value):
+                value = np.broadcast_to(value, self.shape)
+            # Now broadcast to the time dimension
             if isinstance(tidx, slice):
                 if tidx.step is not None and key.step != 1:
                     raise ValueError("Slices must have steps of `None` or 1.")

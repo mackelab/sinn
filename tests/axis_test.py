@@ -1,9 +1,12 @@
 import numpy as np
 # Import anything to do with types first
 from mackelab_toolbox.transform import Transform, Bijection
-import mackelab_toolbox.typing as mt
+import mackelab_toolbox as mtb
+import mackelab_toolbox.typing
 import pint
 ureg = pint.UnitRegistry()
+mtb.typing.PintValue.ureg = ureg
+mtb.typing.PintUnit.ureg = ureg
 import quantities as Q
 
 import theano_shim  as shim
@@ -17,7 +20,7 @@ if __name__ == "__main__":  # For Hydrogen sessions
 def _test_map_axis(cglib):
 
     shim.load(cglib)
-    mt.freeze_types()
+    mtb.typing.freeze_types()
     from sinn.axis import MapAxis, RangeAxis, ArrayAxis
     import sinn.axis
 
@@ -211,7 +214,7 @@ def _test_map_axis(cglib):
 def _test_regular_axis(cglib):
 
     shim.load(cglib)
-    mt.freeze_types()
+    mtb.typing.freeze_types()
     from sinn.axis import MapAxis, RangeAxis, ArrayAxis
     import sinn.axis
 
@@ -347,7 +350,7 @@ def _test_regular_axis(cglib):
 def _test_symbolic_indexing(cglib):
 
     shim.load(cglib)
-    mt.freeze_types()
+    mtb.typing.freeze_types()
     from sinn.axis import MapAxis, RangeAxis, ArrayAxis
     import sinn.axis
 
@@ -432,7 +435,7 @@ def _test_symbolic_indexing(cglib):
 def _test_numeric_indexing(cglib):
 
     shim.load(cglib)
-    mt.freeze_types()
+    mtb.typing.freeze_types()
     from sinn.axis import MapAxis, RangeAxis, ArrayAxis
     import sinn.axis
 

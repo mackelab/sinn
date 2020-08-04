@@ -15,6 +15,7 @@ Manifest:
 import numpy as np
 import scipy.sparse
 from types import SimpleNamespace
+from pydantic import ValidationError
 
 import theano_shim as shim
 import mackelab_toolbox as mtb
@@ -23,7 +24,6 @@ import mackelab_toolbox.typing
 import mackelab_toolbox.cgshim
 import pint
 ureg = pint.UnitRegistry()
-mtb.typing.PintValue.ureg = ureg
 
 # Series.__fields__
 
@@ -135,6 +135,10 @@ def _test_history_spiketrain_indexing(cgshim):
     assert x2.pad_left == x2.pad_right == 0
     assert taxis.pad_left == taxis.pad_right == 0
     assert taxis.padded_length == taxis.unpadded_length
+    assert x1._num_data[2].get_value().shape[0] == x1.time.padded_length + 1
+        # Effectively the same test as the one below, but bypasses the sparse
+        # array creation. Scipy itself checks that the shape is consistent
+        # when it creates the sparse array, raising its own error.
     assert x1._get_num_csr().shape[0] == x1.time.padded_length
 
     # with pytest.warns(scipy.sparse.SparseEfficiencyWarning): # Silence expected warning
@@ -366,9 +370,46 @@ def _test_history_spiketrain_updates(cgshim):
 def _test_history_serialization(cgshim):
 
     shim.load(cgshim)
+    mtb.typing.PintUnit.ureg = ureg
+
     mtb.typing.freeze_types()
+    import sinn.config
     from sinn.histories import (
         TimeAxis, HistoryUpdateFunction, Series, Spiketrain, NotComputed)
+
+    sinn.config.trust_all_inputs = True
+
+    def hist_compare(hist1, hist2):
+        assert hist1.name == hist2.name
+        assert hist1.shape == hist2.shape
+        assert hist1.dtype == hist2.dtype
+        assert hist1.iterative == hist2.iterative
+        assert hist1.symbolic == hist2.symbolic
+        assert hist1.locked == hist2.locked
+        assert hist1.cur_tidx != hist2.cur_tidx
+        assert hist1.cur_tidx.plain == hist2.cur_tidx.plain
+        assert hist1._num_data is hist1._sym_data
+        assert hist2._num_data is hist2._sym_data
+        assert hist1._num_tidx is hist1._sym_tidx
+        assert hist2._num_tidx is hist2._sym_tidx
+        assert hist1._num_tidx.get_value() is not hist2._num_tidx.get_value()
+        if shim.issparse(hist1.data):
+            assert shim.issparse(hist2.data)
+            assert (hist1.data != hist2.data).size == 0
+            assert all(d1.get_value() is not d2.get_value()
+                       for d1, d2 in zip(hist1._num_data, hist2._num_data))
+        else:
+            assert (hist1.data == hist2.data).all()
+            assert hist1._num_data.get_value() is not hist2._num_data.get_value()
+        assert hist1.time.unit._REGISTRY is hist2.time.unit._REGISTRY
+        assert hist1.time is not hist2.time
+        assert hist1.time == hist2.time
+        assert hist1.time.label == hist2.time.label
+        assert np.all(hist1.time.stops_array == hist2.time.stops_array)
+        assert hist1.time.pad_left  != hist2.time.pad_left
+        assert hist1.time.pad_right != hist2.time.pad_right
+        assert hist1.time.pad_left.plain  == hist2.time.pad_left.plain
+        assert hist1.time.pad_right.plain == hist2.time.pad_right.plain
 
 
     TimeAxis.time_unit = ureg.s
@@ -379,56 +420,132 @@ def _test_history_serialization(cgshim):
 
     # We actually don't need to call `taxis.copy()`, because Pydantic copies all inputs
     series1 = Series(name='series1', time=taxis, shape=(3,), dtype=np.float64)
-    spikes1 = Spiketrain(name='spikes1', time=taxis, pop_sizes=(3,2,4))
 
-    # Test serialization without any update function
-    series_noupd_json = series1.json()
-    spikes_noupd_json = spikes1.json()
+    ## Test serialization without any update function ##
+    series2 = Series.parse_raw(series1.json())
 
-    series2 = Series.parse_raw(series_noupd_json)
-    spikes2 = Spiketrain.parse_raw(spikes_noupd_json)
+    ##Empty histories
+    # TODO: Test with non default values for symbolic, iterative, etc.
+    hist_compare(series1, series2)
 
-    # TODO: Test with non default values
-    assert series1.name == series2.name
-    assert series1.shape == series2.shape
-    assert series1.dtype == series2.dtype
-    assert series1.iterative == series2.iterative
-    assert series1.symbolic == series2.symbolic
-    assert series1.locked == series2.locked
-    assert series1.cur_tidx != series2.cur_tidx
-    assert series1.cur_tidx.plain == series2.cur_tidx.plain
-    assert np.all(series1.data) == np.all(series2.data)
-    assert series1._cur_tidx.get_value() is not series2._cur_tidx.get_value()
-    assert series1._num_data.get_value() is not series2._num_data.get_value()
-    assert series1.time is not series2.time
-    assert series1.time == series2.time
-    # assert series1.time.name == series2.time.name
-    # assert np.all(series1.time.stops_array == series2.time.stops_array)
-    # assert series1.time.pad_left  == series2.time.pad_left
-    # assert series1.time.pad_right == series2.time.pad_right
-
-
-
-    ## Test serialization with an update function attached by assignment ##
     # Series
-    hists = SimpleNamespace(series1=series1)
     A = np.array([-0.1, 1.8, 0.5])
+    hists = SimpleNamespace(x1=series1, A=A)
     def x1_upd_noinputs_func(tidx):
-        A*shim.sin(x1.get_time(tidx).magnitude)
-    def x1_upd_withinputs_func(tidx):
-        series1[tidx-1] * A*shim.sin(x1.get_time(tidx).magnitude)
-    x1_upd_noinputs = HistoryUpdateFunction(
-        func=x1_upd_noinputs_func, inputs=[], namespace=hists)
+        return A*shim.sin(series1.get_time(tidx).magnitude)
+    def x1_upd_withinputs_func(self, tidx):
+        A = self.A; x1 = self.x1
+        return x1[tidx-1] * A*shim.sin(x1.get_time(tidx).magnitude)
+    with pytest.warns(UserWarning):
+        # Raises a warning because x1_upd_noinputs does not have 'self' in signature
+        x1_upd_noinputs = HistoryUpdateFunction(
+            func=x1_upd_noinputs_func, inputs=[], namespace=None)
     x1_upd_withinputs = HistoryUpdateFunction(
-        func=x1_upd_withinputs_func, inputs=[series1], namespace=hists)
+        func=x1_upd_withinputs_func, inputs=['x1'], namespace=hists)
     x1_λupd = HistoryUpdateFunction(
-        func = lambda tidx: A*shim.sin(series1.get_time(tidx).magnitude),
+        func = lambda self, tidx: A*shim.sin(self.series1.get_time(tidx).magnitude),
         inputs = [], namespace = hists)
 
-    # series2.update_function =
+    series1.update_function = x1_upd_noinputs
+    series2.update_function = x1_upd_withinputs
+    series3 = series2.copy()
+    series3.update_function = x1_λupd
 
-    # Spiketrains
+    series1.pad(1)
+    series1[-1] = 0
+    series1(3)
+    series1.eval()
+    series2(3)
+    series2.eval()
 
+    # Direct deserialization accidentally works for functions with no inputs:
+    # the namespace is not exported, and thus unavailable for name resolution...
+    series4 = Series.parse_raw(series1.json())
+    # ...as can be seen when trying to deserialize a history with input
+    with pytest.raises(ValidationError):
+        Series.parse_raw(series2.json())
+    # We can work around this by injecting the namespace back into the
+    # deserialized dict, before initializing the History
+    # Note: .json() does two things: 1) call load_str_bytes
+    #                                2) pass the result as keywords to __init__
+    # This is what Model does to deserialize histories, injecting itself as
+    # the namespace.
+    from pydantic.parse import load_str_bytes
+    obj = load_str_bytes(series2.json())
+    obj['update_function']['namespace'] = hists
+    obj['update_function'] = HistoryUpdateFunction(**obj['update_function'])
+    series5 = Series(**obj)
+    # Lambda functions can't be serialized
+    with pytest.raises(ValueError):
+        series3.json()
+
+    ## Test deserialization of existing data
+    ## Update functions are deserialized, but deserialized versions unused
+    assert series1.cur_tidx > 0
+    assert series2.cur_tidx > 0
+    hist_compare(series1, series4)
+    hist_compare(series2, series5)
+
+    ## "Accidentally" deserialized update function can't be evaluated, because
+    ## the namespace was not specified and it can't find 'A'
+    series1(10)
+    series1.eval()
+    with pytest.raises(NameError):
+        series4(10)
+
+    ## Properly deserialized function works as expected, and evaluates
+    ## identically to the original
+    series2(10)
+    series2.eval()
+    series5(10)
+    series5.eval()
+    hist_compare(series2, series5)
+
+    ### Spiketrains ###
+    # FIXME: Support & test serialization of the CSMProperties attribute of Theano sparse array
+    if cgshim == 'theano':
+        return
+    spikes1 = Spiketrain(name='spikes1', time=taxis, pop_sizes=(3,2,4))
+
+    spikes2 = Spiketrain.parse_raw(spikes1.json())
+
+    hist_compare(spikes1, spikes2)
+
+    ω = 1e5*np.random.rand(*spikes1.shape)
+    spikehists = SimpleNamespace(s1=spikes1, ω=ω)
+    def do_nothing(f): return f  # Mock decorator
+    @do_nothing
+    def sin_spikes(self, tidx):  # Some pseudo-chaotic function
+        t = self.s1.get_time(tidx).magnitude
+        return np.where((np.sin(self.ω*t)>0))[0].astype('uint8')
+
+    spikes1.update_function = HistoryUpdateFunction(
+        func=sin_spikes, inputs=['s1'], namespace=spikehists)
+
+    spikes1(30)
+
+    # We serialize/deserialize as above
+    # Note that we need to add the decorator to '_deserialization_locals'
+    # for it to be available during deserialization.
+    obj = load_str_bytes(spikes1.json())
+    obj['update_function']['namespace'] = spikehists
+    with pytest.raises(NameError):
+        HistoryUpdateFunction(**obj['update_function'])
+    HistoryUpdateFunction._deserialization_locals.update(do_nothing=do_nothing)
+    obj['update_function'] = HistoryUpdateFunction(**obj['update_function'])
+    import scipy.sparse
+    with pytest.warns(scipy.sparse.SparseEfficiencyWarning):
+        # We know don't want to deal with the efficiency warning atm.
+        spikes3 = Spiketrain(**obj)
+
+
+    # Deserialized spike history matches original
+    hist_compare(spikes1, spikes3)
+
+    # Deserialized spike update function also matches original
+    spikes1(60)
+    spikes3(60)
+    hist_compare(spikes1, spikes3)
 
 def test_numhistory_series_indexing():
     return _test_history_series_indexing('numpy')
@@ -448,3 +565,5 @@ def test_symhistory_spiketrain_updates():
     return _test_history_spiketrain_updates('theano')
 def test_numhistory_serialization():
     return _test_history_serialization('numpy')
+def test_symhistory_serialization():
+    return _test_history_serialization('theano')

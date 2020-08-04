@@ -6,6 +6,7 @@ Author: Alexandre René
 """
 
 from pydantic import BaseModel
+from sinn.utils.pydantic import add_exclude_mask
 
 class CachedOperation(BaseModel):
     """All op mixins which contain an OpCache object should inherit
@@ -19,8 +20,7 @@ class CachedOperation(BaseModel):
     #     super().__init__(*a, **kw)
     def copy(self, *a, **kw):
         excl = kw.pop('exclude', None)
-        excl = set() if excl is None else set(excl)
-        excl.add('cached_ops')
+        excl = add_exclude_mask(excl, {'cached_ops'})
         m = super().copy(*a, exclude=excl, **kw)
         m.cached_ops = []
         # object.__setattr__(m, 'cached_ops', [])
@@ -33,13 +33,11 @@ class CachedOperation(BaseModel):
         return m
     def dict(self, *a, **kw):
         excl = kw.pop('exclude', None)
-        excl = set() if excl is None else set(excl)
-        excl.add('cached_ops')
+        excl = add_exclude_mask(excl, {'cached_ops'})
         return super().dict(*a, exclude=excl, **kw)
     def json(self, *a, **kw):
         excl = kw.pop('exclude', None)
-        excl = set() if excl is None else set(excl)
-        excl.add('cached_ops')
+        excl = add_exclude_mask(excl, {'cached_ops'})
         return super().json(*a, exclude=excl, **kw)
 
     def clear(self, *a, **kw):
