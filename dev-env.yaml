@@ -1,9 +1,10 @@
 name: sinn
 channels:
   - conda-forge
-requirements:
-  - numpy
+  - defaults
+dependencies:
   - pydantic
+  - numpy
   - theano
   - tqdm   # Planned to be moved to dev packages
   - packaging
@@ -12,10 +13,13 @@ requirements:
     - odictliteral
 # Development packages
 # These are required either to run tests or examples, or build documentation
+  - ipykernel
   - pytest
+  - pytest-xdist
   - sphinx
   - pint
   - quantities
+  - xarray
   - scipy
   - matplotlib
   - seaborn
