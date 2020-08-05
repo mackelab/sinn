@@ -191,15 +191,25 @@ class HistoryUpdateFunction(BaseModel):
 
     It would be quite tricky and fragile to store the namespace during
     serialization, so it must be specified again when deserializing.
+    Note that this only applies to JSON serialization – the export to a dict
+    still includes the namespace by default.
 
-    .. Note: `namespace` is a class variable, so is best specified by
-       assigning directly to `HistoryUpdateFunction`:
-       ``HistoryUpdateFunction.namespace = model``.
+    .. note:: With regards to deserialization, two different local scopes may
+       come into play: the one within the function (active during function
+       execution) and the one outside the function (active during function
+       definition). The former is what we termed 'namespace', and can be
+       determined by setting the correspondingly named parameter. It is passed
+       on to the function through its ``self`` argument, same as a class
+       namespace is passed on to a method. The latter (scope outside function)
+       is only relevant if there are custom decorators. If necessary, it be set
+       by modifying the class variable `_deserialization_locals`.
 
     Parameters
     ----------
-    func: callable  (Index -> data_type)
-        The update function. Its signature should be `func(tidx)`.
+    func: callable,  (namespace, Index) -> data_type  or  (Index) -> data_type
+        The update function. Its signature should be ``func(self, tidx)`` or
+        ``func(tidx)``. The value of `namespace` is passed to the ``self``
+        argument, when it is included.
     inputs: list of history names  (List[str])
         List of histories on which the update function depends.
         Use an empty list to indicate no dependencies.
@@ -208,7 +218,7 @@ class HistoryUpdateFunction(BaseModel):
         themselves.
     namespace: Model | SimpleNamespace
         Any object which permits attribute access. This is where the inputs
-        are retrieved from.
+        are retrieved from. Its value is be passed as first argument to `func`.
     cast: bool
         (Default: True) True indicates to cast the result of a the update
         function to the expected type. Only 'same_kind' casts are permitted.
@@ -650,15 +660,20 @@ class History(HistoryBase, abc.ABC):
         # Initialize symbolic & concrete data & index
         object.__setattr__(self, 'ndim', len(self.shape))
         data, tidx = self.initialized_data(data)
+        # Data storage. Values > _num_tidx are undefined
         object.__setattr__(self, '_num_data', data)
         object.__setattr__(self, '_sym_data', self._num_data)
+        # Tracker for the latest time bin for which we know history
         object.__setattr__(self, '_num_tidx', tidx)
         object.__setattr__(self, '_sym_tidx', self._num_tidx)
-        assert not shim.is_pure_symbolic(self._num_data)
-            # Allows for shared variables, but not symbolic tensors
-        assert shim.isshared(self._num_tidx)
-            # Tracker for the latest time bin for which we
-            # know history.
+        # Allow for shared variables & tuples of shared vars, but not symbolic tensors
+        if shim.is_pure_symbolic(self._num_data):
+            raise AssertionError(f"{cls.__qualname__}.parse_obj: `_num_data` "
+                                 "must not be a symbolic variable.")
+        # Ensure _num_tidx is a shared variable
+        if not shim.isshared(self._num_tidx):
+            raise AssertionError(f"{cls.__qualname__}.parse_obj: `_num_tidx` "
+                                 "must be a shared variable.")
         # Trackers for the dynamic updates – These are always initialized to
         # `None`, same as _num_tidx is always initialized to _sym_tidx
         object.__setattr__(self, '_update_pos'     , None)
@@ -728,9 +743,8 @@ class History(HistoryBase, abc.ABC):
                                  ('_sym_data', '_num_data')))
         return m
 
-    def dict(self, *args, **kwargs):
-        d = super().dict(*args, **kwargs)
-        exclude = kwargs.pop('exclude', None)
+    def dict(self, *args, exclude=None, **kwargs):
+        d = super().dict(*args, exclude=exclude, **kwargs)
         if isinstance(exclude, set):
             # Need to convert to dict for nested 'exclude' arg
             exclude = {attr:... for attr in exclude}
@@ -750,8 +764,12 @@ class History(HistoryBase, abc.ABC):
         return d
 
     @classmethod
-    def parse_obj(self, obj):
-        assert isinstance(obj, dict)
+    def parse_obj(cls, obj):
+        if not isinstance(obj, dict):
+            raise ValueError(f"{cls.__qualname__}.parse_obj expects a dictionary. "
+                             f"Received {str(obj)[:25]}{'...' if len(obj) > 25 else ''} "
+                             f"(type: {type(obj)}).")
+        obj = obj.copy()  # Don't modify the original
         data       = obj.pop('data')
         upd_f      = obj.pop('update_function')
         rg_upd_f   = obj.pop('range_update_function')
@@ -773,8 +791,12 @@ class History(HistoryBase, abc.ABC):
         object.__setattr__(m, '_sym_data', m._num_data)
         object.__setattr__(m, '_num_tidx', tidx)
         object.__setattr__(m, '_sym_tidx', m._num_tidx)
-        assert not shim.is_pure_symbolic(m._num_data)
-        assert shim.isshared(m._num_tidx)
+        if shim.is_pure_symbolic(m._num_data):
+            raise AssertionError(f"{cls.__qualname__}.parse_obj: `_num_data` "
+                                 "must not be a symbolic variable.")
+        if not shim.isshared(m._num_tidx):
+            raise AssertionError(f"{cls.__qualname__}.parse_obj: `_num_tidx` "
+                                 "must be a shared variable.")
         # Initialize dynamic update trackers
         object.__setattr__(m, '_update_pos'     , None)
         object.__setattr__(m, '_update_pos_stop', None)
@@ -927,8 +949,10 @@ class History(HistoryBase, abc.ABC):
             `self.clear()` is called to invalidate preexisting data.
         """
         return self._update_function
-    @update_function.setter
-    def update_function(self, f :HistoryUpdateFunction):
+
+    # We split the setter into two methods, so that Model._base_initialize can
+    # call _set_update_function without the side-effect of clearing the history
+    def _set_update_function(self, f: HistoryUpdateFunction):
         assert isinstance(f, HistoryUpdateFunction) or f is None
         if shim.pending_updates():
             symb_upds = shim.get_updates().keys()
@@ -938,11 +962,15 @@ class History(HistoryBase, abc.ABC):
         if f is not None:
             f.return_dtype = self.dtype
         object.__setattr__(self, '_update_function', f)
+    @update_function.setter
+    def update_function(self, f: HistoryUpdateFunction):
+        self._set_update_function(f)
         # Invalidate any existing data
         if hasattr(self, '_num_data'):
             # During instantiation, update function is assigned before creating
             # the data structure; nothing to clear in that case.
             self.clear()
+
     @property
     def range_update_function(self):
         """
@@ -2893,12 +2921,12 @@ class Series(ConvolveMixin, History):
             if shim.isshared(init_data):
                 # Use shared variables as-is
                 data_length = len(init_data.get_value())
-                Δtidx = self.time.unpadded_length - data_length
+                Δtidx = self.time.padded_length - data_length
                 assert Δtidx == 0
                 data = init_data
             else:
                 data_length = len(init_data)
-                Δtidx = self.time.unpadded_length - data_length
+                Δtidx = self.time.padded_length - data_length
                 pad_width = [(0, Δtidx)] + [(0,0)]*self.ndim
                 npdata = np.pad(init_data, pad_width)
                 data = shim.shared(

@@ -20,7 +20,7 @@ author: Alexandre René
 import os
 import atexit
 import logging
-logger = logging.getLogger('sinn.diskcache')
+logger = logging.getLogger(__file__)
 
 import sinn
 import shelve

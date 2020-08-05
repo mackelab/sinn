@@ -22,9 +22,15 @@ class TestModelNoState(Model):
         σ :float
         N :int
 
+    class Config:
+        json_encoders = Spiketrain.Config.json_encoders
+
     rng    :mtb.typing.AnyRNG
     spikes :Spiketrain = None
     λ :Series = AutoHist(name='λ', shape=(1,), dtype=np.float64, iterative=True)
+
+    # Attach functions to model to make them available to update functions
+    clip_probabilities = staticmethod(sinn.clip_probabilities)
 
     @initializer('spikes')
     def create_spikes(cls, s, time, N):
@@ -41,7 +47,7 @@ class TestModelNoState(Model):
         retval = [shim.nonzero(
                       self.rng.binomial( size = self.λ.shape,
                                          n = 1,
-                                         p = sinn.clip_probabilities(self.λ(ti)*dt)
+                                         p = self.clip_probabilities(self.λ(ti)*dt)
                                          )
                       )[0]
                   for ti in tidx]

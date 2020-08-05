@@ -89,10 +89,9 @@ class ConvolveMixin(CachedOperation):
             # Add this cache to the objects's list of cached ops.
             # This allows it to be pruned later, if one of the op's members changes
 
-    def copy(self, *a, **kw):
-        excl = kw.pop('exclude', None);
-        excl = add_exclude_mask(excl, {'_conv_cache'})
-        m = super().copy(*a, exclude=excl, **kw)
+    def copy(self, *a, exclude=None, **kw):
+        exclude = add_exclude_mask(exclude, {'_conv_cache'})
+        m = super().copy(*a, exclude=exclude, **kw)
         object.__setattr__(m, '_conv_cache', com.OpCache(m, m.convolve_batch_wrapper))
         # object.__setattr__(m, '_conv_cache',
         #                    com.OpCache(m, m.convolve_batch_wrapper))
@@ -104,10 +103,9 @@ class ConvolveMixin(CachedOperation):
         # object.__setattr__(m, '_conv_cache',
         #                    com.OpCache(m, m.convolve_batch_wrapper))
         return m
-    def dict(self, *a, **kw):
-        excl = kw.pop('exclude', None);
-        excl = add_exclude_mask(excl, {'_conv_cache'})
-        return super().dict(*a, exclude=excl, **kw)
+    def dict(self, *a, exclude=None, **kw):
+        exclude = add_exclude_mask(exclude, {'_conv_cache'})
+        return super().dict(*a, exclude=exclude, **kw)
     # def json(self, *a, **kw):
     #     excl = kw.pop('exclude', None);
     #     excl = set() if excl is None else set(excl)

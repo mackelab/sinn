@@ -55,7 +55,7 @@ from sinn.kernels import Kernel
 import sinn.diskcache as diskcache
 
 # Import into namespace, so user code doesn't need to import utils
-from sinn.utils.pydantic import initializer
+from sinn.utils.pydantic import initializer, add_exclude_mask
 
 _models = {}
 registered_models = _models.keys()
@@ -417,36 +417,91 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
 
     # TODO: Recognize RNG as input
 
-def init_autospiketrain(cls, autohist: AutoHist, values) -> Spiketrain:
-    time = values.get('time', None)
-    if time is None: return autohist
-    return Spiketrain(time=time, **autohist.kwargs)
-
 def init_autoseries(cls, autohist: AutoHist, values) -> Series:
     time = values.get('time', None)
     if time is None: return autohist
+    if isinstance(autohist, dict):
+        # We end up here when constructing a model from a dict,
+        # which happens when we deserialize a model representation
+        # `autohist` then is a complete definition for a history, but we
+        # still make sure its time axis is consistent with the model's
+        hist = Series.parse_obj(autohist)
+        # Test compatibility by converting the two endpoints of the model's time axis
+        try:
+            time.t0idx.convert(hist.time)
+            time.tnidx.convert(hist.time)
+        except (TypeError, IndexError):
+            raise AssertionError(f"The time array of {hist.name} does not "
+                                 "match that of the model.\n"
+                                 f"{hist.name}.time: {hist.time}\n"
+                                 f"Model.time: {time}")
+        return hist
     return Series(time=time, **autohist.kwargs)
+
+def init_autospiketrain(cls, autohist: AutoHist, values) -> Spiketrain:
+    time = values.get('time', None)
+    if time is None: return autohist
+    if isinstance(autohist, dict):
+        # See comment in init_autoseries
+        hist = Spiketrain.parse_obj(autohist)
+        try:
+            time.t0idx.convert(hist.time)
+            time.tnidx.convert(hist.time)
+        except (TypeError, IndexError):
+            raise AssertionError(f"The time array of {hist.name} does not "
+                                 "match that of the model.\n"
+                                 f"{hist.name}.time: {hist.time}\n"
+                                 f"Model.time: {time}")
+        return hist
+    else:
+        return Spiketrain(time=time, **autohist.kwargs)
 
 class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     """Abstract model class.
 
-    A model implementations should derive from this class.
-    It must minimally provide:
-    - A `Parameter_info` dictionary of the form:
-        (See sinn.common.Parameterize)
-        ```
-        Parameter_info = OrderedDict{ 'param_name': Parameter([cast function], [default value]),
-                                      ... }
-        ```
-    - A class-level (outside any method) call
-        `Parameters = com.define_parameters(Parameter_info)`
+    A model implementation should derive from this class.
 
-    Implementations may also provide class methods to aid inference:
-    - likelihood: (params) -> float
-    - likelihood_gradient: (params) -> vector
-    If not provided, `likelihood_gradient` will be calculated by appyling theano's
-    grad method to `likelihood`. (TODO)
-    As class methods, these don't require an instance – they can be called on the class directly.
+    Models **must**:
+
+    - Inherit from `~sinn.models.Model`
+    - Define a ``time`` attribute, of type `~sinn.histories.TimeAxis`.
+    - Define define a `Parameters` class within their namespace, which inherits
+      from `~pydantic.BaseModel`. This class should define all (and only) model
+      parameters as annotations, using the syntax provided by `pydantic`.
+    - Define an :meth:`initialize(self, initializer=None)` method. This method
+      is intended to be called to reset the model (e.g. after a run / fit).
+      It is also called during initialization to set up the model, unless the
+      special value ``initializer='do not initialize'`` is passed.
+      It's second argument must be ``initializer``, it must be optional, and
+      the optional value must be ``None``.
+
+    In practice, they will also:
+
+    - Define histories and kernels as annotations to the model.
+    - Define any number of validation/initialization methods, using either the
+      `@pydantic.validators` or `@sinn.models.initializer` decorators.
+    - Define update functions for the histories using the `@sinn.models.updatefunction`
+      decorator.
+
+    A typical class definition should look like::
+
+        from sinn.histories import TimeAxis, Series
+        from sinn.models import Model
+        from pydantic import BaseModel
+
+        class MyModel(Model):
+            time: TimeAxis
+            class Parameters(BaseModel):
+                ...
+            x: Series
+
+            @initializer('x')
+            def init_x(cls, x, time):
+                return Series(time=time, ...)
+
+            @updatefunction('x', inputs=())
+            def upd_x(self, tidx):
+                return ...
 
     .. Hint::
        If you are subclassing Model to create another abstract class (a class
@@ -456,7 +511,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     """
     # ALTERNATIVE: Have a SimpleNamespace attribute `priv` in which to place
     #              private attributes, instead of listing them all here.
-    __slots__ = ('graph_cache', 'compile_cache', '_pymc', 'batch_start_var', #'batch_size_var',
+    __slots__ = ('graph_cache', 'compile_cache', '_pymc', #'batch_start_var', 'batch_size_var',
                  '_num_tidx', '_curtidx', '_stoptidx_var', '_batchsize_var',
                  '_advance_updates', '_compiled_advance_fns')
 
@@ -464,6 +519,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # Allow assigning other attributes during initialization.
         extra = 'allow'
         keep_untouched = (ModelParams, PendingUpdateFunction, class_or_instance_method)
+        json_encoders = {**mtb.typing.json_encoders,
+                         **History.Config.json_encoders}
 
     class Parameters(abc.ABC, ModelParams):
         """
@@ -471,18 +528,28 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         Don't inherit from this class; i.e. do::
 
             class MyModel(Model):
-                class Parameters:
+                class Parameters(BaseModel):
                     ...
         """
         pass
 
     def __init__(self, initializer=None, **kwargs):
+        # Any update function specification passed as argument needs to be
+        # extracted and passed to _base_initialize, because update functions
+        # can't be created until the model (namespace) exists
+        update_functions = {}
+        for attr, v in kwargs.items():
+            # Deals with the case where we initialize from a .dict() export
+            if isinstance(v, dict) and 'update_function' in v:
+                update_functions[attr] = v['update_function']
+                v['update_function'] = None
         # Initialize attributes with Pydantic
         super().__init__(**kwargs)
         # Attach update functions to histories, and set up __slots__
-        self._base_initialize()
+        self._base_initialize(update_functions=update_functions)
         # Run the model initializer
-        self.initialize(initializer)
+        if initializer != 'do not initialize':
+            self.initialize(initializer)
 
     def copy(self, *args, deep=False, **kwargs):
         m = super().copy(*args, deep=deep, **kwargs)
@@ -490,27 +557,91 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         m.initialize()
         return m
 
+    def dict(self, *args, exclude=None, **kwargs):
+        # Remove pending update functions from the dict – they are only used
+        # to pass information from the metaclass __new__ to the class __init__,
+        # and at this point already attached to the histories. Moreover, they
+        # are already included in the serialization of HistoryUpdateFunctions
+        exclude = add_exclude_mask(
+            exclude,
+            {attr for attr, value in self.__dict__.items()
+             if isinstance(value, PendingUpdateFunction)}
+        )
+        # When serialized, HistoryUpdateFunctions include the namespace.
+        # Remove this, since it is the same as `self`, and inserts a circular
+        # dependence.
+        hists = {attr: hist for attr,hist in self.__dict__.items()
+                 if isinstance(hist, History)}
+        assert all(h.update_function.namespace is self
+                   for h in hists.values())
+        excl_nmspc = {attr: {'update_function': {'namespace'}}
+                      for attr in hists}
+        exclude = add_exclude_mask(exclude, excl_nmspc)
+        # Preceed with parent's dict method
+        return super().dict(*args, exclude=exclude, **kwargs)
+
     @classmethod
     def parse_obj(cls, obj):
+        # Add @updatefunction decorator to those recognized by function deserializer
+        # To avoid user surprises, we cache the current state of
+        # HistoryUpdateFunction._deserialization_locals, update the variable,
+        # then return to the original state once we are done
+        # Remark: We don't use the 'PendingUpdateFunction' mechanism, (we pass
+        #    the update_functions dicts to _base_initialize instead) so in fact
+        #    we just replace @updatefunction by an idempotent function.
+        def idempotent(hist_nm, inputs=None):
+            def dec(f):
+                return f
+            return dec
+        stored_locals = HistoryUpdateFunction._deserialization_locals
+        if 'updatefunction' not in HistoryUpdateFunction._deserialization_locals:
+            HistoryUpdateFunction._deserialization_locals = HistoryUpdateFunction._deserialization_locals.copy()
+            HistoryUpdateFunction._deserialization_locals['updatefunction'] = idempotent
+        # Add `initializer` keyword arg to skip initialization
+        if 'initializer' not in obj:
+            obj['initializer'] = 'do not initialize'
         m = super().parse_obj(obj)
-        m._base_initialize()
-        m.initialize()
+        # Reset deserializaton locals
+        HistoryUpdateFunction._deserialization_locals = stored_locals
         return m
 
-    def _base_initialize(self, shallow_copy=False):
+    def _base_initialize(self,
+                         shallow_copy: bool=False,
+                         update_functions: Optional[dict]=None):
         """
         Collects initialization that should be done in __init__, copy & parse_obj.
         """
-        # Attach history updates (don't do during shallow copy – histories are preserved then)
+        # update_functions should be a dict, and will override update function
+        # defs from the model declaration.
+        # This is used when deserializing a model; not really intended as a
+        # user-facing option.
+        if update_functions is not None:
+            for hist_name, upd_fn in update_functions.items():
+                hist = getattr(self, hist_name)
+                ns = upd_fn.get('namespace', self)
+                if ns is not self:
+                    raise ValueError(
+                        "Specifying the namespace of an update function is "
+                        "not necessary, and if done, should match the model "
+                        "instance where it is defined.")
+                upd_fn['namespace'] = self
+                hist._set_update_function(HistoryUpdateFunction.parse_obj(upd_fn))
+
+        # Otherwise, create history updates from the list of pending update
+        # functions created by metaclass (don't do during shallow copy – histories are preserved then)
         if not shallow_copy:
             for obj in self._pending_update_functions:
+                if obj.hist_nm in update_functions:
+                    # Update function is already set
+                    continue
                 hist = getattr(self, obj.hist_nm)
-                hist.update_function = HistoryUpdateFunction(
+                hist._set_update_function(HistoryUpdateFunction(
                     namespace    = self,
                     func         = obj.upd_fn,  # HistoryUpdateFunction ensures `self` points to the model
                     inputs       = obj.inputs,
-                    parent_model = self
-                )
+                    # parent_model = self
+                ))
+        self._pending_update_functions = {}
         object.__setattr__(self, 'graph_cache',
                            GraphCache('.sinn.graphcache/models', type(self),
                                       modules=('sinn.models',)))
@@ -523,18 +654,18 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             # i.e. extra histories to integrate along with the state.
             # Values of the first are update dictionaries
             # Values of the second are compiled Theano functions.
-        # Create symbolic variables for batches
-        if shim.cf.use_theano:
-            # # Any symbolic function on batches should use these, that way
-            # # other functions can retrieve the symbolic input variables.
-            start = np.array(1).astype(self.tidx_dtype)
-            object.__setattr__(self, 'batch_start_var',
-                               shim.shared(start, name='batch_start'))
-            #     # Must be large enough so that test_value slices are not empty
-            size = np.array(2).astype(self.tidx_dtype)
-            # object.__setattr__(self, 'batch_size_var',
-            #                    shim.shared(size, name='batch_size'))
-            # #     # Must be large enough so that test_value slices are not empty
+        # # Create symbolic variables for batches
+        # if shim.cf.use_theano:
+        #     # # Any symbolic function on batches should use these, that way
+        #     # # other functions can retrieve the symbolic input variables.
+        #     start = np.array(1).astype(self.tidx_dtype)
+        #     object.__setattr__(self, 'batch_start_var',
+        #                        shim.shared(start, name='batch_start'))
+        #     #     # Must be large enough so that test_value slices are not empty
+        #     # size = np.array(2).astype(self.tidx_dtype)
+        #     # object.__setattr__(self, 'batch_size_var',
+        #     #                    shim.shared(size, name='batch_size'))
+        #     # #     # Must be large enough so that test_value slices are not empty
 
     @abc.abstractmethod
     def initialize(self, initializer: Any=None):

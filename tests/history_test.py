@@ -379,44 +379,11 @@ def _test_history_serialization(cgshim):
 
     sinn.config.trust_all_inputs = True
 
-    def hist_compare(hist1, hist2):
-        assert hist1.name == hist2.name
-        assert hist1.shape == hist2.shape
-        assert hist1.dtype == hist2.dtype
-        assert hist1.iterative == hist2.iterative
-        assert hist1.symbolic == hist2.symbolic
-        assert hist1.locked == hist2.locked
-        assert hist1.cur_tidx != hist2.cur_tidx
-        assert hist1.cur_tidx.plain == hist2.cur_tidx.plain
-        assert hist1._num_data is hist1._sym_data
-        assert hist2._num_data is hist2._sym_data
-        assert hist1._num_tidx is hist1._sym_tidx
-        assert hist2._num_tidx is hist2._sym_tidx
-        assert hist1._num_tidx.get_value() is not hist2._num_tidx.get_value()
-        if shim.issparse(hist1.data):
-            assert shim.issparse(hist2.data)
-            assert (hist1.data != hist2.data).size == 0
-            assert all(d1.get_value() is not d2.get_value()
-                       for d1, d2 in zip(hist1._num_data, hist2._num_data))
-        else:
-            assert (hist1.data == hist2.data).all()
-            assert hist1._num_data.get_value() is not hist2._num_data.get_value()
-        assert hist1.time.unit._REGISTRY is hist2.time.unit._REGISTRY
-        assert hist1.time is not hist2.time
-        assert hist1.time == hist2.time
-        assert hist1.time.label == hist2.time.label
-        assert np.all(hist1.time.stops_array == hist2.time.stops_array)
-        assert hist1.time.pad_left  != hist2.time.pad_left
-        assert hist1.time.pad_right != hist2.time.pad_right
-        assert hist1.time.pad_left.plain  == hist2.time.pad_left.plain
-        assert hist1.time.pad_right.plain == hist2.time.pad_right.plain
-
-
     TimeAxis.time_unit = ureg.s
     TimeAxis.time_step = np.float64(2**-8)   #~0.0039. Powers of 2 are more numerically stable
     taxis = TimeAxis(min=0., max=1.)
 
-    TimeAxis.parse_raw(taxis.json())
+    TimeAxis.parse_raw(taxis.json());
 
     # We actually don't need to call `taxis.copy()`, because Pydantic copies all inputs
     series1 = Series(name='series1', time=taxis, shape=(3,), dtype=np.float64)
@@ -535,7 +502,7 @@ def _test_history_serialization(cgshim):
     obj['update_function'] = HistoryUpdateFunction(**obj['update_function'])
     import scipy.sparse
     with pytest.warns(scipy.sparse.SparseEfficiencyWarning):
-        # We know don't want to deal with the efficiency warning atm.
+        # We don't want to deal with the efficiency warning atm.
         spikes3 = Spiketrain(**obj)
 
 
@@ -546,6 +513,41 @@ def _test_history_serialization(cgshim):
     spikes1(60)
     spikes3(60)
     hist_compare(spikes1, spikes3)
+
+def hist_compare(hist1, hist2):
+    assert hist1.name == hist2.name
+    assert hist1.shape == hist2.shape
+    assert hist1.dtype == hist2.dtype
+    assert hist1.iterative == hist2.iterative
+    assert hist1.symbolic == hist2.symbolic
+    assert hist1.locked == hist2.locked
+    assert hist1.cur_tidx != hist2.cur_tidx
+    assert hist1.cur_tidx.plain == hist2.cur_tidx.plain
+    assert hist1._num_data is hist1._sym_data
+    assert hist2._num_data is hist2._sym_data
+    assert hist1._num_tidx is hist1._sym_tidx
+    assert hist2._num_tidx is hist2._sym_tidx
+    assert hist1._num_tidx.get_value() is not hist2._num_tidx.get_value()
+    if shim.issparse(hist1.data):
+        assert shim.issparse(hist2.data)
+        assert (hist1.data != hist2.data).size == 0
+        assert all(d1.get_value() is not d2.get_value()
+                   for d1, d2 in zip(hist1._num_data, hist2._num_data))
+    else:
+        # Don't use method .all(): returns array or scalar depending on whether shapes match
+        assert np.all(hist1.data == hist2.data)
+        assert hist1._num_data.get_value().shape == hist2._num_data.get_value().shape
+        assert np.all(hist1._num_data.get_value() == hist2._num_data.get_value())
+        assert hist1._num_data.get_value() is not hist2._num_data.get_value()
+    assert hist1.time.unit._REGISTRY is hist2.time.unit._REGISTRY
+    assert hist1.time is not hist2.time
+    assert hist1.time == hist2.time
+    assert hist1.time.label == hist2.time.label
+    assert np.all(hist1.time.stops_array == hist2.time.stops_array)
+    assert hist1.time.pad_left  != hist2.time.pad_left
+    assert hist1.time.pad_right != hist2.time.pad_right
+    assert hist1.time.pad_left.plain  == hist2.time.pad_left.plain
+    assert hist1.time.pad_right.plain == hist2.time.pad_right.plain
 
 def test_numhistory_series_indexing():
     return _test_history_series_indexing('numpy')

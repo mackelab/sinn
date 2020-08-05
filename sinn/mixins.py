@@ -31,14 +31,12 @@ class CachedOperation(BaseModel):
         m.cached_ops = []
         # object.__setattr__(m, 'cached_ops', [])
         return m
-    def dict(self, *a, **kw):
-        excl = kw.pop('exclude', None)
-        excl = add_exclude_mask(excl, {'cached_ops'})
-        return super().dict(*a, exclude=excl, **kw)
-    def json(self, *a, **kw):
-        excl = kw.pop('exclude', None)
-        excl = add_exclude_mask(excl, {'cached_ops'})
-        return super().json(*a, exclude=excl, **kw)
+    def dict(self, *a, exclude=None, **kw):
+        exclude = add_exclude_mask(exclude, {'cached_ops'})
+        return super().dict(*a, exclude=exclude, **kw)
+    def json(self, *a, exclude=None, **kw):
+        exclude = add_exclude_mask(exclude, {'cached_ops'})
+        return super().json(*a, exclude=exclude, **kw)
 
     def clear(self, *a, **kw):
         # All cached binary ops are now invalid, so delete them
