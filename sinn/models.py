@@ -2043,6 +2043,26 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                    Equivalent to `static_accumulate`.
         """
         def wrapped_acc(f):
+            # Inspect the signature of `f` to see if there is a `self` argument
+            # If so, attach the model to it.
+            # This is similar to the same pattern used in histories.HistoryUpdateFunction
+            sig = inspect.signature(f)
+            if len(sig.parameters) == 1:
+                # Do not include `self`
+                firstarg = ()
+            elif len(sig.parameters) == 2:
+                first_arg_name = next(iter(inspect.signature(f).parameters.keys()))
+                if first_arg_name != "self":
+                    warn("If an accumulator function accepts two arguments, "
+                         "arguments, the first should be 'self'. "
+                         f"Received '{first_arg_name}'.")
+                firstarg = (self,)
+            else:
+                raise ValueError(
+                    f"The function {func.__qualname__} (signature: {sig}) "
+                    "should accept two arguments (typically ``(self, tidx)``), "
+                    f"but is defined with {len(sig.parameters)}.")
+            # Create the accumulator function
             def accumulated_function(curtidx, batchsize):
                 # Ensuring this works correctly with shared variables would require more testing
                 assert shim.is_pure_symbolic(curtidx) and shim.is_pure_symbolic(batchsize)
@@ -2056,7 +2076,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 # Accumulator variable for the cost. Initialized to zero.
                 cost = shim.shared(np.array(0, dtype='float64'), f"accumulator ({f.__name__})")
                 # Build the computational graph for the step update of the cost
-                shim.add_update(cost, cost + f(self.time.Index(numtidx+start_offset)))
+                shim.add_update(cost, cost + f(*firstarg, self.time.Index(numtidx+start_offset)))
                     # f(…) triggers required history update computations
                 # Convert the step update to an iteration
                 updates = self.convert_point_updates_to_scan(
