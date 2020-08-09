@@ -1491,14 +1491,14 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             # replaced by another shared variable).
             self._compiled_advance_fns.clear()
 
-    def clear_unlocked_histories(self):
-        """Clear all histories that have not been explicitly locked."""
-        #for hist in self.history_inputs.union(sinn.inputs):
-        for hist in self.history_inputs:
-            # HACK: Removal of sinn.inputs is a more drastic version attempt
-            #       at correcting the same problem as fsgif.remove_other_histories
-            if not hist.locked:
-                self.clear_history(hist)
+    # def clear_unlocked_histories(self):
+    #     """Clear all histories that have not been explicitly locked."""
+    #     #for hist in self.history_inputs.union(sinn.inputs):
+    #     for hist in self.history_set:
+    #         # HACK: Removal of sinn.inputs is a more drastic version attempt
+    #         #       at correcting the same problem as fsgif.remove_other_histories
+    #         if not hist.locked:
+    #             self.clear_history(hist)
 
     # def apply_updates(self, update_dict):
     #     """
@@ -1638,8 +1638,11 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             be included; they are added automatically.
             If only one history is specified, it doesn't need to be wrapped in
             a tuple.
+            The value 'all' can be used to specify integrating all histories.
         """
         end = upto
+        if histories == 'all':
+            histories = tuple(h for h in self.unlocked_nonstatehists)
         if isinstance(histories, History):
             histories = (histories,)
         # Remove any locked histories

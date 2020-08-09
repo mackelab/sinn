@@ -1312,7 +1312,7 @@ class History(HistoryBase, abc.ABC):
                        and not self.symbolic):
             warnings.warn("You are locking the unfilled history {}. Trying to "
                            "evaluate it beyond {} will trigger an error."
-                           .format(self.name, self._tarr[self._num_tidx.get_value()]))
+                           .format(self.name, self.cur_tidx))
         self.locked = True
 
     def unlock(self):
