@@ -1465,22 +1465,25 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 for op in obj.cached_ops:
                     for kernel in kernels_to_update:
                         if hash(kernel) in op.cache:
-                            diskcache.save(op.cache[hash(kernel)])
+                            # FIXME: Should use newer mtb.utils.stablehash
+                            obj = op.cache[hash(kernel)]
+                            diskcache.save(str(hash(obj)), obj)
                             # TODO subclass op[other] and define __hash__
                             logger.monitor("Removing cache for binary op {} ({},{}) from heap."
                                         .format(str(op), obj.name, kernel.name))
                             del op.cache[hash(kernel)]
 
         for kernel in kernels_to_update:
-            diskcache.save(kernel)
+            # FIXME: Should use newer mtb.utils.stablehash
+            diskcache.save(str(hash(kernel)), kernel)
             kernel.update_params(**pending_params.dict())
 
         # Update self.params in place; TODO: there's likely a cleaner way
         for nm in pending_params.__fields__:
-            setattr(self.params, getattr(pending_params, nm))
+            setattr(self.params, nm, getattr(pending_params, nm))
         logger.monitor("Model params are now {}.".format(self.params))
 
-        self.clear_unlocked_histories()
+        self.clear()
         if clear_advance_fn:
             # Only clear advance function when necessary, since it forces a
             # recompilation of the graph.

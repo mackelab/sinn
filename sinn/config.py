@@ -22,8 +22,6 @@ debug_level = 2
 # max_eval_cost = 20
     # Provided as argument when calling `shim.eval()` to prevent locking
 
-disk_cache_file = ""
-
 # TODO: floatX, load_librairies should be removed;
 #       shim already provides this
 

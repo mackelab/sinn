@@ -1370,14 +1370,17 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 for op in obj.cached_ops:
                     for kernel in kernels_to_update:
                         if hash(kernel) in op.cache:
-                            diskcache.save(op.cache[hash(kernel)])
+                            # FIXME: Should use newer mtb.utils.stablehash
+                            obj = op.cache[hash(kernel)]
+                            diskcache.save(str(hash(obj)), obj)
                             # TODO subclass op[other] and define __hash__
                             logger.monitor("Removing cache for binary op {} ({},{}) from heap."
                                         .format(str(op), obj.name, kernel.name))
                             del op.cache[hash(kernel)]
 
         for kernel in kernels_to_update:
-            diskcache.save(kernel)
+            # FIXME: Should use newer mtb.utils.stablehash
+            diskcache.save(str(hash(kernel)), kernel)
             kernel.update_params(**pending_params.dict())
 
         # Update self.params in place; TODO: there's likely a cleaner way
