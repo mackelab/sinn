@@ -2,7 +2,7 @@
 """
 Created on Thu Feb 2 2017
 
-Author: Alexandre René
+Copyright 2017-2020 Alexandre René
 """
 import numpy as np
 from collections import OrderedDict

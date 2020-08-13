@@ -3,7 +3,7 @@
 """
 Created on Mon Jan 16 2017
 
-Author: Alexandre René
+Copyright 2017-2020 Alexandre René
 """
 from __future__ import annotations
     # Postponed annotations allow cleaner self-referencing models

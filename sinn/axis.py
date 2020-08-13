@@ -1,4 +1,6 @@
 """
+Copyright 2019,2020 Alexandre René
+
 The `Axis` objects serve as the link between physical and digital dimensions.
 They form the 'frame' around a data object, and provide specialized functions
 for index arithmetic. For more information, see :doc:`/axis`.

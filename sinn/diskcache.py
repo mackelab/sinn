@@ -19,7 +19,7 @@ the following changes:
 
 Created Wed Feb 22 2017
 
-Copyright: 2017,2020 Alexandre René
+Copyright 2017,2020 Alexandre René
 """
 
 import os

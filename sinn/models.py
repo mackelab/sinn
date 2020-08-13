@@ -2,7 +2,7 @@
 """
 Created on Thu Jan 17 2017
 
-Author: Alexandre René
+Copyright 2017-2020 Alexandre René
 
 TODO
 ----
@@ -17,8 +17,6 @@ TODO
 
 import numpy as np
 import scipy as sp
-#from scipy.integrate import quad
-#from collections import namedtuple
 from warnings import warn
 import logging
 logger = logging.getLogger(__name__)
