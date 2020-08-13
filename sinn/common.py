@@ -72,7 +72,7 @@ logger = logging.getLogger('sinn')
 # We use import guards to avoid making 'mackelab' a hard dependency: it's just the provider of the
 # save/load functions
 try:
-    from mackelab.iotools import register_datatype, find_registered_typename
+    from mackelab_toolbox.iotools import register_datatype, find_registered_typename
 except ImportError:
     def register_datatype(type):
         return
