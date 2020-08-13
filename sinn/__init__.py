@@ -1,9 +1,9 @@
-# Set __version__
 from ._globals import _NoValue
 
 import sinn.config as config
 from .common import *
 
+# Set __version__
 import pkg_resources
 __version__ = pkg_resources.require("sinn")[0].version
 config.compat_version = __version__

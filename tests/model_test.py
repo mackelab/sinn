@@ -18,6 +18,7 @@ import mackelab_toolbox.typing
 import mackelab_toolbox.cgshim
 # Deactivate the graph caches for tests
 import mackelab_toolbox.theano
+import mackelab_toolbox.serialize
 mackelab_toolbox.theano.GraphCache.activated = False
 mackelab_toolbox.theano.CompiledGraphCache.activated = False
 mtb.typing.PintUnit.ureg = ureg
@@ -41,7 +42,7 @@ def _test_model(cgshim):
     mtb.typing.freeze_types()
     import sinn
     cd_to_test_dir()
-    sinn.config.trust_all_inputs = True
+    mtb.serialize.config.trust_all_inputs = True
 
     with pytest.warns(UserWarning):
         # Warns that Model has no 'State' class

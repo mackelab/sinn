@@ -19,6 +19,7 @@ from pydantic import ValidationError
 
 import theano_shim as shim
 import mackelab_toolbox as mtb
+import mackelab_toolbox.serialize
 from mackelab_toolbox.transform import Transform
 import mackelab_toolbox.typing
 import mackelab_toolbox.cgshim
@@ -377,7 +378,7 @@ def _test_history_serialization(cgshim):
     from sinn.histories import (
         TimeAxis, HistoryUpdateFunction, Series, Spiketrain, NotComputed)
 
-    sinn.config.trust_all_inputs = True
+    mtb.serialize.config.trust_all_inputs = True
 
     TimeAxis.time_unit = ureg.s
     TimeAxis.time_step = np.float64(2**-8)   #~0.0039. Powers of 2 are more numerically stable

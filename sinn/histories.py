@@ -46,9 +46,11 @@ from mackelab_toolbox.typing import (
 
 from inspect import signature
 
+import mackelab_toolbox as mtb
 from mackelab_toolbox.utils import (
     Stash, fully_qualified_name, broadcast_shapes,
     stablehexdigest, stableintdigest)
+import mackelab_toolbox.serialize
 import sinn
 from sinn.common import HistoryBase, PopulationHistoryBase, KernelBase, TensorWrapper, TensorDims
 import sinn.config as config
@@ -57,7 +59,6 @@ from sinn.axis import unitless, DiscretizedAxis, RangeAxis, ArrayAxis
 from sinn.convolution import ConvolveMixin, deduce_convolve_result_shape
 import sinn.popterm as popterm
 from sinn.utils.pydantic import initializer, add_exclude_mask
-from sinn.utils import function_serialization
 
 
 _NoValue     = sinn._NoValue
@@ -263,7 +264,7 @@ class HistoryUpdateFunction(BaseModel):
     class Config:
         validate_assignment = True  # In order to re-run update_Transform_namespace
         allow_population_by_field_name = True  # Make serialize->deserialize work
-        json_encoders = {**function_serialization.json_encoders,
+        json_encoders = {**mtb.serialize.json_encoders,
                          **mtb.typing.json_encoders}
 
     # ---------------
@@ -375,7 +376,7 @@ class HistoryUpdateFunction(BaseModel):
             if "->" in func.split('\n', 1)[0]:
                 func = Transform(func)
             else:
-                func = function_serialization.deserialize(
+                func = mtb.serialize.deserialize_function(
                     func, globals={}, locals=cls._deserialization_locals)
         return func
 
