@@ -83,7 +83,7 @@ import mackelab_toolbox.units
 from typing import Callable, Optional, Any, Union, Type, ClassVar
 # from types import FunctionType
 from mackelab_toolbox.typing import (
-    Range, Sequence, Number, Integral, Real, NPType, Array, FloatX, AnyUnitType)
+    Range, Sequence, Number, Integral, Real, NPValue, Array, FloatX, AnyUnitType)
 from pydantic import (
     validator, root_validator, BaseModel, ValidationError, Field)
 
@@ -2335,7 +2335,7 @@ class RangeMapping(SequenceMapping):
     __slots__ = ('index_map',)# + ('step_dtype', 'imin', 'imax')
         # `step_dtype` provides fast access to self.__fields__['step'].type_
 
-    # step_dtype : ClassVar[NPType[np.floating]] = np.float64
+    # step_dtype : ClassVar[NPValue[np.floating]] = np.float64
     #     # Use a high-precision type for index calculations
 
     index_range: Range  # No longer any Sequence allowed: must also be regular
@@ -2347,7 +2347,7 @@ class RangeMapping(SequenceMapping):
     step       : Real
     # Use a high-precision type for index calculations
     # Value taken from `step`, as long as it's a 64-bit float.
-    step64     : NPType[np.float64]  = None
+    step64     : NPValue[np.float64]  = None
 
     # index_map overridden just to remove it from json, dict
     # (default values are not exported by default)
@@ -2827,7 +2827,7 @@ class DiscretizedAxis(Axis):
             Can also specify as a string.
         stops_dtype: Dtype, optional. (default: `shim.config.floatX`)
             Type to use for stop values
-        index_dtype: NPType[integer], optional (default: computed)
+        index_dtype: NPValue[integer], optional (default: computed)
             Type to use for index. Generally not necessary to specify: it is
             determined automatically from the length of `stops`.
             Specifically: the smallest possible type is chosen which allows
@@ -2844,7 +2844,7 @@ class DiscretizedAxis(Axis):
     stops    : SequenceMapping
     bin_align: BinAlign = 'centers'
     bin_ref  : BinRef   = 'self'
-    stops_dtype     : NPType[np.generic] = np.dtype(shim.config.floatX).type
+    stops_dtype     : NPValue[np.generic] = np.dtype(shim.config.floatX).type
         # Type to use for stop values
     index_dtype     : Type[np.integer] = None
         # Type to use for index.

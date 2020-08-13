@@ -19,7 +19,7 @@ import dataclasses  # For lighter structures that don't need validation
 from typing import Optional, Tuple, List, Type, Any, Union
 from numbers import Number
 import mackelab_toolbox as mtb
-from mackelab_toolbox.typing import NPType, Slice, FloatX, Tensor
+from mackelab_toolbox.typing import NPValue, Slice, FloatX, Tensor
 from mackelab_toolbox.parameters import ParameterSet
 
 import theano_shim as shim
@@ -99,12 +99,12 @@ class Kernel(ConvolveMixin, com.KernelBase, abc.ABC):
     dtype: Numpy dtype
     """
     name       : str
-    shape      : Tuple[NPType[np.int16], ...]
+    shape      : Tuple[NPValue[np.int16], ...]
     t0         : FloatX   = shim.cast_floatX(0.)
     decay_const: Optional[Tensor[FloatX]]
     memory_time: Optional[FloatX]
     dtype      : Type = np.dtype(shim.config.floatX)
-    ndim       : NPType[np.int8] = None
+    ndim       : NPValue[np.int8] = None
 
     # ----------
     # Pydantic config and validators
@@ -573,12 +573,12 @@ class CompositeKernel(Kernel):
     # ---------
     # Overridden / auto parameters
     name       : Optional[str]
-    shape      : Optional[Tuple[NPType[np.int16], ...]]
+    shape      : Optional[Tuple[NPValue[np.int16], ...]]
     t0         : Optional[FloatX]
     decay_const: Optional[Tensor[FloatX]]
     memory_time: Optional[FloatX]
     dtype      : Optional[Type]
-    ndim       : Optional[NPType[np.int8]]
+    ndim       : Optional[NPValue[np.int8]]
 
     # Validators
     @root_validator(pre=True)
@@ -688,7 +688,7 @@ class ExpKernel(Kernel):
     height     : Tensor[FloatX, 2]
     decay_const: Tensor[FloatX, 2]
     t_offset   : Tensor[FloatX, 2]
-    shape      : Optional[Tuple[NPType[np.int16], ...]]
+    shape      : Optional[Tuple[NPValue[np.int16], ...]]
 
     # Internal variables
     # _memory_blind_time: FloatX
@@ -966,12 +966,12 @@ class KernelWrapper(Kernel):
     wrapped_kernel: Kernel
     # --- Attributes which can be determined from wrapped_kernel ---
     name       : Optional[str]
-    shape      : Optional[Tuple[NPType[np.int16], ...]]
+    shape      : Optional[Tuple[NPValue[np.int16], ...]]
     t0         : Optional[FloatX]
     decay_const: Optional[Tensor[FloatX]]
     memory_time: Optional[FloatX]
     dtype      : Optional[Type]
-    ndim       : Optional[NPType[np.int8]]
+    ndim       : Optional[NPValue[np.int8]]
 
     def __new__(cls, *args, **kwargs):
         if cls is KernelWrapper:
@@ -1026,7 +1026,7 @@ class FactorizedKernel(KernelWrapper):
     """
     # Rename 'wrapped_kernel' to something more intuitive for the public API
     wrapped_kernel : Kernel=Field(..., alias='inner_kernel')
-    outproj: Tensor[NPType[shim.config.floatX]]
+    outproj: Tensor[NPValue[shim.config.floatX]]
         # TODO: Allow any dtype for proj
 
     # ----------
@@ -1088,8 +1088,8 @@ class CompressedKernel(KernelWrapper):
     """
     # Rename 'wrapped_kernel' to something more intuitive for the public API
     wrapped_kernel : Kernel=Field(..., alias='inner_kernel')
-    inproj : Tensor[NPType[shim.config.floatX]]
-    outproj: Tensor[NPType[shim.config.floatX]]
+    inproj : Tensor[NPValue[shim.config.floatX]]
+    outproj: Tensor[NPValue[shim.config.floatX]]
         # TODO: Allow any dtype for proj
 
     # ----------

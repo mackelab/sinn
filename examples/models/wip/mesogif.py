@@ -18,7 +18,7 @@ import theano_shim as shim
 
 from typing import Type, ClassVar
 from pydantic import validator, root_validator
-from mackelab_toolbox.typing import NPType, FloatX
+from mackelab_toolbox.typing import NPValue, FloatX
 
 import mackelab_toolbox.utils as utils
 import sinn

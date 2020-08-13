@@ -20,7 +20,7 @@ mackelab_toolbox.typing.freeze_types()
 
 from typing import Type
 from pydantic import validator, root_validator
-from mackelab_toolbox.typing import NPType, FloatX
+from mackelab_toolbox.typing import NPValue, FloatX
 
 import mackelab_toolbox.utils as utils
 import sinn

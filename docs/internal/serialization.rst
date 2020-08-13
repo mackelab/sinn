@@ -114,7 +114,7 @@ Implementation
      def json_encoder(cls, value):
          return str(value)
 
-NPType
+NPValue
 ------
 
 Description

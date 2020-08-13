@@ -41,7 +41,7 @@ import mackelab_toolbox as mtb
 import mackelab_toolbox.typing
 from mackelab_toolbox.transform import Transform
 from mackelab_toolbox.typing import (
-    Array, NPType, DType, Number, Integral, Real, PintValue, QuantitiesValue,
+    Array, NPValue, DType, Number, Integral, Real, PintValue, QuantitiesValue,
     FloatX)
 
 from inspect import signature
