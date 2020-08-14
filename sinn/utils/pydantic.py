@@ -5,7 +5,7 @@ from inspect import signature
 
 ## initializer decorator
 def initializer(
-    *fields, unintialized=None, pre=True, always=False, **dec_kwargs
+    *fields, uninitialized=None, pre=True, always=False, **dec_kwargs
 ) -> CallableT[[AnyCallable], classmethod]:
     """
     Specialized validator for writing more complex default initializers with
@@ -100,7 +100,7 @@ def initializer(
         for arg in param_args:
             opt_val_args.remove(arg)
         def new_f(cls, v, values, field, config):
-            if not always and v is not unintialized:
+            if not always and v is not uninitialized:
                 return v
             param_kwargs = {}
             params = values.get('params', None)
