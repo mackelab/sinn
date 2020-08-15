@@ -27,7 +27,7 @@ import sinn.common as com
 from sinn.common import TensorWrapper, TensorDims
 import sinn.config as config
 import sinn.mixins as mixins
-import sinn.diskcache as diskcache
+from sinn.diskcache import diskcache
 from sinn.convolution import ConvolveMixin
 from sinn.histories import History, Series
 

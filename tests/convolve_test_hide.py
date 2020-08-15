@@ -253,7 +253,7 @@ def convolve_test(data, data_fn, kernel, true_conv,
                   ):
     """Setting factors to `None` disables corresponding tests."""
 
-    sinn.diskcache.set_file("test_cache.db")
+    sinn.diskcache.diskcache.set_file("test_cache.db")
 
     np.set_printoptions(precision=8)
 
@@ -447,7 +447,7 @@ def convolve_test(data, data_fn, kernel, true_conv,
         print("(kernel): \n", kernelconv)
         print("true:     \n", trueconv)
 
-    sinn.diskcache.unset_file()
+    sinn.diskcache.diskcache.unset_file()
 
     return
 

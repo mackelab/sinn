@@ -50,7 +50,7 @@ from sinn.axis import DiscretizedAxis
 from sinn.histories import (
     History, TimeAxis, AutoHist, HistoryUpdateFunction, Series, Spiketrain)
 from sinn.kernels import Kernel
-import sinn.diskcache as diskcache
+from sinn.diskcache import diskcache
 
 # Import into namespace, so user code doesn't need to import utils
 from sinn.utils.pydantic import initializer, add_exclude_mask

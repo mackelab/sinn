@@ -22,7 +22,7 @@ import theano_shim as shim
 from ._globals import *
 from . import config
 #import sinn.config as config
-import sinn.diskcache as diskcache
+from sinn.diskcache import diskcache
 
 #########################
 # Configure logger
