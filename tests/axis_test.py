@@ -13,6 +13,7 @@ import theano_shim  as shim
 import mackelab_toolbox.cgshim as cgshim
 
 import pytest
+from conftest import clean_theano_dir
 
 if __name__ == "__main__":  # For Hydrogen sessions
     cglib = 'numpy'
@@ -525,19 +526,19 @@ def _test_numeric_indexing(cglib):
 
 def test_num_map_axis():
     _test_map_axis('numpy')
-def test_theano_map_axis():
+def test_theano_map_axis(clean_theano_dir):
     _test_map_axis('theano')
 def test_num_regular_axis():
     _test_regular_axis('numpy')
-def test_theano_regular_axis():
+def test_theano_regular_axis(clean_theano_dir):
     _test_regular_axis('theano')
 def test_num_symbolic_indexing():
     _test_symbolic_indexing('numpy')
-def test_theano_symbolic_indexing():
+def test_theano_symbolic_indexing(clean_theano_dir):
     _test_symbolic_indexing('theano')
 def test_num_numeric_indexing():
     _test_numeric_indexing('numpy')
-def test_theano_numeric_indexing():
+def test_theano_numeric_indexing(clean_theano_dir):
     _test_numeric_indexing('theano')
 
 if __name__ == "__main__":

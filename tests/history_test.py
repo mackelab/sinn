@@ -29,6 +29,7 @@ ureg = pint.UnitRegistry()
 # Series.__fields__
 
 import pytest
+from conftest import clean_theano_dir
 
 # import sys
 # sys.path.append('/home/alex/Recherche/macke_lab/code/sinn/tests')
@@ -552,21 +553,22 @@ def hist_compare(hist1, hist2):
 
 def test_numhistory_series_indexing():
     return _test_history_series_indexing('numpy')
-def test_symhistory_series_indexing():
+def test_symhistory_series_indexing(clean_theano_dir):
+    # monkeypatch.setenv("THEANO_FLAGS", "base_compiledir=~/.theano/pytest/series_indexing")
     return _test_history_series_indexing('theano')
 def test_numhistory_spiketrain_indexing():
     return _test_history_spiketrain_indexing('numpy')
-def test_symhistory_series_updates():
+def test_symhistory_series_updates(clean_theano_dir):
     return _test_history_spiketrain_indexing('theano')
 def test_numhistory_series_updates():
     return _test_history_series_updates('numpy')
-def test_symhistory_series_updates():
+def test_symhistory_series_updates(clean_theano_dir):
     return _test_history_series_updates('theano')
 def test_numhistory_spiketrain_updates():
     return _test_history_spiketrain_updates('numpy')
-def test_symhistory_spiketrain_updates():
+def test_symhistory_spiketrain_updates(clean_theano_dir):
     return _test_history_spiketrain_updates('theano')
 def test_numhistory_serialization():
     return _test_history_serialization('numpy')
-def test_symhistory_serialization():
+def test_symhistory_serialization(clean_theano_dir):
     return _test_history_serialization('theano')

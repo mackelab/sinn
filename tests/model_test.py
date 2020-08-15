@@ -24,6 +24,7 @@ mackelab_toolbox.theano.CompiledGraphCache.activated = False
 mtb.typing.PintUnit.ureg = ureg
 
 import pytest
+from conftest import clean_theano_dir
 import scipy.sparse
 
 # Change current directory to sinn/tests
@@ -132,7 +133,7 @@ def model_compare(model1, model2):
     for attr in (attr for attr,v in model1.__dict__.items() if isinstance(v, History)):
         hist_compare(getattr(model1, attr), getattr(model2, attr))
 
-def test_model_theano():
+def test_model_theano(clean_theano_dir):
     return _test_model('theano')
 def test_model_numpy():
     return _test_model('numpy')
