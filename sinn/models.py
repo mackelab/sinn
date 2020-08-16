@@ -7,7 +7,7 @@ Copyright 2017-2020 Alexandre René
 TODO
 ----
 
-- At present, things link ``h for h not in model.statehists`` will use __eq__
+- At present, things link ``h for h in model.statehists`` will use __eq__
   for the ``in`` check, which for histories creates a dict and compares.
   Iterables like `statehists` should be something like a ``set``, such that
   this check then just compares identity / hashes.
@@ -510,7 +510,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     # ALTERNATIVE: Have a SimpleNamespace attribute `priv` in which to place
     #              private attributes, instead of listing them all here.
     __slots__ = ('graph_cache', 'compile_cache', '_pymc', #'batch_start_var', 'batch_size_var',
-                 '_num_tidx', '_curtidx', '_stoptidx_var', '_batchsize_var',
+                 '_num_tidx', '_curtidx_var', '_stoptidx_var', '_batchsize_var',
                  '_advance_updates', '_compiled_advance_fns')
 
     class Config:
@@ -552,7 +552,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     def copy(self, *args, deep=False, **kwargs):
         m = super().copy(*args, deep=deep, **kwargs)
         m._base_initialize(shallow_copy=not deep)
-        m.initialize()
+        # m.initialize()
         return m
 
     def dict(self, *args, exclude=None, **kwargs):
@@ -570,12 +570,16 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # dependence.
         hists = {attr: hist for attr,hist in self.__dict__.items()
                  if isinstance(hist, History)}
-        assert all(h.update_function.namespace is self
-                   for h in hists.values())
+        # TODO: Any way to assert the integrity of the namespace ? We would
+        #       to execute the assertion below, but during a shallow copy, a
+        #       2nd model is created with the same histories; since `namespace`
+        #       can't point to both, the assertion fails.
+        # assert all(h.update_function.namespace is self
+        #            for h in hists.values())
         excl_nmspc = {attr: {'update_function': {'namespace'}}
                       for attr in hists}
         exclude = add_exclude_mask(exclude, excl_nmspc)
-        # Preceed with parent's dict method
+        # Proceed with parent's dict method
         return super().dict(*args, exclude=exclude, **kwargs)
 
     @classmethod
@@ -608,6 +612,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                          update_functions: Optional[dict]=None):
         """
         Collects initialization that should be done in __init__, copy & parse_obj.
+
+        Both arguments are meant for internal use and documented with comments
+        in the source code.
         """
         # update_functions should be a dict, and will override update function
         # defs from the model declaration.
