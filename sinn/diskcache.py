@@ -72,6 +72,20 @@ class DiskCache:
         self._disk_cache_path = None
     atexit.register(unset_file)
 
+    def __getitem__(self, key):
+        return self.load(key)
+
+    def __setitem__(self, key, obj):
+        return self.save(key, obj)
+
+    def __contains__(self, key):
+        try:
+            self.__getitem__(key)
+        except KeyError:
+            return False
+        else:
+            return True
+
     def load(self, key):
         """Retrieve an object from the on-disk cache.
         `key` corresponds to the object's hash.
@@ -100,6 +114,7 @@ class DiskCache:
     def save(self, key, obj):
         """Save an object to the on disk cache.
         """
+        key = str(key) # shelve module wants strings
         if self._disk_cache_path is None:
             # There is no disk cache
             return
