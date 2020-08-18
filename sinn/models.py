@@ -549,6 +549,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         If `ModelClass` is passed (usually a string from the serialized model),
         the corresponding model type is loaded from those registered with
         mtb.iotools. Class construction is then diverted to that subclass.
+        `ModelClass` also serves as a flag, to indicate that we are
+        reconstructing a model (either from memory or disk), and so that it
+        should not be initialized.
         """
         if ModelClass is not None:
             if isinstance(ModelClass, str):
@@ -558,11 +561,20 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                     raise ValueError(f"Unrecognized model type '{ModelClass}'."
                                      ) from e
             assert isinstance(ModelClass, type) and issubclass(ModelClass, cls)
-            return ModelClass.__new__(ModelClass)
+            if 'initializer' not in kwargs:
+                kwargs['initializer'] = 'do not initialize'
+            # IMPORTANT: __init__ will still be called with original sig,
+            # so setting 'initializer' needs to be done there too.
+            # If there are more sig. changes, we may want to call __init__
+            # here ourselves, and e.g. set a '_skip_init' attribute
+            return ModelClass.__new__(ModelClass, **kwargs)
         else:
             return super().__new__(cls)
 
     def __init__(self, initializer=None, ModelClass=None, **kwargs):
+        # Recognize if being deserialized, as we do in __new__
+        if ModelClass is not None and initializer is None:
+            initializer = 'do not initialize'
         # Any update function specification passed as argument needs to be
         # extracted and passed to _base_initialize, because update functions
         # can't be created until the model (namespace) exists
@@ -618,27 +630,10 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
     @classmethod
     def parse_obj(cls, obj):
-        # Add @updatefunction decorator to those recognized by function deserializer
-        # To avoid user surprises, we cache the current state of
-        # HistoryUpdateFunction._deserialization_locals, update the variable,
-        # then return to the original state once we are done
-        # Remark: We don't use the 'PendingUpdateFunction' mechanism, (we pass
-        #    the update_functions dicts to _base_initialize instead) so in fact
-        #    we just replace @updatefunction by an idempotent function.
-        def idempotent(hist_nm, inputs=None):
-            def dec(f):
-                return f
-            return dec
-        stored_locals = HistoryUpdateFunction._deserialization_locals
-        if 'updatefunction' not in HistoryUpdateFunction._deserialization_locals:
-            HistoryUpdateFunction._deserialization_locals = HistoryUpdateFunction._deserialization_locals.copy()
-            HistoryUpdateFunction._deserialization_locals['updatefunction'] = idempotent
         # Add `initializer` keyword arg to skip initialization
         if 'initializer' not in obj:
             obj['initializer'] = 'do not initialize'
         m = super().parse_obj(obj)
-        # Reset deserializaton locals
-        HistoryUpdateFunction._deserialization_locals = stored_locals
         return m
 
     def _base_initialize(self,
@@ -650,11 +645,29 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         Both arguments are meant for internal use and documented with comments
         in the source code.
         """
-        # update_functions should be a dict, and will override update function
-        # defs from the model declaration.
-        # This is used when deserializing a model; not really intended as a
-        # user-facing option.
         if update_functions is not None:
+            # 1) update_functions should be a dict, and will override update function
+            # defs from the model declaration.
+            # This is used when deserializing a model; not really intended as a
+            # user-facing option.
+            # 2) Add @updatefunction decorator to those recognized by function deserializer
+            # To avoid user surprises, we cache the current state of
+            # HistoryUpdateFunction._deserialization_locals, update the variable,
+            # then return to the original state once we are done
+            # Remark: For explicitly passed update functions, we don't use the
+            #    'PendingUpdateFunction' mechanism, so in fact
+            #    we just replace @updatefunction by an idempotent function.
+            def idempotent(hist_nm, inputs=None):
+                def dec(f):
+                    return f
+                return dec
+            # Stash _deserialization_locals
+            stored_locals = HistoryUpdateFunction._deserialization_locals
+            # Insert substitute @updatefunction decorator
+            if 'updatefunction' not in HistoryUpdateFunction._deserialization_locals:
+                HistoryUpdateFunction._deserialization_locals = HistoryUpdateFunction._deserialization_locals.copy()
+                HistoryUpdateFunction._deserialization_locals['updatefunction'] = idempotent
+            # Attach all explicitly passed update functions
             for hist_name, upd_fn in update_functions.items():
                 hist = getattr(self, hist_name)
                 ns = upd_fn.get('namespace', self)
@@ -665,6 +678,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                         "instance where it is defined.")
                 upd_fn['namespace'] = self
                 hist._set_update_function(HistoryUpdateFunction.parse_obj(upd_fn))
+            # Reset deserializaton locals
+            HistoryUpdateFunction._deserialization_locals = stored_locals
 
         # Otherwise, create history updates from the list of pending update
         # functions created by metaclass (don't do during shallow copy – histories are preserved then)
