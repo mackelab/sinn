@@ -39,12 +39,13 @@ from pydantic import validator, root_validator, BaseModel, Field
 from pydantic.typing import Type
 import mackelab_toolbox as mtb
 import mackelab_toolbox.typing
+import mackelab_toolbox.iotools
 from mackelab_toolbox.transform import Transform
 from mackelab_toolbox.typing import (
     Array, NPValue, DType, Number, Integral, Real, PintValue, QuantitiesValue,
     FloatX)
 
-from inspect import signature
+from inspect import signature, isabstract
 
 import mackelab_toolbox as mtb
 from mackelab_toolbox.utils import (
@@ -639,6 +640,11 @@ class History(HistoryBase, abc.ABC):
         # extra = 'allow'
         json_encoders = {**HistoryUpdateFunction.Config.json_encoders,
                          **mtb.typing.json_encoders}
+
+    # Register subclasses so they can be deserialized
+    def __init_subclass__(cls):
+        if not isabstract(cls):
+            mtb.iotools.register_datatype(cls)
 
     def __init__(self, *,
                  template :History=None,
@@ -3624,8 +3630,3 @@ History.update_forward_refs()
 PopulationHistory.update_forward_refs()
 Spiketrain.update_forward_refs()
 Series.update_forward_refs()
-
-sinn.common.register_datatype(History)
-sinn.common.register_datatype(PopulationHistory)
-sinn.common.register_datatype(Spiketrain)
-sinn.common.register_datatype(Series)

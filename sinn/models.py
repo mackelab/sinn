@@ -40,6 +40,7 @@ import mackelab_toolbox as mtb
 import mackelab_toolbox.utils as utils
 import mackelab_toolbox.theano
 import mackelab_toolbox.typing
+import mackelab_toolbox.iotools
 from mackelab_toolbox.theano import GraphCache, CompiledGraphCache
 from mackelab_toolbox.utils import class_or_instance_method
 
@@ -188,6 +189,12 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
             # pending updates use a dict to allow derived classes to override
 
         # Model validation
+        ## Disallowed attributes
+        for attr in ['ModelClass']:
+            if attr in annotations:
+                raise TypeError(f"The attribute '{attr}' is disallowed for "
+                                "subclasses of 'sinn.models.Model'.")
+
         ## `time` parameter
         if 'time' not in annotations:
             annotations['time'] = TimeAxis
@@ -531,7 +538,31 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         """
         pass
 
-    def __init__(self, initializer=None, **kwargs):
+    # Register subclasses so they can be deserialized
+    def __init_subclass__(cls):
+        if not inspect.isabstract(cls):
+            mtb.iotools.register_datatype(cls)
+
+    def __new__(cls, ModelClass=None, **kwargs):
+        """
+        Allow instantiating a more specialized Model from the base class.
+        If `ModelClass` is passed (usually a string from the serialized model),
+        the corresponding model type is loaded from those registered with
+        mtb.iotools. Class construction is then diverted to that subclass.
+        """
+        if ModelClass is not None:
+            if isinstance(ModelClass, str):
+                try:
+                    ModelClass = mtb.iotools._load_types[ModelClass]
+                except KeyError as e:
+                    raise ValueError(f"Unrecognized model type '{ModelClass}'."
+                                     ) from e
+            assert isinstance(ModelClass, type) and issubclass(ModelClass, cls)
+            return ModelClass.__new__(ModelClass)
+        else:
+            return super().__new__(cls)
+
+    def __init__(self, initializer=None, ModelClass=None, **kwargs):
         # Any update function specification passed as argument needs to be
         # extracted and passed to _base_initialize, because update functions
         # can't be created until the model (namespace) exists
@@ -580,7 +611,10 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                       for attr in hists}
         exclude = add_exclude_mask(exclude, excl_nmspc)
         # Proceed with parent's dict method
-        return super().dict(*args, exclude=exclude, **kwargs)
+        obj = super().dict(*args, exclude=exclude, **kwargs)
+        # Add the model name
+        obj['ModelClass'] = mtb.iotools.find_registered_typename(self)
+        return obj
 
     @classmethod
     def parse_obj(cls, obj):
