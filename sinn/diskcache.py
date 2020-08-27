@@ -39,6 +39,7 @@ class DiskCache:
     def __init__(self, path=None):
         self._disk_cache_path = None
         self.set_file(path)
+        atexit.register(self.unset_file)
 
     def set_file(self, pathname):
         # Remove previous cache file from disk
@@ -70,7 +71,6 @@ class DiskCache:
         for path in self._db_paths:
             os.remove(path)
         self._disk_cache_path = None
-    atexit.register(unset_file)
 
     def __getitem__(self, key):
         return self.load(key)
