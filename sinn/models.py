@@ -225,7 +225,7 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
                 _model_identifiers.add(nm)
             elif isinstance(T, PendingUpdateFunction):
                 # FIXME: Remove. I don't remember why I originally put this branch
-                assert False
+                raise AssertionError("Leftover PendingUpdateFunction")
                 # _pending_update_functions.append(obj)
 
         # Sanity check State subclass
@@ -394,7 +394,9 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
                         fn_nm = f"autohist_{nm}_{i}"
                         if fn_nm not in namespace:
                             break
-                    assert fn_nm not in namespace
+                    if fn_nm in namespace:
+                        raise AssertionError("ModelMetaclass.__new__: The function "
+                                             "'{fn_nm}' is already in the namespace.")
                 if T is None:
                     raise TypeError("`AutoHist` must follow a type annotation.")
                 if T is Series:
@@ -556,11 +558,13 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         if ModelClass is not None:
             if isinstance(ModelClass, str):
                 try:
+                    # TODO: Fix API so we don't need to use private _load_types
                     ModelClass = mtb.iotools._load_types[ModelClass]
                 except KeyError as e:
                     raise ValueError(f"Unrecognized model type '{ModelClass}'."
                                      ) from e
-            assert isinstance(ModelClass, type) and issubclass(ModelClass, cls)
+            if not (isinstance(ModelClass, type) and issubclass(ModelClass, cls)):
+                raise AssertionError(f"Model.__new__: {ModelClass} is not a subclass of {cls}.")
             if 'initializer' not in kwargs:
                 kwargs['initializer'] = 'do not initialize'
             # IMPORTANT: __init__ will still be called with original sig,
@@ -817,7 +821,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         if isinstance(outputs, History):
             outputs = [outputs]
         else:
-            assert(all(isinstance(output, History) for output in outputs))
+            if not all(isinstance(output, History) for output in outputs):
+                raise AssertionError("Model.output_rng: not all listed outputs "
+                                     f"are histories.\nOutputs: {outputs}.")
         try:
             len(rngs)
         except TypeError:
@@ -2140,6 +2146,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 cost_total = updates.pop(cost)
                 shim.add_updates(updates)
                 return cost_total, shim.get_updates()
+            # Attach the original function, so we can use it for serialization
+            accumulated_function.__func__ = f
+            # Define name and docstring of the new function based on the original
             accumulated_function.__name__ = f"accumulated_{f.__name__}"
             accumulated_function.__doc__ = ("This function accumulates (sums) the values "
                                             f"of the function `{f.__name__}` from "
