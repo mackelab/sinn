@@ -515,6 +515,11 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
        meant to be subclassed rather than used on its own), add `abc.ABC` to
        its parents – this will identify your model as abstract, and disable
        warnings about missing attributes like `State`.
+
+    .. Warning::
+       If you need to set the model to a predictable state, use the provided
+       `~Model.reseed_rngs` method. Simply setting the state of `self.rng`
+       will work for NumPy RNGs, but not symbolic ones.
     """
     # ALTERNATIVE: Have a SimpleNamespace attribute `priv` in which to place
     #              private attributes, instead of listing them all here.
@@ -1421,10 +1426,23 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     def theano_reset(self, warn_rng=True):
         """
         Put model back into a clean state, to allow building a new Theano graph.
+
+        .. warning:: If there are dependencies on RNGs, those will be removed.
+           This is necessary to avoid having disconnected RNGs appear in the
+           symbolic graph. For NumPy RNGs, this is inconsequential.
+           However, for Theano RNGs, this means that `self.rng.seed(0)`
+           **will not set the simulator in a predictable state**. The reason
+           is that when using Theano, `self.rng` is in fact a *collection* of
+           RNGs. When we remove an RNG from this collection, `self.seed` then
+           has no way of knowing it should reset it.
+
+           The method `self.reseed_rngs` is provided to reseed the RNGs created
+           and disconnected by `get_advance_updates`.
+
         :param warn_rng: If True (default), emit a warning if updates to a
             random number generator were cleared.
 
-        **Side-effecs**: Clears all shim symbolic updates in shim.
+        **Side-effects**: Clears all shim symbolic updates in shim.
         """
         shim.reset_updates()
 
@@ -1444,6 +1462,25 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                      "invalidated.\n"
                      "RNG: {}".format(rng))
             rng.state_updates = []
+
+    def reseed_rngs(self, seed):
+        """
+        Reset all model RNGs into a predictable state.
+        """
+        # TODO?: Allow resetting only certain entries in _advance_updates ?
+        #        Or: Option for each entry to be seeded the same way ?
+        shim.reseed_rng(self.rng, seed)
+        # Find all the Theano RNG streams and reseed them.
+        # This is analogous to what `seed` does with the streams listed in `rng.state_updates`
+        srs = sys.modules.get('theano.tensor.shared_randomstreams', None)
+        if srs is not None:
+            seedgen = self.rng.gen_seedgen  # Was seeded by `reseed_rng` above
+            for update_dict in self._advance_updates.values():
+                for v in update_dict:
+                    if isinstance(v, srs.RandomStateSharedVariable):
+                        old_r_seed = seedgen.randint(2 ** 30)
+                        v.set_value(np.random.RandomState(int(old_r_seed)),
+                                    borrow=True)
 
     def update_params(self, new_params, **kwargs):
         """
