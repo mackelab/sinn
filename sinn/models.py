@@ -34,7 +34,7 @@ import sys
 import pydantic
 from pydantic import BaseModel, validator, root_validator
 from pydantic.typing import AnyCallable
-from typing import Any, Optional, Union, Tuple
+from typing import Any, Optional, Union, Tuple, Sequence
 from types import SimpleNamespace
 
 import theano_shim as shim
@@ -1095,19 +1095,26 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                     break
         return rng_hists
 
-    @property
-    def cur_tidx(self):
+    def get_min_tidx(self, histories: Sequence[History]):
         """
         Return the earliest time index for which all histories are computed.
         """
         try:
             return min(h.cur_tidx.convert(self.time.Index)
-                       for h in self.statehists)
+                       for h in histories)
         except IndexError as e:
             raise IndexError(
                 "Unable to determine a current index for "
                 f"{type(self).__name__}. This usually happens accessing "
                 "`cur_tidx` before a model is initialized.") from e
+
+    @property
+    def cur_tidx(self):
+        """
+        Return the earliest time index for which all state histories are computed.
+        """
+        return self.get_min_tidx(self.statehists)
+
 
     # Symbolic variables for use when compiling unanchored functions
     # Building as `shim.tensor(np.array(...))` assigns a test value to the
@@ -1168,8 +1175,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                                            name='batchsize (model)'))
         return self._batchsize_var
 
-    @property
-    def num_tidx(self):
+    def get_num_tidx(self, histories: Sequence[History]):
         """
         A shared variable corresponding to the current time point of
         the model. This is only defined if all histories are synchronized.
@@ -1189,20 +1195,29 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
            return the original underlying symbolic variable (the one which
            appears in graphs), I will gladly change this method to return a
            proper symbolic index.
+
+        Parameters
+        ----------
+        histories: Set of histories
         """
         if not self.histories_are_synchronized():
             raise RuntimeError(
                 f"Histories for the {type(self).__name__}) are not all "
                 "computed up to the same point. The compilation of the "
                 "model's integration function is ill-defined in this case.")
+        tidx = self.get_min_tidx(histories)
         if not hasattr(self, '_num_tidx'):
             object.__setattr__(
                 self, '_num_tidx',
-                shim.shared(np.array(self.cur_tidx, dtype=self.tidx_dtype),
+                shim.shared(np.array(tidx, dtype=self.tidx_dtype),
                             f"t_idx ({type(self).__name__})") )
         else:
-            self._num_tidx.set_value(self.cur_tidx)
+            self._num_tidx.set_value(tidx)
         return self._num_tidx
+
+    @property
+    def num_tidx(self):
+        return self.get_num_tidx(self.statehists)
 
     def histories_are_synchronized(self):
         """
@@ -1853,8 +1868,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             #         "evaluate them with `eval_updates` (providing values "
             #         "with the `givens` argument) before advancing the model."
             #         .format(shim.graph.inputs(shim.get_updates().values())))
-            curtidx = self.cur_tidx
+            curtidx = self.get_min_tidx(histories + tuple(self.statehists))
             assert(curtidx >= -1)
+
 
             if curtidx < endtidx:
                 self._advance(histories)(curtidx, endtidx+1)
@@ -2029,9 +2045,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             # The way we do this, at time point k, we evaluate k+1
             # => Start iterations at the _current_ k, and stop one early
             # => curtidx is included below, and we do stoptidx-1
-        return self.convert_point_updates_to_scan(shim.get_updates(), curtidx, stoptidx-1)
+        return self.convert_point_updates_to_scan(shim.get_updates(), curtidx, stoptidx-1, histories)
 
-    def convert_point_updates_to_scan(self, updates=None, curtidx=None, stoptidx=None):
+    def convert_point_updates_to_scan(self, updates=None, curtidx=None, stoptidx=None, histories=None):
         """
         Convert the current point-wise updates in the global shim update
         dictionary, and convert them to an scan graph with start and end given
@@ -2057,6 +2073,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         stoptidx: symbolic (int)
             Default: `self.stoptidx_var`
             We want to compute the model up to this point exclusive.
+        histories: Sequence[History]
+            Default: `self.unlocked_statehists`
+            The chosen anchor_tidx will allow each of these histories to be computed.
 
         Returns
         -------
@@ -2085,6 +2104,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         if updates  is None: updates = shim.get_updates()
         if curtidx  is None: curtidx = self.curtidx_var
         if stoptidx is None: stoptidx = self.stoptidx_var
+        if histories is None: histories = tuple(self.unlocked_statehists)
 
         if not all(np.can_cast(stoptidx.dtype, hist.tidx_dtype)
                    for hist in self.statehists):
@@ -2105,7 +2125,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             pass
 
         # First, declare a “anchor” time index
-        anchor_tidx = self.num_tidx
+        # HACK: I've had cases where all my state histories were locked, which is why I add the locked state histories as well
+        anchor_tidx = self.get_num_tidx(histories+tuple(self.statehists))
         if not self.time.Index(anchor_tidx+1).in_bounds:
             raise RuntimeError(
                 "In order to compute a scan function, the model must "
