@@ -1229,6 +1229,13 @@ class History(HistoryBase, abc.ABC):
         """
         axis_index = self.time.index(key)
             # axis_index may be scalar, slice or array, but always positive.
+        if isinstance(axis_index, slice) and axis_index.start == axis_index.stop:
+            # Empty slice => nothing to do
+            return
+        elif (hasattr(axis_index, 'shape')
+              and len(axis_index.shape) > 0 and axis_index.shape[0] == 0):
+            # Empty array => nothing to do
+            return
         if (self._sym_data is not self._num_data
             or self._sym_tidx is not self._num_tidx):
             raise RuntimeError(
