@@ -1699,11 +1699,17 @@ class History(HistoryBase, abc.ABC):
         """
         slc = self.time.data_index_slice(time_slice, include_padding=include_padding)
         start = slc.start
-        stop  = min(slc.stop , self.cur_tidx.data_index+1)
-        if start+1 == stop or start > self.cur_tidx.data_index:
+        try:
+            stop  = min(slc.stop , self.cur_tidx.data_index+1)
+            if start+1 == stop or start > self.cur_tidx.data_index:
+                raise IndexError
+        except IndexError:
+            # Can arrive here either by self.cur_tidx.data_index raising,
+            # or the explicite raise IndexError above
             warn("`get_time_array` returned an empty slice, presumably "
                 "because the history hasn't been computed.\n"
                 f"History: {self.name}, current tidx: {self.cur_tidx}.")
+            stop = start
         return self.time.padded_stops_array[slice(start, stop)]
         # return self._tarr[self._get_time_index_slice(time_slice, include_padding)]
 
