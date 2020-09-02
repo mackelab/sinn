@@ -14,6 +14,7 @@ TODO
 - Have one dictionary/SimpleNamespace storing all compilation variables.
   See comment under `class Model`
 """
+from __future__ import annotations
 
 import numpy as np
 import scipy as sp
@@ -34,6 +35,7 @@ import pydantic
 from pydantic import BaseModel, validator, root_validator
 from pydantic.typing import AnyCallable
 from typing import Any, Optional, Union, Tuple
+from types import SimpleNamespace
 
 import theano_shim as shim
 import mackelab_toolbox as mtb
@@ -104,6 +106,47 @@ def get_model(modelname, *args, **kwargs):
 class ModelParams(BaseModel):
     class Config:
         json_encoders = mtb.typing.json_encoders
+
+    def get_values(self):
+        """
+        Helper method which calls `get_value` on each parameter.
+        Returns a copy of the ModelParams, where each shared variable has
+        been replaced by its current numeric value.
+        """
+        d = {k: v.get_value() if shim.isshared(v) else v
+             for k,v in self}
+        return SimpleNamespace(**d)
+
+    def set_values(self, values: ModelParams):
+        """
+        TODO: The annotation is not quite correct. Values should be Params-like,
+              but contain no symbolic variables.
+              (Typically, ModelParams subclasses _enforce_ certain params to be
+              shared vars)
+        Helper method which calls `set_value` on each parameter.
+        For non-shared variables, the value is simply updated.
+        Values are updated in place.
+        """
+        if isinstance(values, dict):
+            values_dict = values
+            assert set(values_dict) == set(self.__fields__)
+        elif isinstance(values, SimpleNamespace):
+            values_dict = values.__dict__
+            assert set(values_dict) == set(self.__fields__)
+        elif isinstance(values, type(self)):
+            values_dict = {k: v for k,v in values}
+        else:
+            # `self` is always a subclass, and we want `values` to be instance of that subclass
+            raise TypeError(f"{type(self)}.set_values: `values` must be an "
+                            f"instance of {type(self)}, but is rather of type "
+                            f"{type(values)}.")
+        for k, v in values_dict.items():
+            self_v = getattr(self, k)
+            if shim.isshared(self_v):
+                self_v.set_value(v)
+            else:
+                setattr(self, k, v)
+ModelParams.update_forward_refs()
 
 # Model decorators
 
@@ -180,6 +223,14 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
             *({obj.hist_nm: obj for obj in getattr(b, '_pending_update_functions', [])}
               for b in bases)))
 
+        # Resolve string annotations (for 3.9+, annotations are always strings)
+        for nm, annot in annotations.items():
+            if isinstance(annot, str):
+                # To support forward refs, we leave as-is if undefined
+                # Certain annotations (e.g. time) we need immediately, which
+                # is why we do this before the class is defined
+                annotations[nm] = sys.modules[metacls.__module__].__dict__.get(annot, annot)
+
         # Structures which accumulate the new class attributes
         new_annotations = {}
         _kernel_identifiers = inherited_kernel_identifiers
@@ -202,7 +253,8 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
             if (not isinstance(annotations['time'], type)
                 or not issubclass(annotations['time'], DiscretizedAxis)):
                 raise TypeError(
-                    "`time` attribute must be an instance of `DiscretizedAxis`; "
+                    "`time` attribute must be an instance of `DiscretizedAxis` "
+                    f"(it has type {type(annotations['time'])}); "
                     "in general `histories.TimeAxis` is an appropriate type.")
         # ## 'initialize' method
         # if not isinstance(namespace.get('initialize', None), Callable):
@@ -250,6 +302,10 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
             #     raise TypeError(
             #         f"Model {cls}: Variables declared in `State` are not all "
             #         "declared as histories in the model.")
+            # Resolve string annotations (for 3.9+, annotations are always strings)
+            for nm, annot in State.__annotations__.items():
+                if isinstance(annot, str):
+                    State.__annotations__[nm] = sys.modules[metacls.__module__].__dict__.get(annot, annot)
             for nm, T in State.__annotations__.items():
                 histT = all_annotations.get(nm, None)
                 if histT is None:
@@ -348,12 +404,15 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         # the list of variables so that initializers can find it.
         if 'params' in new_annotations:
             ann_params = new_annotations['params']
-            if new_annotations['params'] is not Parameters:
+            if new_annotations['params'] == 'Parameters':
+                new_annotations['params'] = Parameters
+            elif new_annotations['params'] is not Parameters:
                 if isinstance(ann_params, type) and issubclass(Parameters, ann_params):
                     new_annotations['params'] = Parameters
                 else:
                     raise TypeError(f"Model {cls} defines `params` but it is "
-                                    f"not of type `{cls}.Parameters`")
+                                    f"not of type `{cls}.Parameters`. "
+                                    f"(Instead it is of type `{type(ann_params)}`)")
             new_annotations = {'params': new_annotations.pop('params'),
                                **new_annotations}
         elif issubclass(Parameters, abc.ABC):
