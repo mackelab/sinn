@@ -104,7 +104,7 @@ class DiskCache:
             raise KeyError
         try:
             with shelve.open(self._disk_cache_path) as db:
-                logger.info(f"Loading {str(key)} from disk cache.")
+                logger.debug(f"Loading {str(key)} from disk cache.")
                 return db[key]
         except FileNotFoundError:
             logger.warning("Unable to open the disk cache file '{}'"
@@ -118,7 +118,7 @@ class DiskCache:
         if self._disk_cache_path is None:
             # There is no disk cache
             return
-        logger.info("Saving {} to disk cache.".format(str(obj)))
+        logger.debug("Saving {} to disk cache.".format(str(obj)))
         try:
             with shelve.open(self._disk_cache_path) as db:
                 db[key] = obj
