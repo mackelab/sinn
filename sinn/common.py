@@ -11,6 +11,7 @@ import logging
 from enum import IntEnum, Enum
 import numpy as np
 from collections import namedtuple, deque
+from types import SimpleNamespace
 
 from typing import Tuple
 import dataclasses
@@ -138,6 +139,18 @@ class TensorWrapper:
     #     labeled_axes = set(self.dims.covariant) | set(self.dims.contravariant) | set(self.dims.contraction)
     #     if len(axes) > len(labeled_axes):
     #         self.dims.covariant = Tuple(ax for ax in axes if ax in self.dims.covariant or ax not in labeled_axes):
+
+class IndexableNamespace(SimpleNamespace):
+    def __getitem__(self, key):
+        return self.__dict__[key]
+
+    # Required to behave like a mapping, otherwise Pydantic gets confused
+    def __iter__(self):
+        return iter(self.__dict__)
+    def keys(self):
+        return self.__dict__.keys()
+    def values(self):
+        return self.__dict__.values()
 
 ###########################
 # Utility functions

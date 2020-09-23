@@ -115,9 +115,11 @@ class ModelParams(BaseModel):
         """
         d = {k: v.get_value() if shim.isshared(v) else v
              for k,v in self}
-        return SimpleNamespace(**d)
+        return com.IndexableNamespace(**d)
 
-    def set_values(self, values: ModelParams):
+    def set_values(self, values: ModelParams,
+                   must_set_all_params: bool=False,
+                   must_not_set_other_params: bool=True):
         """
         TODO: The annotation is not quite correct. Values should be Params-like,
               but contain no symbolic variables.
@@ -126,13 +128,19 @@ class ModelParams(BaseModel):
         Helper method which calls `set_value` on each parameter.
         For non-shared variables, the value is simply updated.
         Values are updated in place.
+
+        Parameters
+        ----------
+        values: Dictionary of values to set
+        must_set_all_params:
+            Whether the model params must be a subset of `values`.
+        must_not_set_other_params:
+            Whether `values` must be a subset of the model params.
         """
         if isinstance(values, dict):
             values_dict = values
-            assert set(values_dict) == set(self.__fields__)
         elif isinstance(values, SimpleNamespace):
             values_dict = values.__dict__
-            assert set(values_dict) == set(self.__fields__)
         elif isinstance(values, type(self)):
             values_dict = {k: v for k,v in values}
         else:
@@ -140,6 +148,12 @@ class ModelParams(BaseModel):
             raise TypeError(f"{type(self)}.set_values: `values` must be an "
                             f"instance of {type(self)}, but is rather of type "
                             f"{type(values)}.")
+        if must_set_all_params and not set(self.__fields__) <= set(values_dict):
+            raise ValueError("The following parameters are missing: "
+                             f"{set(self.__fields__) - set(values_dict)}")
+        if must_not_set_other_params and not set(values_dict) <= set(self.__fields__):
+            raise ValueError("The following parameters are not recognized by the model: "
+                             f"{set(values_dict) - set(self.__fields__)}")
         for k, v in values_dict.items():
             self_v = getattr(self, k)
             if shim.isshared(self_v):
