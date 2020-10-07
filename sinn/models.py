@@ -661,11 +661,18 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # extracted and passed to _base_initialize, because update functions
         # can't be created until the model (namespace) exists
         update_functions = {}
+        replace_in_dict = {}
+        kwargs = copy.copy(kwargs)
         for attr, v in kwargs.items():
             # Deals with the case where we initialize from a .dict() export
             if isinstance(v, dict) and 'update_function' in v:
                 update_functions[attr] = v['update_function']
-                v['update_function'] = None
+                replace_in_dict[attr] = copy.copy(v)
+                replace_in_dict[attr]['update_function'] = None
+                # v['update_function'] = None
+        # We do it this way to avoid mutating the kwargs
+        for attr, v in replace_in_dict.items():
+            kwargs[attr] = v
         # Initialize attributes with Pydantic
         super().__init__(**kwargs)
         # Attach update functions to histories, and set up __slots__
