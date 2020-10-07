@@ -2277,6 +2277,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 cost_total = updates.pop(cost)
                 shim.add_updates(updates)
                 return cost_total, shim.get_updates()
+            # Attach the offset, so functions can determine by how much they
+            # need to shift arguments
+            accumulated_function.start_offset = start_offset
             # Attach the original function, so we can use it for serialization
             accumulated_function.__func__ = f
             # Define name and docstring of the new function based on the original

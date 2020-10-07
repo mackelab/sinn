@@ -1266,7 +1266,7 @@ class History(HistoryBase, abc.ABC):
             # Histories which support broadcasting `value` implement it in `update`
         # update() places the new values in _sym_data, _sym_tidx; we still
         # need to apply them to _num_data/_num_tidx
-        # `eval()` should always be cheap, since we are `value` is numeric
+        # `eval()` should always be cheap, since `value` is numeric
         self.eval()
 
     @property
