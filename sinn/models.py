@@ -2282,6 +2282,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 # Return the final cost, along with the rest of the updates
                 # Caller can decide if they want to apply updates or discard them
                 cost_total = updates.pop(cost)
+                shim.remove_update(cost)
                 shim.add_updates(updates)
                 return cost_total, shim.get_updates()
             # Attach the offset, so functions can determine by how much they
