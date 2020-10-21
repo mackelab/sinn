@@ -328,6 +328,10 @@ class HistoryUpdateFunction(BaseModel):
         d = super().dict(*a, exclude=excl, **kw)
         if not exclude_namespace:
             d['namespace'] = self.namespace
+        # The input_names are stored as a set, therefore have undefined order
+        # smttask relies on having consistent hashes of the serialization,
+        # therefore we fix the order.
+        d['input_names'] = sorted(d['input_names'])
         return d
     def json(self, *a, **kw):
         # Exclude namespace from JSON
