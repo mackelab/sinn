@@ -1040,7 +1040,7 @@ class History(HistoryBase, abc.ABC):
         return stablehexdigest(self.json())
 
     def __len__(self):
-        """Length ignores padding."""
+        """Length ignores padding; equivalent to `padded_length`."""
         return len(self.time)
 
     def __lt__(self, other):
@@ -1295,6 +1295,15 @@ class History(HistoryBase, abc.ABC):
         """
         return self.get_trace()
 
+    @property
+    def padded_length(self):
+        """Same as __len__; provided for interface consistency."""
+        return self.time.padded_length
+    @property
+    def unpadded_length(self):
+        return self.time.unpadded_length
+
+
     def clear(self,after=None):
         """
         Invalidate the history data, forcing it to be recomputed the next time it is queried.
@@ -1424,12 +1433,10 @@ class History(HistoryBase, abc.ABC):
         if self.t0idx < imin:
             hist.t0 = hist._tarr[0]
             hist.t0idx = shim.cast(0, self.tidx_dtype)
-            hist._unpadded_length -= (imin - self.t0idx)
         else:
             hist.t0idx = shim.cast(self.t0idx - imin, self.tidx_dtype)
         if self.tnidx > imax:
             hist.tn = hist._tarr[-1]
-            hist._unpadded_length -= (self.tnidx - imax)
 
         if self._num_tidx.get_value() < imin:
             hist._num_tidx.set_value(-1)
