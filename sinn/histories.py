@@ -1192,8 +1192,8 @@ class History(HistoryBase, abc.ABC):
         IndexError
             - If `axis_index` exceeds the limits of the time axis.
         RuntimeError
-            - If `key` is an empty array.
-            - If `key` is neither a scalar, a slice, or an ndarray.
+            - If `axis_index` is an empty array.
+            - If `axis_index` is neither a scalar, a slice, or an ndarray.
         """
         # Normalize index
         axis_index = self.time.index(axis_index)
@@ -1209,12 +1209,12 @@ class History(HistoryBase, abc.ABC):
                 raise RuntimeError(
                     "Indexing a history with an empty array is disallowed "
                     "because Theano can't handle it. "
-                    f"History: {self.name}, index: {key}.")
+                    f"History: {self.name}, index: {axis_index}.")
             latest = self.time.Index(shim.max(axis_index))
             earliest = self.time.Index(shim.min(axis_index))
         else:
-            raise RuntimeError("Unrecognized key {} of type {}. (history: {})"
-                               .format(key, type(key), self.name))
+            raise RuntimeError("Unrecognized axis_index {} of type {}. (history: {})"
+                               .format(axis_index, type(axis_index), self.name))
         # Check bounds
         if not (earliest.in_bounds and latest.in_bounds):
             raise IndexError(f"Index {axis_index} is out of bounds for "
