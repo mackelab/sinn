@@ -1630,6 +1630,10 @@ class SequenceMapping(BaseModel):
         However, using `axis.copy()` will call this method internally, and
         then replace the associated axis with the new copy.
         """
+        if kwargs.get('deep', False):
+            raise NotImplementedError(
+                "`copy` with `deep=True` is not currently supported with "
+                "SequenceMapping.")
         # Method required b/c private attributes aren't copied over with _construct.
         m = super().copy(*args, **kwargs)
         # HACK: Pydantic doesn't recursively call `copy()`. Here we throw away

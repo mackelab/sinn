@@ -731,10 +731,15 @@ class History(HistoryBase, abc.ABC):
            Conserving the update function when copying Models, however, should
            be feasible and could be implemented if it found a use.
         """
+        if kwargs.get('deep', False):
+            raise NotImplementedError(
+                "`copy` with `deep=True` is not currently supported with "
+                "Histories. Note that even a normal copy does a deep copy "
+                "of the underlying data.")
         # Private attributes aren't copied over with _construct, and
         # `__init__` is not executed by `copy()`
         m = super().copy(*args, **kwargs)
-        object.__setattr__(m, 'ndim'            , self.ndim)
+        object.__setattr__(m, 'ndim', self.ndim)
 
         # Remove update function
         # The update_function setter takes care of attaching history
