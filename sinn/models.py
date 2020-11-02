@@ -103,11 +103,15 @@ def get_model(modelname, *args, **kwargs):
 
 # Parameters
 
+# TODO: A NumericModelParams type, automatically constructed with the same
+#      fields as a model's ModelParams, but using non-symbolic types.
+#      Replace all occurrences of IndexableNamespace with NumericModelParams
+
 class ModelParams(BaseModel):
     class Config:
         json_encoders = mtb.typing.json_encoders
 
-    def get_values(self):
+    def get_values(self):  # -> NumericModelParams
         """
         Helper method which calls `get_value` on each parameter.
         Returns a copy of the ModelParams, where each shared variable has
@@ -117,7 +121,7 @@ class ModelParams(BaseModel):
              for k,v in self}
         return com.IndexableNamespace(**d)
 
-    def set_values(self, values: ModelParams,
+    def set_values(self, values: ModelParams,  # TODO -> NumericModelParams
                    must_set_all_params: bool=False,
                    must_not_set_other_params: bool=True):
         """
@@ -1464,46 +1468,6 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         """
         for h in self.history_set:
             h.eval(max_cost, if_too_costly)
-        # # Get the updates applied to the histories
-        # tidx_updates = {h._num_tidx: (h, h._sym_tidx)
-        #                 for h in self.history_set
-        #                 if h._num_tidx is not h._sym_tidx}
-        # data_updates = {h._num_data: (h, h._sym_data)
-        #                 for h in self.history_set
-        #                 if h._num_data is not h._sym_data}
-        # updates = OrderedDict( (k, v[1])
-        #                        for k, v in chain(tidx_updates.items(),
-        #                                          data_updates.items()) )
-        # # Check that there are no dependencies
-        # if not shim.graph.is_computable(updates.values()):
-        #     non_comp = [str(var) for var, upd in updates.items()
-        #                          if not shim.graph.is_computable(upd)]
-        #     raise ValueError("A model can only be `eval`ed when all updates "
-        #                      "applied to its histories are computable.\n"
-        #                      "The updates to the following variables have "
-        #                      "symbolic dependencies: {}.".format(non_compu))
-        # # Get the comp graph update dictionary
-        # shimupdates = shim.get_updates()
-        # for var, upd in updates.items():
-        #     logger.debug("Evaluating update applied to {}.".format(var))
-        #     if var in shimupdates:
-        #         if shimupdates[var] == upd:
-        #             logger.debug("Removing update from CG update dictionary.")
-        #             del shimupdates[var]
-        #         else:
-        #             logger.debug("Update differs from the one in CG update "
-        #                          "dictionary: leaving the latter untouched.")
-        #     var.set_value(shim.eval(shim.cast(upd, var.dtype)))
-        # # Update the histories
-        # for orig in tidx_updates.values():
-        #     h = orig[0]
-        #     h._sym_tidx = h._num_tidx
-        # for orig in data_updates.values():
-        #     h = orig[0]
-        #     h._sym_data = h._num_data
-        #
-        # # Ensure that we actually removed updates from the update dictionary
-        # assert len(shimupdates) == len(shim.get_updates())
 
     def theano_state_is_clean(self):
         if shim.pending_updates():
@@ -1597,54 +1561,25 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         if len(kwargs) > 0:
             new_params = {**new_params, **kwargs}
         pending_params = self.Parameters.parse_obj(
-            {**self.params.dict(), **new_params})
-            # Calling `Parameters` validates all new parameters
+            {**self.params.dict(), **new_params}
+            ).get_values()
+            # Calling `Parameters` validates all new parameters but converts them to shared vars
+            # Calling `get_values` converts them back to numeric values
+            # TODO: Simply cast as NumericModelParams
             # Wait until kernels have been cached before updating model params
 
+        # TODO: Everyting with old_ids, clear_advance_fn should be deprecatable
         # We don't need to clear the advance function if all new parameters
         # are just the same Theano objects with new values.
-        clear_advance_fn = any(id(getattr(self.params, p)) != id(newp)
-                               for p, newp in pending_params.dict().items())
-
-        # def gettype(param):
-        #     return type(param.get_value()) if shim.isshared(param) else type(param)
-        # if isinstance(new_params, self.Parameters):
-        #     assert(all( gettype(param) == gettype(new_param)
-        #                 for param, new_param in zip(self.params, new_params) ))
-        # elif isinstance(new_params, dict):
-        #     assert(all( gettype(val) == gettype(getattr(self.params, name))
-        #                 for name, val in new_params.items() ))
-        # else:
-        #     raise NotImplementedError
-
-        # # HACK Make sure sinn.inputs and models.history_inputs coincide
-        # sinn.inputs.union(self.history_inputs)
-        # self.history_inputs.union(sinn.inputs)
+        old_ids = {name: id(val) for name, val in self.params}
+        # clear_advance_fn = any(id(getattr(self.params, p)) != id(newp)
+        #                        for p, newp in pending_params.dict().items())
 
         # Determine the kernels for which parameters have changed
         kernels_to_update = []
         for kernel in self.kernel_list:
             if set(kernel.__fields__) & set(new_params.keys()):
                 kernels_to_update.append(kernel)
-
-        # if isinstance(new_params, self.Parameters):
-        #     for kernel in self.kernel_list:
-        #         if not sinn.params_are_equal(
-        #                 kernel.get_parameter_subset(new_params), kernel.params):
-        #             # Grab the subset of the new parameters relevant to this kernel,
-        #             # and compare to the kernel's current parameters. If any of
-        #             # them differ, add the kernel to the list of kernels to update.
-        #             kernels_to_update.append(kernel)
-        # else:
-        #     assert(isinstance(new_params, dict))
-        #     for kernel in self.kernel_list:
-        #         if any(param_name in kernel.Parameters._fields
-        #                for param_name in new_params):
-        #             kernels_to_update.append(kernel)
-
-        # # Now update parameters. This must be done after the check above,
-        # # because Theano parameters automatically propagate to the kernels.
-        # sinn.set_parameters(self.params, new_params)
 
         # Loop over the list of kernels and do the following:
         # - Remove any cached binary op that involves a kernel whose parameters
@@ -1671,9 +1606,15 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             kernel.update_params(**pending_params.dict())
 
         # Update self.params in place; TODO: there's likely a cleaner way
-        for nm in pending_params.__fields__:
-            setattr(self.params, nm, getattr(pending_params, nm))
-        logger.monitor("Model params are now {}.".format(self.params))
+        # for nm in pending_params.__fields__:
+        #     setattr(self.params, nm, getattr(pending_params, nm))
+        self.params.set_values(pending_params)
+
+        # TODO: Everyting with old_ids, clear_advance_fn should be deprecatable
+        clear_advance_fn = any(id(val) != old_ids[name]
+                               for name, val in self.params)
+
+        logger.debug("Model params are now {}.".format(self.params))
 
         self.clear()
         if clear_advance_fn:
@@ -1682,39 +1623,6 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             # We need to do this if any of the parameters change identity (e.g.
             # replaced by another shared variable).
             self._compiled_advance_fns.clear()
-
-    # def clear_unlocked_histories(self):
-    #     """Clear all histories that have not been explicitly locked."""
-    #     #for hist in self.history_inputs.union(sinn.inputs):
-    #     for hist in self.history_set:
-    #         # HACK: Removal of sinn.inputs is a more drastic version attempt
-    #         #       at correcting the same problem as fsgif.remove_other_histories
-    #         if not hist.locked:
-    #             self.clear_history(hist)
-
-    # def apply_updates(self, update_dict):
-    #     """
-    #     Theano functions which produce updates (like scan) naturally will not
-    #     update the history data structures. This method applies those updates
-    #     by replacing the internal _sym_data and _sym_tidx attributes of the history
-    #     with the symbolic expression of the updates, allowing histories to be
-    #     used in subsequent calculations.
-    #
-    #     .. Note:: The necessity of this function is unclear, given the improved
-    #        compilation in sinn v0.2.
-    #     """
-    #     # Update the history data
-    #     for history in self.history_set:
-    #         if history._num_tidx in update_dict:
-    #             assert(history._num_data in update_dict)
-    #                 # If you are changing tidx, then surely you must change _sym_data as well
-    #             object.__setattr__(history, '_sym_tidx', update_dict[history._num_tidx])
-    #             object.__setattr__(history, '_sym_data', update_dict[history._num_data])
-    #         elif history._num_data in update_dict:
-    #             object.__setattr__(history, '_sym_data', update_dict[history._num_data])
-    #
-    #     # Update the shim update dictionary
-    #     shim.add_updates(update_dict)
 
     def eval_updates(self, givens=None):
         """
@@ -1736,52 +1644,6 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                     object.__setattr__(h, '_sym_tidx', h._num_tidx)
                 if h._sym_data != h._num_data:
                     object.__setattr__(h, '_sym_data', h._num_data)
-
-    # def get_loglikelihood(self, *args, **kwargs):
-    #
-    #     # Sanity check – it's easy to forget to clear histories in an interactive session
-    #     uncleared_histories = []
-    #     # HACK Shouldn't need to combine sinn.inputs
-    #     # TODO Make separate function, so that it can be called within loglikelihood instead
-    #     for hist in self.history_inputs.union(sinn.inputs):
-    #         if ( not hist.locked and ( ( hist.use_theano and hist.compiled_history is not None
-    #                                      and hist.compiled_history._sym_tidx.get_value() >= hist.t0idx )
-    #                                    or (not hist.use_theano and hist._sym_tidx.get_value() >= hist.t0idx) ) ):
-    #             uncleared_histories.append(hist)
-    #     if len(uncleared_histories) > 0:
-    #         raise RuntimeError("You are trying to produce a cost function graph, but have "
-    #                            "uncleared histories. Either lock them (with their .lock() "
-    #                            "method) or clear them (with their individual .clear() method "
-    #                            "or the model's .clear_unlocked_histories() method). The latter "
-    #                            "will delete data.\nUncleared histories: "
-    #                            + str([hist.name for hist in uncleared_histories]))
-    #
-    #     if sinn.config.use_theano():
-    #         # TODO Precompile function
-    #         def likelihood_f(model):
-    #             if 'loglikelihood' not in self.compiled:
-    #                 self.theano()
-    #                     # Make clean slate (in particular, clear the list of inputs)
-    #                 logL = model.loglikelihood(*args, **kwargs)
-    #                     # Calling logL sets the sinn.inputs, which we need
-    #                     # before calling get_input_list
-    #                 # DEBUG
-    #                 # with open("logL_graph", 'w') as f:
-    #                 #     theano.printing.debugprint(logL, file=f)
-    #                 input_list, input_vals = self.get_input_list()
-    #                 self.compiled['loglikelihood'] = {
-    #                     'function': theano.function(input_list, logL,
-    #                                                 on_unused_input='warn'),
-    #                     'inputs'  : input_vals }
-    #                 self.theano_reset()
-    #
-    #             return self.compiled['loglikelihood']['function'](
-    #                 *self.compiled['loglikelihood']['inputs'] )
-    #                 # * is there to expand the list of inputs
-    #     else:
-    #         def likelihood_f(model):
-    #             return model.loglikelihood(*args, **kwargs)
-    #     return likelihood_f
 
     # ==============================================
     # Model advancing code
