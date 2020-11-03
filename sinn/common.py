@@ -147,7 +147,7 @@ class IndexableNamespace(SimpleNamespace):
 
     # Required to behave like a mapping, otherwise Pydantic gets confused
     def __iter__(self):
-        return iter(self.__dict__)
+        return iter(self.__dict__.items())
     def keys(self):
         return self.__dict__.keys()
     def values(self):
