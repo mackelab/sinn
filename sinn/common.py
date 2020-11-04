@@ -142,8 +142,11 @@ class TensorWrapper:
 
 # TODO: Replace with NumericModelParams (c.f. sinn.models)
 class IndexableNamespace(SimpleNamespace):
+    # Dict-like interface
     def __getitem__(self, key):
         return self.__dict__[key]
+    def __contains__(self, key):
+        return key in self.__dict__
 
     # Required to behave like a mapping, otherwise Pydantic gets confused
     def __iter__(self):
