@@ -682,7 +682,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # Attach update functions to histories, and set up __slots__
         self._base_initialize(update_functions=update_functions)
         # Run the model initializer
-        if initializer != 'do not initialize':
+        if not isinstance(initializer, str) or initializer != 'do not initialize':
             self.initialize(initializer)
 
     def copy(self, *args, deep=False, **kwargs):
