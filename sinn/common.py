@@ -140,42 +140,6 @@ class TensorWrapper:
     #     if len(axes) > len(labeled_axes):
     #         self.dims.covariant = Tuple(ax for ax in axes if ax in self.dims.covariant or ax not in labeled_axes):
 
-# TODO: Replace with NumericModelParams (c.f. sinn.models)
-class IndexableNamespace(SimpleNamespace):
-    # Dict-like interface
-    def __getitem__(self, key):
-        return self.__dict__[key]
-    def __contains__(self, key):
-        return key in self.__dict__
-
-    # Required to behave like a mapping, otherwise Pydantic gets confused
-    def __iter__(self):
-        return iter(self.__dict__.items())
-    def keys(self):
-        return self.__dict__.keys()
-    def values(self):
-        return self.__dict__.values()
-
-    # Encoder/decoder required for use within a Pydantic model
-    @classmethod
-    def __get_validators__(cls):
-        yield cls.validate
-    @classmethod
-    def validate(cls, value):
-        # `value` can be any mapping
-        return cls(**value)
-    @classmethod
-    def json_encoder(cls, value, **kwargs):
-        if not isinstance(value, IndexableNamespace):
-            logger.error("`IndexableNamespace.json_encoder` expects an "
-                         f"IndexableNamespace as `value`; received {value} "
-                         f"(type: {type(value)}). Continuing, but behaviour "
-                         "is undefined.")
-        return value.__dict__
-    def json(self):
-        return self.json_encoder(self)
-mtb.typing.add_json_encoder(IndexableNamespace, IndexableNamespace.json_encoder)
-
 ###########################
 # Utility functions
 

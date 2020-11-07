@@ -106,6 +106,7 @@ def get_model(modelname, *args, **kwargs):
 # TODO: A NumericModelParams type, automatically constructed with the same
 #      fields as a model's ModelParams, but using non-symbolic types.
 #      Replace all occurrences of IndexableNamespace with NumericModelParams
+from mackelab_toolbox.typing import IndexableNamespace
 
 class ModelParams(BaseModel):
     class Config:
@@ -119,7 +120,7 @@ class ModelParams(BaseModel):
         """
         d = {k: v.get_value() if shim.isshared(v) else v
              for k,v in self}
-        return com.IndexableNamespace(**d)
+        return IndexableNamespace(**d)
 
     def set_values(self, values: ModelParams,  # TODO -> NumericModelParams
                    must_set_all_params: bool=False,
