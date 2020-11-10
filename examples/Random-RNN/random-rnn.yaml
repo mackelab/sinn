@@ -13,8 +13,7 @@ dependencies:
   - pydantic
   - python-blosc
   - astunparse
-  - theano=1.0.4
-  # Theano version hard-coded because we download scan_perform.c by hand
+  - theano
   - tqdm
   # - sphinx
   - pip:

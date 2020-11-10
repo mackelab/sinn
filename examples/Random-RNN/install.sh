@@ -41,8 +41,9 @@ fi
 
 # Wrap-up: fix Theano conda installation
 
-# Download scan_perform.c by hand because it is missing from the conda distribution (https://github.com/Theano/Theano/issues/6753)
-cd "$ENVDIR/$ENVNAME/lib/python3.8/site-packages/theano/scan_module/"
-mkdir c_code
-cd c_code
-wget https://raw.githubusercontent.com/Theano/Theano/e0167f24ae896a2e956cdd99a629910cd717a299/theano/scan_module/c_code/scan_perform.c
+# # Download scan_perform.c by hand because it is missing from the conda distribution (https://github.com/Theano/Theano/issues/6753)
+# (v1.0.4 only)
+# cd "$ENVDIR/$ENVNAME/lib/python3.8/site-packages/theano/scan_module/"
+# mkdir c_code
+# cd c_code
+# wget https://raw.githubusercontent.com/Theano/Theano/e0167f24ae896a2e956cdd99a629910cd717a299/theano/scan_module/c_code/scan_perform.c
