@@ -1431,10 +1431,15 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     def lock(self):
         for hist in self.history_set:
             hist.lock()
-    def clear(self):
+    def clear(self,after=None):
         shim.reset_updates()
-        for hist in self.unlocked_histories:
-            hist.clear()
+        if after is not None:
+            after = self.time.Index(after)
+            for hist in self.unlocked_histories:
+                hist.clear(after=after.convert(hist.time.Index))
+        else:
+            for hist in self.unlocked_histories:
+                hist.clear()
 
     def eval(self, max_cost :Optional[int]=None, if_too_costly :str='raise'):
         """
