@@ -1,3 +1,2 @@
 -e git+git://github.com/mackelab/theano_shim#egg=theano_shim
 -e git+git://github.com/mackelab/mackelab-toolbox#egg=mackelab-toolbox
--e git+git://github.com/mackelab/sinn#egg=sinn
