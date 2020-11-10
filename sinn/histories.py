@@ -627,7 +627,8 @@ class History(HistoryBase, abc.ABC):
                 raise AttributeError("can't set attribute")
             else:
                 return clsattr.fset(self, v)
-        elif attr in self.__slots__:
+        elif attr in set().union(*(getattr(C, '__slots__', set())
+                                   for C in type(self).mro())):
             object.__setattr__(self, attr, v)
         else:
             super().__setattr__(attr, v)
