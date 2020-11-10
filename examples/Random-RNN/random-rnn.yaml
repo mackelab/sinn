@@ -1,4 +1,4 @@
-name: bptt_sinn
+name: sinn_scs
 channels:
   - defaults
   - conda-forge
@@ -17,7 +17,7 @@ dependencies:
   # Theano version hard-coded because we download scan_perform.c by hand
   - tqdm
   # - sphinx
-  # - pip:
-     - "--editable=git+git://gitub.com/alcrene/theano_shim#egg=theano_shim"
+  - pip:
+     - "--editable=git+git://github.com/mackelab/theano_shim#egg=theano_shim"
      - "--editable=git+git://github.com/mackelab/mackelab-toolbox#egg=mackelab-toolbox"
      - "--editable=git+git://github.com/mackelab/sinn#egg=sinn"

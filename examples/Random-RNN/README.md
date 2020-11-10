@@ -25,3 +25,9 @@ The model itself is defined in the module [scs.py](./scs.py).
 If you are within a conda environment, you can install all requirements by executing (replace `ENVNAME` with the name of the environment):
 
     conda env update --file random-rnn.yaml --name ENVNAME
+
+The default environment name *sinn_scs*.
+
+To allow Jupyter to find the new environment (required to run run the run), register the kernel:
+
+    python -m ipykernel install --user --name sinn_scs --display-name "Python (sinn_scs)"
