@@ -957,7 +957,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     # Specializations of standard dunder methods
 
     def __str__(self):
-        name = getattr(self, '__name__', type(self).__name__)
+        name = self.name
         return "Model '{}' (t0: {}, tn: {}, dt: {})" \
             .format(name, self.t0, self.tn, self.dt)
 
@@ -1021,6 +1021,10 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     # also done after copy() and parse_obj()
     # FIXME: what to do with histories which aren't part of model (e.g.
     #        returned from an operation between hists) ?
+    @property
+    def name(self):
+        return getattr(self, '__name__', type(self).__name__)
+
     @property
     def nonnested_histories(self):
         return {nm: getattr(self, nm) for nm in self._hist_identifiers}
@@ -1131,7 +1135,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         except IndexError as e:
             raise IndexError(
                 "Unable to determine a current index for "
-                f"{type(self).__name__}. This usually happens accessing "
+                f"{self.name}. This usually happens accessing "
                 "`cur_tidx` before a model is initialized.") from e
 
     @property
@@ -1228,7 +1232,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         """
         if not self.histories_are_synchronized():
             raise RuntimeError(
-                f"Histories for the {type(self).__name__}) are not all "
+                f"Histories for the {self.name}) are not all "
                 "computed up to the same point. The compilation of the "
                 "model's integration function is ill-defined in this case.")
         tidx = self.get_min_tidx(histories)
@@ -1236,7 +1240,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             object.__setattr__(
                 self, '_num_tidx',
                 shim.shared(np.array(tidx, dtype=self.tidx_dtype),
-                            f"t_idx ({type(self).__name__})") )
+                            f"t_idx ({self.name})") )
         else:
             self._num_tidx.set_value(tidx)
         return self._num_tidx
@@ -1274,7 +1278,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     def summarize(self, hists=None):
         nested_models = self._model_identifiers
         if isinstance(self, type):
-            nameline = "Model '{}'".format(self.__name__)
+            nameline = "Model '{}'".format(self.name)
             paramline = "Parameters: " + ', '.join(self.Parameters.__annotations__) + "\n"
             if len(nested_models) == 0:
                 nestedline = ""
@@ -2064,7 +2068,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                            sequences = [shim.arange(curtidx, stoptidx,
                                                     dtype=self.tidx_dtype)],
 #                           outputs_info = [curtidx],
-                           name = f"scan ({type(self).__name__})")
+                           name = f"scan ({self.name})")
 
         return upds
 
