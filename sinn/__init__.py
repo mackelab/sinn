@@ -2,6 +2,8 @@ from ._globals import _NoValue
 
 import sinn.config as config
 from .common import *
+from .histories import History
+from .models import Model
 
 # Set __version__
 import pkg_resources
