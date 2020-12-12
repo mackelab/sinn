@@ -2111,12 +2111,31 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                    any history updates. This means dependencies on parameters are
                    likely lost.
                    Equivalent to `static_accumulate`.
+
+        Raises
+        ------
+        ValueError
+            : If the wrapped function has variadic arguments (*args or **kwargs).
+            : If the wrapped function does not have 1 or 2 arguments.
+        RuntimeError
+            : (when calling the returned accumulator) if the histories on which.
+              the accumulator depends do not have at least one non-computed time point.
+
+        Warns
+        -----
+        UserWarning
+            : If the wrapped function has 2 arguments and the first is not 'self'.
         """
         def wrapped_acc(f):
             # Inspect the signature of `f` to see if there is a `self` argument
             # If so, attach the model to it.
             # This is similar to the same pattern used in histories.HistoryUpdateFunction
             sig = inspect.signature(f)
+            if any(p.kind in (inspect._ParameterKind.VAR_POSITIONAL,
+                              inspect._ParameterKind.VAR_KEYWORD)
+                   for p in sig.parameters.values()):
+               raise ValueError("Sinn accumulators don't support variadic "
+                               "arguments at this time.")
             if len(sig.parameters) == 1:
                 # Do not include `self`
                 firstarg = ()
