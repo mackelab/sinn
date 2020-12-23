@@ -196,6 +196,16 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
     #   to validators.
     # - Add the `time` annotation if it isn't already present.
     def __new__(metacls, cls, bases, namespace):
+        if '__throwaway_class' in namespace:
+            # During MRO resolution, we need to create a throwaway class to
+            # determine the MRO of the final class. In that case we want to
+            # skip all the metaclass activity because
+            # 1) It's wasteful to do all the annotation/parameter parsing
+            # 2) It would attempt to create its own throwaway class,
+            #    leading to infinite recursion
+            return super().__new__(metacls, cls, bases, namespace)
+
+
         # MRO resolution
         # We will need to retrieve attributes which may be anywhere in the MRO.
         # USE: Sanity checks, retrieve `Parameters`, inherited annotations
@@ -207,24 +217,44 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         # Option 2: Force `bases` to have one element, and call its `mro()`
         #     Implementation: bases[0].mro()
         #     Problem: Multiple inheritance of models is no longer possible.
-        # At the moment I begrudgingly went with Option 1, because I'm not sure
-        # of a use case for multiple inheritance.
-        nonabcbases = tuple(b for b in bases if b is not abc.ABC)
-        if len(nonabcbases) != 1:
-            from inspect import currentframe, getframeinfo
-            import pathlib
-            path = pathlib.Path(__file__).absolute()
-            frameinfo = getframeinfo(currentframe())
-            info = f"{path}::line {frameinfo.lineno}"
+        # # At the moment I begrudgingly went with Option 2, because I'm not sure
+        # # of a use case for multiple inheritance.
+        # nonabcbases = tuple(b for b in bases if b is not abc.ABC)
+        # if len(nonabcbases) != 1:
+        #     from inspect import currentframe, getframeinfo
+        #     import pathlib
+        #     path = pathlib.Path(__file__).absolute()
+        #     frameinfo = getframeinfo(currentframe())
+        #     info = f"{path}::line {frameinfo.lineno}"
+        #     basesstr = ', '.join(str(b) for b in nonabcbases)
+        #     raise TypeError(
+        #         f"Model {cls} has either no or multiple parents: {basesstr}.\n"
+        #         "Models must inherit from exactly one class (eventually "
+        #         "`sinn.models.Model`). This is a technical limitation rather "
+        #         "than a fundamental one. If you need multiple inheritance for "
+        #         f"your model, have a look at the comments above {info}, and "
+        #         "see if you can contribute a better solution.")
+        # mro = bases[0].mro()
+        # The solution below at least allows for multiple inheritance with
+        # mixin classes
+        try:
+            Tmp = type('Tmp', bases, {**namespace, **{'__throwaway_class': None}})
+            mro = Tmp.mro()[1:]  # Exclude 'temp' throwaway class from MRO
+        except TypeError as e:
+            nonabcbases = tuple(b for b in bases if b is not abc.ABC)
             basesstr = ', '.join(str(b) for b in nonabcbases)
-            raise TypeError(
-                f"Model {cls} has either no or multiple parents: {basesstr}.\n"
-                "Models must inherit from exactly one class (eventually "
-                "`sinn.models.Model`). This is a technical limitation rather "
-                "than a fundamental one. If you need multiple inheritance for "
-                f"your model, have a look at the comments above {info}, and "
-                "see if you can contribute a better solution.")
-        mro = bases[0].mro()
+            if "multiple bases have instance lay-out conflict" in str(e):
+                raise TypeError(
+                    f"Model {cls} may to have multiple parents inheriting "
+                    "from sinn.Model. Because sinn Models use __slots__, they "
+                    "cannot be used this way. If your goal is to define "
+                    "variants by changing some of the definitions of a model, "
+                    "consider defining those changes in a mixin class instead. "
+                    "As long as the mixin doesn't define __slots__, multiple "
+                    "inheritance with it should work."
+                    ) from e
+            else:
+                raise e
 
         # Existing attributes
         # (ChainMap gives precedence to elements earlier in the list)
@@ -301,6 +331,11 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
 
         # Sanity check State subclass
         State = namespace.get('State', None)
+        if State is None:
+            for C in mro:
+                State = getattr(C, 'State', None)
+                if State is not None:
+                    break
         if abc.ABC in bases:
             # Deactivate warnings for abstract models
             pass
@@ -625,7 +660,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
     # Register subclasses so they can be deserialized
     def __init_subclass__(cls):
-        if not inspect.isabstract(cls):
+        if not inspect.isabstract(cls) and '__throwaway_class' not in cls.__dict__:
             mtb.iotools.register_datatype(cls)
 
     def __new__(cls, ModelClass=None, **kwargs):
@@ -970,11 +1005,12 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         """
         # Use __getattribute__ to maintain current stack trace on exceptions
         # https://stackoverflow.com/q/36575068
-        # if (attr != 'params'
-        #     and attr in self.params.__fields__):
-        if (attr != 'params'              # Prevent infinite recursion
-            # and attr not in self.__dict__ # Prevent shadowing
-            and hasattr(self, 'params') and attr in self.params.__fields__):
+        if (not attr.startswith('_')      # Hide private attrs and prevent infinite recursion with '__dict__'
+            and attr != 'params'          # Prevent infinite recursion
+            and attr not in dir(self)     # Prevent shadowing; not everything is in __dict__
+            # Checking dir(self.params) instead of self.params.__fields__ allows
+            # Parameter classes to use @property to define transformed parameters
+            and hasattr(self, 'params') and attr in dir(self.params)):
             # Return either a PyMC3 prior (if in PyMC3 context) or shared var
             # Using sys.get() avoids the need to load pymc3 if it isn't already
             pymc3 = sys.modules.get('pymc3', None)
@@ -2141,9 +2177,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 firstarg = ()
             elif len(sig.parameters) == 2:
                 first_arg_name = next(iter(inspect.signature(f).parameters.keys()))
-                if first_arg_name != "self":
+                if first_arg_name not in ("self", "model"):
                     warn("If an accumulator function accepts two arguments, "
-                         "arguments, the first should be 'self'. "
+                         "arguments, the first should be 'self' or 'model'. "
                          f"Received '{first_arg_name}'.")
                 firstarg = (self,)
             else:
