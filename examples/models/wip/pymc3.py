@@ -89,12 +89,12 @@ def BatchDist(hist, logp, *args, **kwargs):
 class PyMC_RNG_Shim:
     def __init__(self, rng):
         """
-        Provides an interface consistent with the random RandomStreams of theano
+        Provides an interface consistent with the random RandomStream of theano
         or :module:theano_shim, but returning PyMC3 distribution objects.
 
         Parameters
         ----------
-        rng:    Theano RNG | ShimmedRandomStreams
+        rng:    Theano RNG | ShimmedRandomStream
             The RNG we want to shim.
         """
         self.rng = rng

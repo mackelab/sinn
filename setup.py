@@ -3,7 +3,7 @@ from setuptools import setup
 
 setup(
       name='sinn',
-      version='0.2.0dev',
+      version='0.2.0dev1',
       description="A package for Simulation and Inference of Neuron Networks",
 
       author="Alexandre René",
@@ -12,10 +12,12 @@ setup(
       license='MIT',
 
       classifiers=[
-          'Development Status :: 3 - Alpha',
+          'Development Status :: 4 - Beta',
           'Intended Audience :: Science/Research',
           'Programming Language :: Python :: 3',
           'Programming Language :: Python :: 3 :: Only',
+          'Programming Language :: Python :: 3.8',
+          'Programming Language :: Python :: 3.9',
           'Topic :: Scientific/Engineering :: Information Analysis'
       ],
 
@@ -26,7 +28,7 @@ setup(
                         'pydantic',
                         'mackelab_toolbox >= 0.1.0dev2',
                         'theano_shim >= 0.2.3',
-                        'theano',
+                        'theano-pymc',
                         'tqdm',
                         'packaging',
                         'odictliteral'],

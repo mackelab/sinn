@@ -279,7 +279,6 @@ def _test_history_series_updates(cgshim):
 
 def _test_history_spiketrain_updates(cgshim):
     shim.load(cgshim)
-    shim.load('theano')
     mtb.typing.freeze_types()
     from sinn.histories import (
         TimeAxis, HistoryUpdateFunction, Series, Spiketrain, NotComputed)
@@ -296,7 +295,7 @@ def _test_history_spiketrain_updates(cgshim):
     hists = SimpleNamespace(x1=x1, x2=x2)
     # HistoryUpdateFunction.namespace = hists
 
-    rng = shim.config.RandomStreams()
+    rng = shim.config.RandomStream()
 
     # def x1_fn(tidx):
     #     res = [shim.nonzero(rng.binomial(n=1, p=0.1, size=x1.shape))[0]
@@ -327,13 +326,13 @@ def _test_history_spiketrain_updates(cgshim):
     assert x1[Ti] == NotComputed.NotYetComputed
     t = Ti*TimeAxis.time_step
 
-    rng.seed(0)  # Not enough to be 100% predictable
+    rng.seed(1)  # Not enough to be 100% predictable
     # assert np.all(x1(8) == np.array([0,0,1,0,0,0]))  # Test evaluation
     x12 = x1(Ti-2)
     assert np.all( shim.eval(x12.shape, max_cost=None) == x1.shape )
     assert shim.eval(x1[:Ti-1].sum(), max_cost=150) > 0   # Probability of all 0 negligible
     assert np.all(shim.eval(shim.eq(x1[Ti-2], x12),
-                            max_cost=150))  # Retrieval at Ti-2 now works
+                            max_cost=300))  # Retrieval at Ti-2 now works
 
     with pytest.raises(IndexError):
         x2[-1]

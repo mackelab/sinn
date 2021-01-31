@@ -791,7 +791,7 @@ class History(HistoryBase, abc.ABC):
         time = m.time
         shape = m.shape
         ndim  = len(shape)
-        object.__setattr__(m, 'ndim'            , ndim)
+        object.__setattr__(m, 'ndim', ndim)
         # The update_function setter takes care of attaching history
         # (This clears the data, so do it before assigning to tidx & data)
         if upd_f is not None:
@@ -2295,7 +2295,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             self.update_function.return_dtype = self.idx_dtype
 
     # Called by History.__init__
-    # Like an @validator, returns the value instead of setting attribute directly
+    # Like a @validator, returns the value instead of setting attribute directly
     def initialized_data(self, init_data=None):
         """
         Parameters
@@ -2349,7 +2349,16 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             and not shim.issparse(init_data)
             and not isinstance(init_data, np.ndarray)):
             # Because of parse_obj hackery, we need to emulate Pydantic coercion
-            # It may be a list of args to CSR, rather than a (sparse) array
+            # It may be a list of args to CSR, rather than a (sparse) array,
+            # and these args may be serialized arrays.
+            try:
+                init_data = Array.validate(init_data)
+            except (ValueError, TypeError):
+                if isinstance(init_data, Iterable):
+                    try:
+                        init_data = tuple(Array.validate(v) for v in init_data)
+                    except:
+                        pass
             init_data = shim.sparse.csr_matrix_wrapper.validate(
                 init_data, field=SimpleNamespace(name='init_data'))
         shape = (time.padded_length, nneurons)

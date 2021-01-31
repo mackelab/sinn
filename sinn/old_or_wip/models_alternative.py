@@ -1279,7 +1279,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
         for rng in self.rng_inputs:
             # FIXME: `.state_updates` is Theano-only
-            if (isinstance(rng, shim.config.SymbolicRNGType)
+            if (isinstance(rng, shim.config.SymbolicRNGTypes)
                 and len(self.rng.state_updates) > 0):
                 logger.warning("Erasing random number generator updates. Any "
                                "other graphs using this generator are likely "

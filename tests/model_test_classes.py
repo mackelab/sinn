@@ -18,6 +18,7 @@ class TestModelNoState(Model):
     # TODO: Also test
     # class Parameters(BaseModel):
     # class Parameters(BaseParameters):
+        λ0:float
         τ :float
         σ :float
         N :int
@@ -56,8 +57,8 @@ class TestModelNoState(Model):
     @updatefunction('λ', inputs=['λ'])
     def upd_λ(self, tidx):
         dt = self.time.dt.magnitude
-        return (self.λ(tidx-1) * np.exp(-dt/self.τ)
-                + self.σ * np.sqrt(dt) * self.rng.normal())
+        return (self.λ0 + (self.λ(tidx-1)-self.λ0) * np.exp(-dt/self.τ)
+                + self.σ * np.sqrt(dt) * self.rng.normal(size=()))
 
     def initialize(self, initializer=None):
         self.λ.pad(1)

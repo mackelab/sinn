@@ -1523,7 +1523,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 or hist._num_data is not hist._sym_data):
                 return False
         for rng in self.rng_inputs:
-            if (isinstance(rng, shim.config.SymbolicRNGType)
+            if (isinstance(rng, shim.config.SymbolicRNGTypes)
                 and len(rng.state_updates) > 0):
                 return False
         return True
@@ -1558,7 +1558,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
         for rng in self.rng_inputs:
             # FIXME: `.state_updates` is Theano-only
-            if (isinstance(rng, shim.config.SymbolicRNGType)
+            if (isinstance(rng, shim.config.SymbolicRNGTypes)
                 and len(rng.state_updates) > 0 and warn_rng):
                 rng_name = getattr(rng, 'name', str(rng))
                 if rng_name is None: rng_name = str(rng)
@@ -1577,7 +1577,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         shim.reseed_rng(self.rng, seed)
         # Find all the Theano RNG streams and reseed them.
         # This is analogous to what `seed` does with the streams listed in `rng.state_updates`
-        srs = sys.modules.get('theano.tensor.shared_randomstreams', None)
+        srs = sys.modules.get('theano.tensor.shared_RandomStream', None)
         if srs is not None:
             seedgen = self.rng.gen_seedgen  # Was seeded by `reseed_rng` above
             for update_dict in self._advance_updates.values():

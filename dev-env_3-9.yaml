@@ -1,0 +1,28 @@
+name: sinn_3-9
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9  # We currently target 3.8
+  - pydantic
+  - numpy
+  # - theano
+  - theano-pymc
+  - tqdm   # Planned to be moved to dev packages
+  - packaging
+  - pip
+  - pip:
+    - odictliteral
+# Development packages
+# These are required either to run tests or examples, or build documentation
+  - ipykernel
+  - pytest
+  - pytest-xdist
+  - sphinx
+  - pint
+  - quantities
+  - xarray
+  - scipy
+  - matplotlib
+  - seaborn
+  - pandas

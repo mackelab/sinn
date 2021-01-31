@@ -56,9 +56,9 @@ def _test_model(cgshim):
     TimeAxis.time_unit = ureg.s
     TimeAxis.time_step = np.float64(2**-6)
 
-    model = TestModel(params = TestModel.Parameters(τ=1, σ=100, N=7),
+    model = TestModel(params = TestModel.Parameters(λ0=10, τ=1, σ=100, N=7),
                       time = TimeAxis(min=0, max=10),
-                      rng = shim.config.RandomStreams())
+                      rng = shim.config.RandomStream())
 
     # Compute series history a few time steps
     model.λ(2*model.dt)
@@ -92,9 +92,9 @@ def _test_model(cgshim):
         return
 
     # Deserializes without error
-    with pytest.warns(scipy.sparse.SparseEfficiencyWarning):
-        # We don't want to deal with the efficiency warning atm.
-        model2 = TestModel.parse_raw(model.json())
+    # with pytest.warns(scipy.sparse.SparseEfficiencyWarning):
+    #     # We don't want to deal with the efficiency warning atm.
+    model2 = TestModel.parse_raw(model.json())
 
     # Deserialized model has the same data
     model_compare(model, model2)

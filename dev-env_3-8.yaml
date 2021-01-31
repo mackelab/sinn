@@ -3,9 +3,11 @@ channels:
   - conda-forge
   - defaults
 dependencies:
+  - python=3.8  # We currently target 3.8
   - pydantic
   - numpy
-  - theano
+  # - theano
+  - theano-pymc
   - tqdm   # Planned to be moved to dev packages
   - packaging
   - pip

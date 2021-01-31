@@ -265,7 +265,7 @@ class Axis(BaseModel, abc.ABC):
         object.__setattr__(m, '_unit_convert', self._unit_convert)
         return m
 
-    @root_validator
+    @root_validator(skip_on_failure=True)  # Executing when either set_label or set_transform fails just throws a confusing error
     def label_or_transform(cls, values):
         label, transform = (values.get(x, None) for x in
                             ('label', 'transform'))

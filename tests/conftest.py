@@ -26,4 +26,4 @@ def clean_theano_dir(monkeypatch):
           Are there long-lived files here ?
         - It hardcodes the location of the compile dir.
     """
-    shutil.rmtree(os.path.expanduser("~/.theano"))
+    shutil.rmtree(os.path.expanduser("~/.theano"), ignore_errors=True)
