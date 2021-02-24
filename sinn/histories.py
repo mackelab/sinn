@@ -606,6 +606,10 @@ class History(HistoryBase, abc.ABC):
     time        : TimeAxis
     shape       : Tuple[Integral]
     dtype       : DType
+      # WARNING: Don't use actual dtypes for defaults, just strings.
+      #   dtype's __eq__ is broken (https://github.com/numpy/numpy/issues/5345)
+      #   and makes reasonable Pydantic code raise an exception
+
     iterative   : bool = True
     symbolic    : bool = None
     # Attributes which are not generally set with __init__
@@ -2275,7 +2279,8 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
     # _DataFormat = namedtuple('SpiketrainDataFormat',
     #                          ['data', 'neuron_idcs', 'indptr'])
 
-    dtype       : DType = np.dtype('int8')
+    dtype       : DType = 'int8'
+        # Using `np.dtype('int8')` causes errors (see History.dtype)
 
     class Config:
         # json_encoders overrides (is not merged) with parent option

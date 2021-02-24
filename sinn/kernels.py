@@ -16,10 +16,10 @@ from pydantic import validator, root_validator, Field
 # from pydantic.fields import ModelField
 # from pydantic.dataclasses import dataclass
 import dataclasses  # For lighter structures that don't need validation
-from typing import Optional, Tuple, List, Type, Any, Union
+from typing import Optional, Tuple, List, Any, Union
 from numbers import Number
 import mackelab_toolbox as mtb
-from mackelab_toolbox.typing import NPValue, Slice, FloatX, Tensor
+from mackelab_toolbox.typing import NPValue, DType, Slice, FloatX, Tensor
 from mackelab_toolbox.parameters import ParameterSet
 
 import theano_shim as shim
@@ -103,7 +103,8 @@ class Kernel(ConvolveMixin, com.KernelBase, abc.ABC):
     t0         : FloatX   = shim.cast_floatX(0.)
     decay_const: Optional[Tensor[FloatX]]
     memory_time: Optional[FloatX]
-    dtype      : Type = np.dtype(shim.config.floatX)
+    dtype      : DType = shim.config.floatX
+        # Using `np.dtype('int8')` causes errors (see History.dtype)
     ndim       : NPValue[np.int8] = None
 
     # ----------
@@ -577,7 +578,7 @@ class CompositeKernel(Kernel):
     t0         : Optional[FloatX]
     decay_const: Optional[Tensor[FloatX]]
     memory_time: Optional[FloatX]
-    dtype      : Optional[Type]
+    dtype      : Optional[DType]
     ndim       : Optional[NPValue[np.int8]]
 
     # Validators
@@ -970,7 +971,7 @@ class KernelWrapper(Kernel):
     t0         : Optional[FloatX]
     decay_const: Optional[Tensor[FloatX]]
     memory_time: Optional[FloatX]
-    dtype      : Optional[Type]
+    dtype      : Optional[DType]
     ndim       : Optional[NPValue[np.int8]]
 
     def __new__(cls, *args, **kwargs):
