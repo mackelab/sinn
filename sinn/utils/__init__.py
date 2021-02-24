@@ -1,6 +1,5 @@
 ########################
 # Convenience methods
-# (TODO: Move to utils, if such a module is created)
 
 class unlocked_hists:
     """

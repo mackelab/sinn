@@ -3,7 +3,7 @@ from ._globals import _NoValue
 import sinn.config as config
 from .common import *
 from .histories import History
-from .models import Model
+from .models import Model, ModelParams
 
 # Set __version__
 import pkg_resources
