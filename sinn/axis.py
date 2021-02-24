@@ -60,8 +60,8 @@ Todo
 ^^^^
 - An `AxisIndex` points back to its associated `Axis` (through its `Axis`
   attribute), but it would make a lot more sense for it to point to the
-  associated `Mapping` instead. Because now `AxisIndex`, `Mapping` and `Axis`
-  are all mutually entangled (and need special `copy()` functions to maintain
+  associated `Mapping` instead. At the moment, `AxisIndex`, `Mapping` and `Axis`
+  are all mutually entangled (and need special `copy()` methods to maintain
   their references), but at least `Axis` could be disentangled from that lot.
 - It would be really helpful when debugging if the printed representation of
   an Axis included what it was attached to (i.e. model or history name).
@@ -162,8 +162,6 @@ def _unit_convert_factory(axis, unit_library):
             # No conversion; as for other conversion methods, we presume that
             # `unitcheck` was called on `value`, and therefore it has no units
             return value
-            # raise TypeError("Unable to convert units: axis unit '{}' unrecognized."
-            #                 .format(type(axisunit)))
     return unit_convert
 
 class Axis(BaseModel, abc.ABC):
@@ -327,21 +325,10 @@ class Axis(BaseModel, abc.ABC):
     #     libraries, and therefore installing them.
     #   - In theory other libraries could implement these methods, and
     #     they would work as well.
-    # @validator('unit')
     def set_unit_methods(self, unit):
         unitlib = mtb.units.detect_unit_library(unit)
         object.__setattr__(self, '_unit_check', _unit_check_factory(self, unitlib))
         object.__setattr__(self, '_unit_convert', _unit_convert_factory(self, unitlib))
-        # if hasattr(unit, 'compatible_units') and hasattr(1*unit, 'to'):
-        #     object.__setattr__(self, '_unit_check', _unit_check_factory(self, 'pint'))
-        #     object.__setattr__(self, '_unit_convert', _unit_convert_factory(self, 'pint'))
-        # elif (hasattr(unit, 'simplified') and hasattr(unit, 'dimensionality')
-        #       and hasattr(unit, 'rescale')):
-        #     object.__setattr__(self, '_unit_check', _unit_check_factory(self, 'quantities'))
-        #     object.__setattr__(self, '_unit_convert', _unit_convert_factory(self, 'quantities'))
-        # else:
-        #     object.__setattr__(self, '_unit_check', _unit_check_factory(self, None))
-        #     object.__setattr__(self, '_unit_convert', _unit_convert_factory(self, None))
 
     # Placeholder unit check, unit convert methods
     def unit_convert(self, value :float):
@@ -424,19 +411,6 @@ class Axis(BaseModel, abc.ABC):
         # For theano vars, we can't use `np.dtype(type(value))`, and dtype
         # is ust a string
         return self.Index.is_compatible(value)
-        # if hasattr(value, 'dtype'):
-        #     kind = np.dtype(value.dtype).kind
-        # else:
-        #     kind = np.dtype(type(value)).kind
-        # return (
-        #     kind == 'i'  # Only allow integers
-        #     and mtb.units.detect_unit_library(value) == 'none'  # Disallow units (redundant?)
-        #     and (not isinstance(value, (AbstractAxisIndex, AbstractAxisIndexDelta))
-        #          or isinstance(self.stops.Index.Delta, self.stops.Index))
-        #          # Only allow axis types from this axis
-        #     and np.can_cast(value, self.index_dtype)
-        #     )
-
 
     @property
     @abstractmethod
@@ -666,8 +640,6 @@ class AxisIndexMeta(abc.ABCMeta):
 
     @staticmethod
     def __clsnew__(cls, x, allow_rounding=False):
-        # if not shim.isscalar(x):
-        #     raise ValueError("Only scalars can be converted to indices.")
         if issubclass(cls, (NumericAbstractAxisIndexDelta,
                             SymbolicAbstractAxisIndexDelta)):
             # No need to redirect to appropriate Index type; proceed
@@ -824,16 +796,6 @@ class SpecAxisIndexMeta(type):
             else:
                 abstract_class = SymbolicAbstractAxisIndex
 
-
-        # if not (len(bases) == 1 and np.issubdtype(bases[0], np.integer)):
-        #     raise TypeError("`bases` must comprise exactly one type, and "
-        #                     "it must be a NumPy integer.")
-
-        # # AxisIndex is a subclass of AxisIndexDelta
-        # nptype = bases[0]
-        # while issubclass(nptype, AbstractAxisIndexDelta):
-        #     assert len(nptype.__bases__) == 1
-        #     nptype = nptype.__bases__[0]
         if not (len(bases) == 1):
             raise TypeError("`bases` must comprise exactly one type")
         if not np.issubdtype(nptype, np.integer):
@@ -890,11 +852,6 @@ class SpecAxisIndexMeta(type):
                             {**class_attrs, **properties, **methods, **static_methods, **class_methods,
                              **namespace}  # Let namespace override attrs
                             )
-        # # HACK
-        # if "delta" in name.lower():
-        #     NumericAbstractAxisIndexDelta.register(T)
-        # else:
-        #     NumericAbstractAxisIndex.register(T)
 
         if axis is not None and id(axis) not in T._created_indexes:
             T._created_indexes[id(axis)] = T
@@ -918,13 +875,6 @@ class SpecAxisIndexMeta(type):
                                  nptype = nptype
                                 )
             cls.Absolute.Absolute = cls.Absolute
-
-    # @property
-    # @abstractmethod
-    # def nptype(self): raise AttributeError
-    # @property
-    # @abstractmethod
-    # def axis(self): raise AttributeError
 
     # The __new__ method for the generated class
     # Doesn't actually do anything, but allows subclasses to specialize __init__
@@ -957,9 +907,6 @@ class SpecAxisIndexMeta(type):
             raise TypeError("Tried to construct an "
                             f"{type(self).__name__} from a different "
                             "AxisIndex type.")
-        # if allow_rounding:
-        #     # Cast before checking bounds
-        #     x = self.nptype(x)
         # FIXME: Accessing `index_range` through `axis` is dumb
         if (self.axis is not None
             and isinstance(self, AbstractAxisIndex)
@@ -1046,24 +993,6 @@ class SpecAxisIndexMeta(type):
         else:
             return True
 
-    # # Actual static method
-    # @staticmethod
-    # def _check_in_bounds(index, imin, imax):
-    #     """
-    #     Return True if `index` is in the closed interval ``[imin, imax]``.
-    #
-    #     .. Note:: Both `imin` and `imax` are inclusive.
-    #     """
-    #     if not shim.istype(index, 'int'):
-    #         raise TypeError("`index` must be in integer.")
-    #     if shim.graph.is_computable(index):
-    #         evalidx = shim.eval(index)
-    #         if np.any(evalidx < imin) or np.any(evalidx > imax):
-    #             raise IndexError("Provided index `{}` exceeds the mapping's "
-    #                              "range.".format(index))
-    #     else:
-    #         raise ValueError("`index` is not computable.")
-
     # Class method
     @staticmethod
     def _class___hash__(cls):
@@ -1121,14 +1050,6 @@ class SpecAxisIndexMeta(type):
             step size as `cls`.
         """
         return cls.Base.is_compatible(*idx)
-        # if any(not shim.istype(_idx, 'int') for _idx in idx):
-        #     return False
-        # return all(isinstance(_idx, cls.Base.Delta)  # num & sym, abs & rel of this index type
-        #            or (isinstance(_idx, AbstractAxisIndexDelta)  # rel of other index types
-        #                and not isinstance(_idx, AbstractAxisIndex)
-        #                and _idx.step is not None and _idx.step == cls.step)
-        #            or not isinstance(_idx, (AbstractAxisIndex, AbstractAxisIndexDelta)) # plain ints
-        #            for _idx in idx)
 
     # Class method
     @staticmethod
@@ -1337,21 +1258,12 @@ class SymbolicAxisIndexMeta(SpecAxisIndexMeta, shim.graph.GraphExpressionMeta):
 
         return T
 
-    # @staticmethod
-    # def __clsnew__(cls, type, owner=None, index=None, name=None):
-    #     """
-    #     The expectation is that `x` should already be a symbolic expression.
-    #     All we do is check that `x` is actually symbolic, and that its
-    #     dtype is consistent with the axis' index type.
-    #     """
-    #     return idx
-    #
     @staticmethod
     def __clsinit__(self, expr_or_type, owner=None, index=None, name=None):
         """
-        The expectation is that `x` should already be a symbolic expression.
-        We check that `x` is actually symbolic, and that its
-        dtype is consistent with the axis' index type.
+        The expectation is that `expr_or_type` should already be a symbolic
+        expression. We check that `expr_or_type` is actually symbolic, and that
+        its dtype is consistent with the axis' index type.
         """
         if not isinstance(expr_or_type, shim.config.SymbolicExpressionType):
             # Assume this is the usual symbolic initializer, and just forward
@@ -1382,6 +1294,8 @@ class SymbolicAxisIndexMeta(SpecAxisIndexMeta, shim.graph.GraphExpressionMeta):
                 name += f" (idx, {str(self.axis):.10})"
             SpecAxisIndexMeta.__clsinit__(self, x, name=name)
                 # super() seems to get confused within metaclasses
+            if shim.config.compute_test_value != 'off':
+                self.tag.test_value = shim.get_test_value(x)
 
     @staticmethod
     def _instance___str__(self):
@@ -1397,7 +1311,15 @@ class SymbolicAxisIndexMeta(SpecAxisIndexMeta, shim.graph.GraphExpressionMeta):
         Remove the 'index' identity by casting `self` to `nptype`.
         """
         if not hasattr(self, '_plain'):
+            # Theano's copy() doesn't copy tags, and therefore fails
+            # immediately if compute_test_value == 'raise'
+            # So we turn it off during the copy and add the test value ourselves
+            compute_test_value = shim.config.compute_test_value
+            shim.config.compute_test_value = 'off'
             self._plain = self.copy()
+            if compute_test_value != 'off':
+                self._plain.tag.test_value = shim.get_test_value(self)
+            shim.config.compute_test_value = compute_test_value
             self._plain.name = self.name
         return self._plain
             # We can't use `astype`, because that still returns an AxisIndex
@@ -1466,10 +1388,6 @@ def get_AxisIndex(axis, dtype=None):
         if not issubclass(nptype, (numbers.Integral)):
             raise TypeError("Axis' `index_dtype` is {}, but must be an integral type."
                             .format(nptype))
-        # class AxisIndex(AxisIndexDelta):
-        #     __slots__ = ('IndexDelta')
-        #     Delta = AxisIndexDelta
-        #     _store =  AbstractAxisIndex
 
         # Symbolic indices are either shared varibles, or computable expressions
         # with shared variables.
@@ -1502,20 +1420,6 @@ def get_AxisIndex(axis, dtype=None):
                 axis=axis,
                 nptype=nptype
                 )
-        # AxisIndex = NumericAxisIndexMeta(nptype=nptype, axis=axis, Delta=AxisIndexDelta)
-        # AxisIndexDelta = type("AxisIndexDelta" + suffix,
-        #                       (NumericAxisIndexDelta, nptype),
-        #                       {'nptype': nptype,
-        #                        'axis'  : None})
-        # AxisIndex = type("AxisIndex" + suffix,
-        #                  (NumericAxisIndex, nptype),
-        #                  {'Delta' : AxisIndexDelta,
-        #                   'nptype': nptype,
-        #                   'axis'  : None}
-        #                  )
-        # AbstractAxisIndexDelta.register(AxisIndexDelta)
-        # AbstractAxisIndex.register(AxisIndex)
-
 
         AxisIndexDelta = AxisIndexMeta(f'AxisIndexDelta' + suffix,
                                        (AbstractAxisIndexDelta,),
@@ -2022,19 +1926,6 @@ class SequenceMapping(BaseModel):
                 return self.Index(index_array[self.data_index(value)])
             else:
                 return self.Index(self.index_range[self.data_index(value)])
-        # imin = self.index_range[0]
-        # imax = self.index_range[-1]
-        # _check_in_bounds = self._check_in_bounds
-        # if isinstance(index, slice):
-        #     start, stop, step = slice_indices(index, len(self.index_range))
-        #     _check_in_bounds(start, imin, imax)
-        #     _check_in_bounds(stop-1, imin, imax)
-        #     start -= imin
-        #     stop  -= imin
-        #     return slice(start, stop, step)
-        # else:
-        #     _check_in_bounds(index, imin, imax)
-        #     return index - imin
 
     def data_to_axis_index(self, data_index :Integral):
         """
@@ -2683,12 +2574,6 @@ class RangeMapping(SequenceMapping):
             raise ValueError("Value {} is not commensurate with step size {}."
                              .format(value, step))
         return Δi if cast else di
-
-    #
-    # def pad(self, pad_left, pad_right=0):
-    #     pad_left, pad_right = super().pad(pad_left, pad_right)
-    #     self.i0 += pad_left
-    #     return pad_left, pad_right
 
     def transform(self, f):
         # Compose needs a Transform object
@@ -3450,35 +3335,8 @@ class MapAxis(DiscretizedAxis):
         Index.attach_axis(axis)
         return axis
 
-    # def __init__(self, label, index_map=None, index_range=None, stops=None,
-    #              bin_align='centers', bin_ref='self',
-    #              unit=None, unit_label=None, *args,
-    #              min=None, max=None,
-    #              transformed=None, _transformed_axis=None):
-    #     # Below: (index_map & index_range) XOR stops
-    #     if (index_map is None or index_range is None) == stops is None:
-    #         raise ValueError(
-    #             "You must specify either `index_map` and `index_range`, or "
-    #             "`stops`.")
-    #     if stops is not None:
-    #         if not isinstance(stops, SequenceMapping):
-    #             raise ValueError("`stops` must be an `SequenceMapping`.")
-    #     else:
-    #         stops = SequenceMapping(index_range, index_map, index_type=self.Index)
-    #     super().__init__(label=label,
-    #                      stops=stops,
-    #                      bin_align=bin_align,
-    #                      bin_ref=bin_ref,
-    #                      unit=unit, unit_label=unit_label,
-    #                      min=min, max=max, transformed=transformed,
-    #                      _transformed_axis=_transformed_axis)
-
     def __len__(self):
         return len(self.stops)
-    #
-    # @property
-    # def transformed_desc(self):
-    #     desc = super().transformed_desc
 
     @property
     def transformed_stops(self):
@@ -3495,9 +3353,6 @@ class MapAxis(DiscretizedAxis):
     @property
     def centers(self):
         return super().centers
-
-    # def index(self, value, **kwargs):
-    #     return self.stops.index(self.unit_remove(value), **kwargs)
 
 MapAxis.transformed_type = MapAxis
 
@@ -3744,14 +3599,6 @@ class ArrayAxis(DiscretizedAxis):
         kwargs['stops'] = stops
         super().__init__(**kwargs)
         Index.attach_axis(self)  # After self.stops has been defined
-
-    # @property
-    # def transformed_desc(self):
-    #     return super().transformed_desc
-    #
-    # @property
-    # def stops_array(self):
-    #     return self.stops
 
     @property
     def transformed_stops(self):
