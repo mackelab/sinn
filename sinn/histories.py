@@ -2303,6 +2303,15 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
     # Like a @validator, returns the value instead of setting attribute directly
     def initialized_data(self, init_data=None):
         """
+        Create the data storage for the history, initializing with `init_data`
+        if it is provided. Does the following:
+
+        - Deserialize `init_data` if necessary
+        - Validate that its shape and dtype match that of the History
+        - Create the data storage:
+          + (data) A tuple of three shared arrays for data, indices and indptr
+          + (tidx) A shared scalar array
+
         Parameters
         ----------
         init_data: ndarray, optional
@@ -2382,11 +2391,17 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             # csrdata, csridcs, csrindptr = mtydata, mtyidcs, mtyindptr
             cur_datatidx = self.time.t0idx - 1
         elif shim.issparse(init_data):
-            assert shim.eval(init_data.shape[1]) == nneurons
+            assert shim.eval(init_data.shape[1]) == nneurons, \
+                "Spiketrain.initialized_data: The second dimension of " \
+                "`init_data` must  match the number of neurons. " \
+                f"init_data.shape: {init_data.shape}\n No. neurons: {nneurons}"
             cur_datatidx = init_data.shape[0] - 1
             init_csr[:cur_datatidx+1,:] = init_data
         else:
-            assert shim.eval(init_data.shape[1]) == nneurons
+            assert shim.eval(init_data.shape[1]) == nneurons, \
+                "Spiketrain.initialized_data: The second dimension of " \
+                "`init_data` must  match the number of neurons. " \
+                f"init_data.shape: {init_data.shape}\n No. neurons: {nneurons}"
             cur_datatidx = len(init_data) - 1
             init_csr[:cur_datatidx+1,:] = scipy.sparse.csr_from_dense(init_data.astype(dtype))
             # This may throw an efficiency warning, but we can ignore it since
@@ -2924,6 +2939,15 @@ class Series(ConvolveMixin, History):
 
     def initialized_data(self, init_data=None):
         """
+        Create the data storage for the history, initializing with `init_data`
+        if it is provided. Does the following:
+
+        - Deserialize `init_data` if necessary
+        - Validate that its shape and dtype match that of the History
+        - Create the data storage:
+          + (data) A shared array of size (T,)+shape
+          + (tidx) A shared scalar array
+
         Parameters
         ----------
         init_data: ndarray, optional
@@ -2932,6 +2956,9 @@ class Series(ConvolveMixin, History):
             but may be shorter then the time array; in this case it is padded
             on the right with zeros until its length is equal to
             `self.time.padded_length`.
+
+            Special case: An empty array is allowed, independent of its shape,
+            and treated the same as `None`.
 
             Must not be a symbolic value. If a shared value, no padding is
             performed, so the time dimension must match
@@ -2944,10 +2971,20 @@ class Series(ConvolveMixin, History):
         Shared[AxisIndex]
             Value to store as `self._num_tidx`
         """
+        # NOTE: Since this method is called within Pydantic’s parsing, exceptions
+        #       should be extra-informative (Pydantic removes the stack trace).
+        #       In particular, asserts should always have description messages
         # shape, dtype = (values.get(x, None) for x in ('shape', 'dtype'))
         shape, dtype = self.shape, self.dtype
+        if mtb.typing.json_like(init_data, 'Array'):
+            init_data = Array.validate(init_data)
+        if getattr(init_data, 'size', None) == 0:
+            init_data = None
         if init_data is None:
-            assert shape is not None and dtype is not None
+            assert shape is not None and dtype is not None, \
+                "Series.initialized_data: If `init_data` is None, `shape` " \
+                "and `dtype` must also be None. " \
+                f"Received shape {shape} and dtype {dtype}."
             data = shim.shared(
                 np.zeros((self.time.padded_length,) + self.shape, dtype=dtype),
                 name = self.name + " data",
@@ -2955,7 +2992,8 @@ class Series(ConvolveMixin, History):
                 )
             tidx_val = self.time.t0idx-1
         else:
-            assert not shim.is_symbolic(init_data)
+            assert not shim.is_symbolic(init_data), \
+                "Series.initialized_data: `init_data` must not be symbolic."
             if not shim.isarray(init_data):
                 if len(init_data) == 0:
                     # 0 length arrays are flattened when exporting
@@ -2964,7 +3002,10 @@ class Series(ConvolveMixin, History):
                     # Because of parse_obj hackery, must emulate Pydantic coercion
                     init_data = mtb.typing.Array[self.dtype].validate(
                         init_data, field=SimpleNamespace(name='init_data'))
-            assert shim.eval(init_data.shape[1:]) == self.shape
+            assert shim.eval(init_data.shape[1:]) == self.shape, \
+                "Series.initialized_data: initialization data does not match " \
+                "the history's shape.\n" \
+                f"Data shape:{init_data.shape}\nHistory's shape: {self.shape}"
             if shim.isshared(init_data):
                 # Use shared variables as-is
                 data_length = len(init_data.get_value())
