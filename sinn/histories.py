@@ -604,7 +604,7 @@ class History(HistoryBase, abc.ABC):
 
     name        : str  = None
     time        : TimeAxis
-    shape       : Tuple[Integral]
+    shape       : Tuple[Union[Integral,NPValue[np.integer],Array[np.integer,0]]]
     dtype       : DType
       # WARNING: Don't use actual dtypes for defaults, just strings.
       #   dtype's __eq__ is broken (https://github.com/numpy/numpy/issues/5345)
@@ -847,6 +847,11 @@ class History(HistoryBase, abc.ABC):
             cls.instance_counter += 1
             v = f"{cls}{cls.instance_counter}"
         return v
+
+    @validator('shape')
+    def only_ints_for_shape(cls, v):
+        "Shape arguments must be composed of plain its, not scalar arrays."
+        return tuple(int(s) for s in v)
 
     @validator('dtype', pre=True, always=True)
     def normalize_dtype(cls, v):
