@@ -1157,9 +1157,11 @@ class History(HistoryBase, abc.ABC):
 
         Parameters
         ----------
-        axis_index: AxisIndex (int) | slice
+        axis_index: AxisIndex (int) | slice | Real (experimental)
             AxisIndex of the position to retrieve, or slice where start & stop
             are axis indices.
+            Indexing with real values (which are converted to AxisIndex) should
+            work but is not exhaustively tested.
 
         Returns
         -------
@@ -1185,7 +1187,8 @@ class History(HistoryBase, abc.ABC):
             - If `axis_index` is neither a scalar, a slice, or an ndarray.
         """
         # Normalize index
-        axis_index = self.time.index(axis_index)
+        axis_index = self.time.index(axis_index, allow_rounding=True)
+            # Allowing rounding makes indexing with real time much more convenient
         # Retrieve earliest & latest indices for bounds checking
         if shim.isscalar(axis_index):
             latest = axis_index
@@ -1368,6 +1371,8 @@ class History(HistoryBase, abc.ABC):
     def truncate(self, start, end=None, allow_rounding=True, inplace=False):
         """
         .. Note:: Padding is always removed.
+
+        .. FIXME:: `allow_rounding` is currently ignored and effectively `False`
 
         Parameters
         ---------   -

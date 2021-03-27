@@ -3547,28 +3547,38 @@ class RangeAxis(MapAxis):
                                          allow_rounding=allow_rounding,
                                          cast=cast)
 
-    def index(self, value, allow_rounding=False):
+    def index(self, value, allow_rounding=sinn._NoValue):
+        """
+        Convert `value` to an axis index.
+        When `value` is real, whether to round to the nearest index is
+        determined by `allow_rounding`.
+        By default, `allow_rounding` is True for slices, but False for scalars.
+        """
         ar = allow_rounding
         if isinstance(value, slice):
+            if ar is sinn._NoValue:
+                ar = True
             if value.start is None:
                 start = self.stops.Index(self.stops.index_range[0])
             else:
-                start = self.index(value.start, allow_rounding=ar)
+                start = self.stops.index(value.start, allow_rounding=ar)
             if value.stop is None:
                 stop  = self.stops.Index(self.stops.index_range[-1]+1)
             else:
-                stop  = self.index(value.stop, allow_rounding=ar)
+                stop  = self.stops.index(value.stop, allow_rounding=ar)
             if value.step is None:
                 step = None
             elif shim.istype(value.step, 'int'):
                 step = self.Index.Delta.make_index(value.step)
             else:
+                ar = False if ar is sinn._NoValue else ar
                 step = self.index_interval(value, allow_rounding=ar)
             return slice(start, stop, step)
         else:
-            # TODO: Warn if `allow_rounding` was set since it is discarded here
-            return super().index(value)
-
+            if ar is sinn._NoValue:
+                ar = False
+            # return super().index(value)
+            return self.stops.index(value, allow_rounding=ar)
 
 class ArrayAxis(DiscretizedAxis):
     """
