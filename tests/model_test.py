@@ -7,6 +7,11 @@ Author: Alexandre René
 Manifest:
     test_model()
 
+TODO:
+    - Test models with mixins
+        + Esp. that kernel_identifiers, hist_identifiers and update functions
+          are extracted correctly, even when some of the mixin methods replace
+          those of the original model.
 """
 
 import numpy as np

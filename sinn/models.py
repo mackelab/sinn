@@ -205,6 +205,8 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
             #    leading to infinite recursion
             return super().__new__(metacls, cls, bases, namespace)
 
+        # Make a copy of namespace, so we can modify it below
+        namespace = namespace.copy()
 
         # MRO resolution
         # We will need to retrieve attributes which may be anywhere in the MRO.
@@ -245,7 +247,7 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
             basesstr = ', '.join(str(b) for b in nonabcbases)
             if "multiple bases have instance lay-out conflict" in str(e):
                 raise TypeError(
-                    f"Model {cls} may to have multiple parents inheriting "
+                    f"Model {cls} may have multiple parents inheriting "
                     "from sinn.Model. Because sinn Models use __slots__, they "
                     "cannot be used this way. If your goal is to define "
                     "variants by changing some of the definitions of a model, "
@@ -262,15 +264,27 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         inherited_annotations = ChainMap(*(getattr(b, '__annotations__', {})
                                            for b in mro))
         all_annotations = ChainMap(annotations, inherited_annotations)
-        # (We only iterate over immediate bases, since those already contain
-        #  the values for their parents)
         inherited_kernel_identifiers = set(chain.from_iterable(
-            getattr(b, '_kernel_identifiers', []) for b in bases))
+            _get_inherited_kernels(b) for b in bases))
         inherited_hist_identifiers = set(chain.from_iterable(
-            getattr(b, '_hist_identifiers', []) for b in bases))
+            _get_inherited_hists(b) for b in bases))
         inherited_pending_updates = dict(ChainMap(
-            *({obj.hist_nm: obj for obj in getattr(b, '_pending_update_functions', [])}
+            *({obj.hist_nm: obj for obj in _get_inherited_updates(b)}
               for b in bases)))
+            # NB: Although the _order_ of a ChainMap is set by iterating over
+            #     bases right-to-left, the _precedence_ of values goes
+            #     left-to-right.
+            #     This makes it comparable to a chain of .update() calls.
+        # Old version which didn't work with mixins:
+        # # (We only iterate over immediate bases, since those already contain
+        # #  the values for their parents.)
+        # inherited_kernel_identifiers = set(chain.from_iterable(
+        #     getattr(b, '_kernel_identifiers', []) for b in bases[::-1]))
+        # inherited_hist_identifiers = set(chain.from_iterable(
+        #     getattr(b, '_hist_identifiers', []) for b in bases[::-1]))
+        # inherited_pending_updates = dict(ChainMap(
+        #     *({obj.hist_nm: obj for obj in getattr(b, '_pending_update_functions', [])}
+        #       for b in bases[::-1])))
 
         # Resolve string annotations (for 3.9+, annotations are always strings)
         for nm, annot in annotations.items():
@@ -316,7 +330,7 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         #        We would just need to add the inherited kernel/hists after this loop
         for nm, T in annotations.items():
             if nm in new_annotations:
-                raise TypeError("Name clash in {cls} definition: '{nm}'")
+                raise TypeError(f"Name clash in {cls} definition: '{nm}'")
             new_annotations[nm] = T
             if isinstance(T, type) and issubclass(T, History):
                 _hist_identifiers.add(nm)
@@ -536,6 +550,56 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         return super().__new__(metacls, cls, bases, namespace)
 
     # TODO: Recognize RNG as input
+
+# Retrieve kernel_identifiers, hist_identifiers and update_functions
+# from an existing class.
+# This class may or may not subclass Model; in the former case there is
+# nothing beyond retrieving the attributes already set. In the latter case,
+# we reproduce how ModelMetaclass would extract them from annotations.
+# TODO: I'm not super happy with these functions; there should be a way to do
+#       this with less repeated code
+# TODO: We lose here for mixins some sanity checks done in ModelMetaclass:
+#       - That no annotations are duplicated
+#       - That all update functions correspond to a hist_identifier
+def _get_inherited_kernels(cls):
+    kernel_identifiers = getattr(cls, '_kernel_identifiers', None)
+    if kernel_identifiers is None:
+        # cls doesn't inherit from Model – probably a mixin
+        kernel_identifiers = set()
+        for C in cls.mro()[::-1]:
+            C_kernel_identifiers = getattr(C, '_kernel_identifiers', None)
+            if C_kernel_identifiers is None:
+                for nm, T in getattr(C, '__annotations__', {}).items():
+                    if isinstance(T, type) and issubclass(T, Kernel):
+                        kernel_identifiers.update(nm)
+        for nm, T in getattr(cls, '__annotations__', {}).items():
+            if isinstance(T, type) and issubclass(T, Kernel):
+                kernel_identifiers.add(nm)
+    return kernel_identifiers
+def _get_inherited_hists(cls):
+    hist_identifiers = getattr(cls, '_hist_identifiers', None)
+    if hist_identifiers is None:
+        # cls doesn't inherit from Model – probably a mixin
+        hist_identifiers = set()
+        for C in cls.mro()[::-1]:
+            C_hist_identifiers = getattr(C, '_hist_identifiers', None)
+            if C_hist_identifiers is None:
+                for nm, T in getattr(C, '__annotations__', {}).items():
+                    if isinstance(T, type) and issubclass(T, History):
+                        hist_identifiers.update(nm)
+        for nm, T in getattr(cls, '__annotations__', {}).items():
+            if isinstance(T, type) and issubclass(T, History):
+                hist_identifiers.add(nm)
+    return hist_identifiers
+def _get_inherited_updates(cls):
+    pending_update_functions = getattr(cls, '_pending_update_functions', None)
+    if pending_update_functions is None:
+        # cls doesn't inherit from Model – probably a mixin
+        pending_update_functions = []
+        for obj in cls.__dict__.values():
+            if isinstance(obj, PendingUpdateFunction):
+                pending_update_functions.append(obj)
+    return pending_update_functions
 
 def init_autoseries(cls, autohist: AutoHist, values) -> Series:
     time = values.get('time', None)
