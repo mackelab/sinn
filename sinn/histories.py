@@ -1034,7 +1034,7 @@ class History(HistoryBase, abc.ABC):
         return stablehexdigest(self.json())
 
     def __len__(self):
-        """Length ignores padding; equivalent to `padded_length`."""
+        """Length includes padding; equivalent to `padded_length`."""
         return len(self.time)
 
     def __lt__(self, other):
