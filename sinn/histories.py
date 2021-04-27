@@ -2375,14 +2375,17 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             # Because of parse_obj hackery, we need to emulate Pydantic coercion
             # It may be a list of args to CSR, rather than a (sparse) array,
             # and these args may be serialized arrays.
-            try:
+            # Detect two types of serialization:
+            # a) single dense array: ['Array', {'data':…}]
+            # b) CSR sparse data: 3 arrays + shape: [['Array', …], ['Array'…]
+            array_count = str(init_data).count("Array")
+            if array_count == 1:
                 init_data = Array.validate(init_data)
-            except (ValueError, TypeError):
-                if isinstance(init_data, Iterable):
-                    try:
-                        init_data = tuple(Array.validate(v) for v in init_data)
-                    except:
-                        pass
+            elif array_count == 3 and isinstance(init_data, Iterable):
+                init_data = tuple(Array.validate(v) for v in init_data)
+            elif array_count:
+                raise ValueError("Unrecognized format for Spiketrain "
+                                 "initialization data:\n{init_data}")
             init_data = shim.sparse.csr_matrix_wrapper.validate(
                 init_data, field=SimpleNamespace(name='init_data'))
         shape = (time.padded_length, nneurons)
