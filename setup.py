@@ -3,7 +3,7 @@ from setuptools import setup
 
 setup(
       name='sinn',
-      version='0.2.0dev1',
+      version='0.2.0rc1',
       description="A package for Simulation and Inference of Neuron Networks",
 
       author="Alexandre René",
