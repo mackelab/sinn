@@ -1,5 +1,5 @@
 
-from setuptools import setup
+from setuptools import setup, find_packages
 
 setup(
       name='sinn',
@@ -21,7 +21,7 @@ setup(
           'Topic :: Scientific/Engineering :: Information Analysis'
       ],
 
-      packages=['sinn'],
+      packages=find_packages(),
 
       install_requires=['numpy >= 1.13',
                         'scipy',
