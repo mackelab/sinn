@@ -26,7 +26,7 @@ setup(
       install_requires=['numpy >= 1.13',
                         'scipy',
                         'pydantic',
-                        'mackelab_toolbox >= 0.1.0dev2',
+                        'mackelab_toolbox[iotools,utils,typing,parameters,theano] >= 0.2.0a1',
                         'theano_shim >= 0.2.3',
                         'theano-pymc',
                         'tqdm',
