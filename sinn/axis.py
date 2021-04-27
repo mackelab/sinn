@@ -110,7 +110,6 @@ unitless = mtb.units.unitless
 
 # Unit conversion methods; one `check` and one `convert` method are attached
 # to the the Axis object by `set_unit_methods`
-# NOTE: I ran into problems when I put these functions into the Axis class
 def _unit_check_factory(axis, unit_library):
     """
     The `unit_check` method returns True if the provided value is a float,
@@ -141,6 +140,10 @@ def _unit_check_factory(axis, unit_library):
             #                 .format(type(axisunit)))
     return unit_check
 def _unit_convert_factory(axis, unit_library):
+    """
+    The `unit_convert` method calls the appropriate unit conversion method
+    on a value to convert it into the axis' units.
+    """
     axisunit = axis.unit
     if unit_library == 'pint':
         def unit_convert(value):
@@ -148,14 +151,14 @@ def _unit_convert_factory(axis, unit_library):
                 return [unit_convert(v for v in value)]
             elif isinstance(value, tuple):
                 return tuple(unit_convert(v for v in value))
-            return value.to(axisunit)
+            return value.to(axisunit).astype(axis.stops_dtype)
     elif unit_library == 'quantities':
         def unit_convert(value):
             if isinstance(value, list):
                 return [unit_convert(v for v in value)]
             elif isinstance(value, tuple):
                 return tuple(unit_convert(v for v in value))
-            return value.rescale(axisunit)
+            return value.rescale(axisunit).astype(axis.stops_dtype)
     else:
         assert axisunit is unitless
         def unit_convert(value):
@@ -163,6 +166,16 @@ def _unit_convert_factory(axis, unit_library):
             # `unitcheck` was called on `value`, and therefore it has no units
             return value
     return unit_convert
+
+def safe_can_cast(from_, to, **kwargs):
+    """
+    Wrap `numpy.can_cast` to avoid failing on units.
+    This is required for Pint units until they support `can_cast`;
+    see https://github.com/hgrecco/pint/issues/981.
+
+    Only required for values; calling on types should always work.
+    """
+    return np.can_cast(getattr(from_, 'magnitude', from_), to, **kwargs)
 
 class Axis(BaseModel, abc.ABC):
     """
@@ -395,7 +408,7 @@ class Axis(BaseModel, abc.ABC):
         return (
             kind == np.dtype(self.stops_dtype).kind
             and mtb.units.detect_unit_library(value) == mtb.units.detect_unit_library(self.unit)
-            and np.can_cast(value, self.stops_dtype))
+            and safe_can_cast(value, self.stops_dtype))
 
     def is_compatible_index(self, value):
         """
@@ -640,6 +653,10 @@ class AxisIndexMeta(abc.ABCMeta):
 
     @staticmethod
     def __clsnew__(cls, x, allow_rounding=False):
+        if hasattr(x, 'magnitude'):
+            raise TypeError("Attempted to construct an AxisIndex with a value "
+                            f"that has units: {x}.\nThis must be an error: "
+                            "index values are integral and cannot have units.")
         if issubclass(cls, (NumericAbstractAxisIndexDelta,
                             SymbolicAbstractAxisIndexDelta)):
             # No need to redirect to appropriate Index type; proceed
@@ -1820,7 +1837,7 @@ class SequenceMapping(BaseModel):
                                 "axis.")
         elif not issubclass(value_type, self.x_dtype.type):
             # Allow indexing with plain integers, unless x_dtype is integer (would be weird, but who knows ?)
-            if shim.can_cast(value, self.Index.nptype):
+            if safe_can_cast(value, self.Index.nptype):
                 return self.Index(value).data_index
             raise TypeError(
                 "SequenceMapping.index(): Type of argument ({}) does not "
@@ -1912,7 +1929,7 @@ class SequenceMapping(BaseModel):
                                 "axis.")
         elif not issubclass(value_type, self.x_dtype.type):
             # Allow indexing with plain integers, unless x_dtype is integer (would be weird, but who knows ?)
-            if shim.can_cast(value, self.Index.nptype):
+            if safe_can_cast(value, self.Index.nptype):
                 return self.Index(value)
             raise TypeError("[data_index] Type of argument ({}) does not "
                             "match type of stops ({}) or of indices ({})."
@@ -2499,7 +2516,7 @@ class RangeMapping(SequenceMapping):
                 #                 "axis.")
         elif not issubclass(value_type, self.x_dtype.type):
             # Allow indexing with plain integers, unless x_dtype is integer (would be weird, but who knows ?)
-            if shim.can_cast(value, self.Index.nptype):
+            if safe_can_cast(value, self.Index.nptype):
                 return self.Index(value)
             raise TypeError(
                 "RangeMapping.index(): Type of argument ({}) does not "
@@ -3006,7 +3023,7 @@ class DiscretizedAxis(Axis):
                     # recognizes as a stop value.
                     # Otherwise things like 1*ureg.s get sent as int, and Index
                     # thinks they are indices.
-                if not np.can_cast(value, self.stops_dtype):
+                if not safe_can_cast(value, self.stops_dtype):
                     raise TypeError(
                         "`index` expects an input of type "
                         f"{self.stops_dtype} (received {type(value)}).")
@@ -3015,7 +3032,7 @@ class DiscretizedAxis(Axis):
             #     value_dtype = np.array(value).dtype.type
             return self.stops.data_index(value)
 
-    def index(self, value):
+    def index(self, value, **index_kwds):
         """
         Return the index corresponding to `value`.
         This function must evaluate the index_map at every point; if you need
@@ -3028,6 +3045,8 @@ class DiscretizedAxis(Axis):
             - slice: start and end points must be specified with the correct
               units. Because the index points are not regularly spaced,
               a slice cannot specify a step.
+        **index_kwds:
+            Passed on to `self.stops.index()`.
         """
         if isinstance(value, slice):
             if value.start is None:
@@ -3055,14 +3074,14 @@ class DiscretizedAxis(Axis):
                     # recognizes as a stop value.
                     # Otherwise things like 1*ureg.s get sent as int, and Index
                     # thinks they are indices.
-                if not np.can_cast(value, self.stops_dtype):
+                if not safe_can_cast(value, self.stops_dtype):
                     raise TypeError(
                         "`index` expects an input of type "
                         f"{self.stops_dtype} (received {type(value)}).")
                 value = self.stops_dtype(value)
             # else:
             #     value_dtype = np.array(value).dtype.type
-            return self.stops.index(value)
+            return self.stops.index(value, **index_kwds)
 
     def data_to_axis_index(self, data_index :Integral) -> "AxisIndex":
         return self.stops.data_to_axis_index(data_index)
@@ -3561,11 +3580,13 @@ class RangeAxis(MapAxis):
             if value.start is None:
                 start = self.stops.Index(self.stops.index_range[0])
             else:
-                start = self.stops.index(value.start, allow_rounding=ar)
+                # start = self.stops.index(value.start, allow_rounding=ar)
+                start = self.index(value.start, allow_rounding=ar)
             if value.stop is None:
                 stop  = self.stops.Index(self.stops.index_range[-1]+1)
             else:
-                stop  = self.stops.index(value.stop, allow_rounding=ar)
+                # stop  = self.stops.index(value.stop, allow_rounding=ar)
+                stop  = self.index(value.stop, allow_rounding=ar)
             if value.step is None:
                 step = None
             elif shim.istype(value.step, 'int'):
@@ -3577,8 +3598,9 @@ class RangeAxis(MapAxis):
         else:
             if ar is sinn._NoValue:
                 ar = False
-            # return super().index(value)
-            return self.stops.index(value, allow_rounding=ar)
+            return super().index(value, allow_rounding=ar)
+                # Converts units, then passes to self.stops.index
+            # return self.stops.index(value, allow_rounding=ar)
 
 class ArrayAxis(DiscretizedAxis):
     """
