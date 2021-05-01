@@ -492,13 +492,13 @@ class SpiketrainCOO(ConvolveMixin, PopulationHistory):
         object.__setattr__(self, '_num_data', self._sym_data)
         super().clear()
 
-    def get_trace(self, pop=None, neuron=None,
+    def get_data_trace(self, pop=None, neuron=None,
                   time_slice=slice(None, None), include_padding=False):
         """
         Return the spiketrain's computed data for the given neuron.
         Time points which have not yet been computed are excluded, such that
-        the len(series.get_trace(*)) may be smaller than len(series). The
-        return value is however guaranteed to be consistent with get_time_array().
+        the len(series.get_data_trace(*)) may be smaller than len(series). The
+        return value is however guaranteed to be consistent with get_time_stops().
         If `component` is 'None', return the full multi-dimensional trace
 
         Parameters

@@ -83,8 +83,8 @@ def _test_model(cgshim):
 
     # Evaluate all the histories in the model
     model.eval()
-    assert model.spikes.get_trace().shape == (5,7)
-    assert len(model.λ.get_trace()) == 5
+    assert model.spikes.get_data_trace().shape == (5,7)
+    assert len(model.λ.get_data_trace()) == 5
 
     end = model.time.Index(64)
     # end = model.time.tnidx

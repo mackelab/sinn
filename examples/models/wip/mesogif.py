@@ -1534,7 +1534,7 @@ class mesoGIF(models.Model):
             h = self.params.u_rest.get_value(),
             #h_tot = np.zeros(self.h_tot.shape),
             u = self.params.u_rest.get_value(),
-            #varθ = self.params.params.u_th + self.θ_dis.get_trace()[:K],
+            #varθ = self.params.params.u_th + self.θ_dis.get_data_trace()[:K],
             #varθfree = self.params.u_th,
             λ = np.zeros(self.λ.shape),         # Clamp the rates to zero
             λfree = np.zeros(self.λfree.shape), # idem

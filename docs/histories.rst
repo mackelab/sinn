@@ -133,7 +133,7 @@ Attributes
 
 Properties
   trace          :
-      Unpadded data. Calls self.get_trace() with default arguments.
+      Unpadded data. Calls self.get_data_trace() with default arguments.
   time_stops     : `ndarray`
       Unpadded time array. Calls `self.time.stops_array(padded=False)`.
   Access to specified `time` properties:
@@ -175,7 +175,7 @@ be provided (see :ref:`below <subclass_template>`) for method templates):
   - `_getitem_internal()`
   - `update()`
   - `pad()`
-  - `get_trace()`
+  - `get_data_trace()`
   - `_compute_up_to()`
 
 The following methods **may** also be provided:
@@ -336,7 +336,7 @@ The following method templates are intended as a guide; although I try to keep t
         self.pad_time(before, after)
         […]
 
-    def get_trace(self, **kwargs):
+    def get_data_trace(self, **kwargs):
         """
         Return unpadded data.
 

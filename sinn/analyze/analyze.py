@@ -88,11 +88,11 @@ def mean(hist, pop_slices=None, time_array=None, **kwargs):
     elif isinstance(hist, histories.HistoryBase):
         hist = histories.DataView(hist)
         try:
-            data_arr = hist.get_trace()
+            data_arr = hist.get_data_trace()
         except AttributeError:
-            raise ValueError("Histories of type '{}' don't provide a `get_trace` method. "
+            raise ValueError("Histories of type '{}' don't provide a `get_data_trace` method. "
                              "You can try passing a raw NumPy array, or better yet, defining "
-                             "`get_trace` for this history type.".format(type(hist.hist)))
+                             "`get_data_trace` for this history type.".format(type(hist.hist)))
         if data_arr.shape[0] != len(hist):
             # data_arr may be sparse, in which case len(data_arr) is ambiguous)
             logger.warning("History was not fully computed; padding data with 0s.")
@@ -777,8 +777,8 @@ def plot(data, **kwargs):
         lines = []
         for comp, label, kwds in zip(comp_list, labels, plot_kwds):
             kwargs.update(**kwargs)
-            lines.extend( plt.plot(data.get_time_array(time_slice=tslice),
-                                   data.get_trace(comp, time_slice=tslice),
+            lines.extend( plt.plot(data.get_time_stops(time_slice=tslice),
+                                   data.get_data_trace(comp, time_slice=tslice),
                                    label=label, **kwargs) )
         return lines
 

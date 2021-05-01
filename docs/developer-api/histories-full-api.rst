@@ -63,7 +63,7 @@ Full API
    sinn.histories.History.convolve
 
    sinn.histories.History._compute_up_to
-   sinn.histories.History.get_time_array
+   sinn.histories.History.get_time_stops
    sinn.histories.History._getitem_internal
    sinn.histories.History._is_batch_computable
 

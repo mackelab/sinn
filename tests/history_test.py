@@ -261,9 +261,9 @@ def _test_history_series_updates(cgshim):
             # Numeric histories never detach _sym from _num
         assert len(updates) == 0
 
-    assert np.all(x2.get_trace() == shim.eval(x2[x2.t0idx:x2.cur_tidx+1]))
+    assert np.all(x2.get_data_trace() == shim.eval(x2[x2.t0idx:x2.cur_tidx+1]))
     # TODO: solve ODE and compare with analytical soln
-    assert np.all(x2.get_trace() == x2._num_data.get_value()[1:Ti+1+1])
+    assert np.all(x2.get_data_trace() == x2._num_data.get_value()[1:Ti+1+1])
 
     # Copies
     x2copy = x2.copy()
@@ -350,11 +350,11 @@ def _test_history_spiketrain_updates(cgshim):
 
     x2.eval()
 
-    assert x2.get_trace().sum() > 0
+    assert x2.get_data_trace().sum() > 0
         # This has essentially probability 1, and ensures that the tests below
         # don't succeed due to the updates not happening at all.
-    assert np.all(x2.get_trace() == shim.eval(x2[x2.t0idx:x2.cur_tidx+1]))
-    assert not (x2.get_trace() != x2._get_num_csr()[10:10+Ti+1]).data.any()
+    assert np.all(x2.get_data_trace() == shim.eval(x2[x2.t0idx:x2.cur_tidx+1]))
+    assert not (x2.get_data_trace() != x2._get_num_csr()[10:10+Ti+1]).data.any()
 
     # Copies
     x2copy = x2.copy()

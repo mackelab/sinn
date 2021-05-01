@@ -596,6 +596,7 @@ class History(HistoryBase, abc.ABC):
                  '_sym_data', '_num_data',  # Symbolic and numeric (shared) data
                  '_sym_tidx', '_num_tidx',  # Trackers for the current symbolic & concrete time indices
                  '_update_pos', '_update_pos_stop',  # See _compute_up_to
+                 '_batch_loop_flag'  # See _is_batch_computable
                  '_update_function', '_range_update_function'
                  )
     @property
@@ -777,7 +778,7 @@ class History(HistoryBase, abc.ABC):
         else:
             d['range_update_function'] = rg_upd_fn.dict(
                 *args, exclude=exclude.get('range_update_function', None), **kwargs)
-        d['data'] = self.get_trace(include_padding=True)
+        d['data'] = self.get_data_trace(include_padding=True)
         return d
 
     @classmethod
@@ -1026,7 +1027,7 @@ class History(HistoryBase, abc.ABC):
         """
         Current implementation just hashes the history name.
         I'm still not convinced this is a good idea, but it allows Histories
-        to be tested for inclusion in sets (atm required by SimpleEval).
+        to used in sets (Model) and tested for inclusion in sets (SimpleEval).
         """
         return stableintdigest(self.name)
     @property
@@ -1273,16 +1274,47 @@ class History(HistoryBase, abc.ABC):
     @property
     def time_stops(self):
         return self.time.unpadded_stops_array
+    times = time_stops  # In interactive sessions `time_stops` is too verbose
 
     @property
-    def trace(self):
+    def traces(self):
         """
-        Return the tuple (`time_array`, `data`).
-        The time stops of `data` matches those of `time_array`.
+        Return a list of traces, one per history component.
+        Each trace is a list of (t, h_α(t)) tuples, where t is a time,
+        and h_α(t) is the value of component α of the history at time t.
+        The list of traces is flat, independent of the histories dimensions.
+        To obtain the list of component indices, in the right order, do
+
+            np.ndindex(self.shape)
+
+        .. Note:: Values are returned as lists to avoid unnecessary copying.
+
+        Returns
+        -------
+        List[List[Tuple[float, float]]]
+            List of traces.
+            Each trace: list of tuples.
+            Each tuple: (time, value)
         """
-        # slc = slice(self.t0idx, self.cur_tidx+1)
-        return (self.get_time_array(),
-                self.get_trace())
+        # NOTE: One could probably do something fancy with the duplicate t
+        #       to minimize memory footprint, but that beyond the current scope
+        data = self.get_data_trace(include_padding=False)
+        times = self.time.unpadded_stops_array
+        return [[(t, data[(tidx, *xidx)]) for tidx, t in enumerate(times)]
+                for xidx in np.ndindex(self.shape)]
+
+    # `trace` was never useful, because a) of history components
+    # and b) the returned shape didn't plot well anyway
+    # @property
+    # def trace(self):
+    #     """
+    #     Return the tuple (`time_array`, `data`).
+    #     The time stops of `data` matches those of `time_array`.
+    #     """
+    #     # slc = slice(self.t0idx, self.cur_tidx+1)
+    #     return (self.get_time_stops(),
+    #             self.get_data_trace())
+
 
     @property
     def data(self):
@@ -1290,7 +1322,7 @@ class History(HistoryBase, abc.ABC):
         Returns the data which has been computed. This does not include
         in-progress symbolic updates.
         """
-        return self.get_trace()
+        return self.get_data_trace()
 
     @property
     def padded_length(self):
@@ -1688,7 +1720,7 @@ class History(HistoryBase, abc.ABC):
             object.__setattr__(self, '_update_pos', None)
             object.__setattr__(self, '_update_pos_stop', None)
 
-    def get_time_array(self, time_slice=slice(None, None), include_padding=False):
+    def get_time_stops(self, time_slice=slice(None, None), include_padding=False):
         """Return the time array.
         By default, the padding portions before and after are not included.
         Time points which have not yet been computed are also excluded.
@@ -1716,7 +1748,7 @@ class History(HistoryBase, abc.ABC):
         except IndexError:
             # Can arrive here either by self.cur_tidx.data_index raising,
             # or the explicite raise IndexError above
-            warn("`get_time_array` returned an empty slice, presumably "
+            warn("`get_time_stops` returned an empty slice, presumably "
                 "because the history hasn't been computed.\n"
                 f"History: {self.name}, current tidx: {self.cur_tidx}.")
             stop = start
@@ -2022,8 +2054,8 @@ class History(HistoryBase, abc.ABC):
             # If `up_to` is symbolic, it's value could change and is therefore irrelevant
             up_to = 'end'
 
-        # Prevent infinite recursion with a temporary property
-        if hasattr(self, '_batch_loop_flag'):
+        # Prevent infinite recursion
+        if getattr(self, '_batch_loop_flag', True):
             return False
         else:
             self._batch_loop_flag = True
@@ -2063,7 +2095,7 @@ class History(HistoryBase, abc.ABC):
         else:
             retval = False
 
-        del self._batch_loop_flag
+        self._batch_loop_flag = False
 
         return retval
 
@@ -2441,7 +2473,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
                              "`init_data` and `after`.")
         elif after is not None:
             after = self.time.Index(after)
-            init_data = self.get_trace(time_slice=np.s_[:after],
+            init_data = self.get_data_trace(time_slice=np.s_[:after],
                                        include_padding=True)
         assert not shim.pending_update(self._num_data)
         data, tidx = self.initialized_data(init_data)
@@ -2454,13 +2486,13 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         object.__setattr__(self, '_num_data', self._sym_data)
         super().clear(after=after)
 
-    def get_trace(self, pop=None, neuron=None,
+    def get_data_trace(self, pop=None, neuron=None,
                   time_slice=slice(None, None), include_padding=False):
         """
         Return the spiketrain's computed data for the given neuron.
         Time points which have not yet been computed are excluded, such that
-        the len(series.get_trace(*)) may be smaller than len(series). The
-        return value is however guaranteed to be consistent with get_time_array().
+        the len(series.get_data_trace(*)) may be smaller than len(series). The
+        return value is however guaranteed to be consistent with get_time_stops().
         If `component` is 'None', return the full multi-dimensional trace
 
         Parameters
@@ -3314,12 +3346,12 @@ class Series(ConvolveMixin, History):
         self.clear()
             # Invalidate time indices and set _symb_* = _conc_*
 
-    def get_trace(self, component=None, include_padding=False, time_slice=None):
+    def get_data_trace(self, component=None, include_padding=False, time_slice=None):
         """
         Return the series' computed data for the given component.
         Time points which have not yet been computed are excluded, such that
-        the len(series.get_trace(*)) may be smaller than len(series). The
-        return value is however guaranteed to be consistent with get_time_array().
+        the len(series.get_data_trace(*)) may be smaller than len(series). The
+        return value is however guaranteed to be consistent with get_time_stops().
         If `component` is 'None', return the full multi-dimensional trace
 
         Parameters
@@ -3333,7 +3365,7 @@ class Series(ConvolveMixin, History):
             - False (default)   : do not include padding
 
         time_slice:
-            See get_time_array.
+            See get_time_stops.
         """
         if self._sym_tidx is not self._num_tidx:
             raise RuntimeError("You are in the midst of constructing a Theano graph. "
