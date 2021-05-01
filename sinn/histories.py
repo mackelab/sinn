@@ -208,7 +208,7 @@ class HistoryUpdateFunction(BaseModel):
         The update function. Its signature should be ``func(self, tidx)`` or
         ``func(tidx)``. The value of `namespace` is passed to the ``self``
         argument, when it is included.
-    inputs: list of history names  (List[str])
+    input_names: list of history names  (List[str])
         List of histories on which the update function depends.
         Use an empty list to indicate no dependencies.
         The names should match histories in `namespace`.
@@ -420,22 +420,30 @@ class HistoryUpdateFunction(BaseModel):
                     "should accept two arguments (typically ``(self, tidx)``), "
                     f"but is defined with {len(sig.parameters)}.")
         elif isinstance(func, MethodType):
-            if not isinstance(namespace, func.__class__):
-                # If they aren't the same, should we use the object or
-                # `namespace` as namespace ? Best to disallow the possibility.
-                raise ValueError("When a method used as an update function, "
-                                 "the specified namespace must be the object "
-                                 "containing that method.\n"
-                                 f"Namespace: {namespace}\nMethod: {func}\n"
-                                 f"Class containing method: {func.__class__}")
-            elif func not in namespace.__dict__:
-                # We passed a method, but are rebinding it to a new class instance
-                # This happens during model copy.
-                include_names = True
-                func = func.__func__  # Extract bare function from method
-            else:
-                # The 'self' argument is already set by the method
-                include_names = False
+            raise NotImplementedError(
+                "You seem to be trying to use a method as an update function "
+                "without decorating it with `@updatefunction`. This is not "
+                "currently supported, although it could be if we had a clear "
+                "use case for it.")
+            # # DO NOT DELETE THE CODE BELOW (yet)
+            # # From my testing this branch is never reached, but I think the
+            # # idea is worthwhile, if we can find a use case for it.
+            # if not isinstance(namespace, func.__class__):
+            #     # If they aren't the same, should we use the object or
+            #     # `namespace` as namespace ? Best to disallow the possibility.
+            #     raise ValueError("When a method used as an update function, "
+            #                      "the specified namespace must be the object "
+            #                      "containing that method.\n"
+            #                      f"Namespace: {namespace}\nMethod: {func}\n"
+            #                      f"Class containing method: {func.__class__}")
+            # elif func not in namespace.__dict__:
+            #     # We passed a method, but are rebinding it to a new class instance
+            #     # This happens during model copy.
+            #     include_names = True
+            #     func = func.__func__  # Extract bare function from method
+            # else:
+            #     # The 'self' argument is already set by the method
+            #     include_names = False
         else:
             if not isinstance(func, Transform):
                 raise TypeError(f"Argument `func` (value: {func}, type: "

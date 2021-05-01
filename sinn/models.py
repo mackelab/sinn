@@ -34,8 +34,9 @@ import sys
 import pydantic
 from pydantic import BaseModel, validator, root_validator
 from pydantic.typing import AnyCallable
-from typing import Any, Optional, Union, Tuple, Sequence
+from typing import Any, Optional, Union, Tuple, Sequence, List, Dict, Callable as CallableT
 from types import SimpleNamespace
+from dataclasses import dataclass
 
 import theano_shim as shim
 import mackelab_toolbox as mtb
@@ -171,8 +172,16 @@ ModelParams.update_forward_refs()
 
 ## updatefunction decorator
 
-PendingUpdateFunction = namedtuple('PendingUpdateFunction',
-                                   ['hist_nm', 'inputs', 'upd_fn'])
+# PendingUpdateFunction = namedtuple('PendingUpdateFunction',
+#                                    ['hist_nm', 'inputs', 'upd_fn'])
+@dataclass
+class PendingUpdateFunction:
+    hist_nm: str
+    inputs : List[str]
+    upd_fn : CallableT
+    def __call__(self, model, k):
+        return self.upd_fn(model, k)
+
 def updatefunction(hist_nm, inputs):
     """
     Decorator. Attaches the following function to the specified history,
@@ -331,6 +340,12 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         for nm, T in annotations.items():
             if nm in new_annotations:
                 raise TypeError(f"Name clash in {cls} definition: '{nm}'")
+            # c.f. pydantic.main.update_forward_refs & pydantic.typing.evaluate_forwardref
+            globalns = sys.modules[namespace['__module__']].__dict__
+            if isinstance(T, str):
+                # Sometimes, even if types are in the namespace, they still
+                # get set as strings in the annotations
+                T = globalns.get(T, T)
             new_annotations[nm] = T
             if isinstance(T, type) and issubclass(T, History):
                 _hist_identifiers.add(nm)
@@ -1061,7 +1076,44 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             .format(name, self.t0, self.tn, self.dt)
 
     def __repr__(self):
-        return self.summarize()
+        return f"<{str(self)}>"
+
+    def _repr_html_(self):
+        summary = self.get_summary()
+        topdivline = '<div style="margin-bottom: 0; border-left: solid black 1px; padding-left: 10px">'
+        modelline = f'<p style="margin-bottom:0">Model <b>{summary.model_name}</b>'
+        if isinstance(self, Model):  # Eventually we want to be able to be able to call this on the class
+            modelline += f' (<code>t0: {self.t0}</code>, <code>tn: {self.tn}</code>, <code>dt: {self.dt}</code>)'
+        modelline += '</p>'
+        topulline = '<ul style="margin-top: 0;">'
+        stateline = '<li>State variables: '
+        stateline += ', '.join([f'<code>{v}</code>' for v in summary.state_vars])
+        stateline += '</li>'
+        paramblock = '<li>Parameters\n<ul>\n'
+        if isinstance(summary.params, dict):
+            for name, val in summary.params.items():
+                paramblock += f'<li><code> {name}={val}</code></li>\n'
+        else:
+            for name, val in summary.params:
+                paramblock += f'<li><code> {name}</code></li>\n'
+        paramblock += '</ul>\n</li>'
+        updfnblock = ""
+        for varname, upd_code in summary.update_functions.items():
+            updfnblock += f'<li>Update function for <code>{varname}</code>\n'
+            updfnblock += f'<pre>{upd_code}</pre>\n</li>\n'
+        if not summary.nested_models:
+            nestedblock = ""
+        else:
+            nestedblock = '<li>Nested models:\n<ul>'
+            for nestedmodel in summary.nested_models:
+                nestedblock += f'<li>{nestedmodel._repr_html_()}</li>'
+            nestedblock += '</ul></li>\n'
+
+        return "\n".join([
+            topdivline, modelline, topulline, stateline,
+            paramblock, updfnblock, nestedblock,
+            "</ul>", "</div"
+        ])
 
     def __getattribute__(self, attr):
         """
@@ -1099,7 +1151,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     def __getstate__(self):
         raise NotImplementedError
         # # Clear the nonstate histories: by definition these aren't necessary
-        # # to recover the state, but they could store huge intermediate date.
+        # # to recover the state, but they could store huge intermediate data.
         # # Pickling only stores history data up to their `cur_tidx`, so by
         # # clearing them we store no data at all.
         # state = self.__dict__.copy()
@@ -1375,6 +1427,111 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             return True
 
     @class_or_instance_method
+    def get_summary(self, hists=None):
+        summary = SimpleNamespace()
+        summary.model_name = self.name
+        State = getattr(self, 'State', None)
+        if State:
+            summary.state_vars = list(State.__annotations__)
+        else:
+            summary.state_vars = []
+        if isinstance(self, type):
+            Parameters = getattr(self, 'Parameters', None)
+            if Parameters:
+                summary.params = list(Parameters.__annotations__)
+            else:
+                summary.params = []
+        else:
+            params = getattr(self, 'params', None)
+            if params:
+                summary.params = params.dict()
+            else:
+                summary.params = {}
+        summary.update_functions = self.get_update_summaries(hists)
+        summary.nested_models = list(self.nested_models.values())
+        return summary
+
+    @class_or_instance_method
+    def get_update_summaries(self, hists=None) -> Dict[str,str]:
+        """
+        For selected histories, return a string summarizing the update function.
+        By default, the histories summarized are those of `self.state`.
+        May be called on the class itself, or an instance.
+
+        Parameters
+        ----------
+        hists: list | tuple of histories or str
+            List of histories to summarize.
+            For each history given, retrieves its update function.
+            Alternatively, a history's name can be given as a string
+
+        Returns
+        -------
+        Dict[str,str]: {hist name: hist upd code}
+        """
+        # Default for when `hists=None`
+        if hists is None:
+            State = getattr(self, 'State', None)
+            if State:
+                hists = list(self.State.__annotations__.keys())
+            else:
+                hists = []        # Normalize to all strings; take care that identifiers may differ from the history's name
+        histsdict = {}
+        nonnested_hists = getattr(self, 'nonnested_histories', {})
+        for h in hists:
+            if isinstance(h, History):
+                h_id = None
+                for nm, hist in nonnested_hists.items():
+                    if hist is h:
+                        h_id = nm
+                        break
+                if h_id is None:
+                    continue
+                h_nm = h.name
+            else:
+                assert isinstance(h, str)
+                if h not in self.__annotations__:
+                    continue
+                h_id = h
+                h_nm = h
+            histsdict[h_id] = h_nm
+        hists = histsdict
+        funcs = {pending.hist_nm: pending.upd_fn
+                 for pending in self._pending_update_functions}
+        if not all(isinstance(h, str) for h in hists):
+            raise ValueError(
+                "`hists` must be a list of histories or history names.")
+
+        # For each function, retrieve its source
+        srcs = {}
+        for hist_id, hist_nm in hists.items():
+            fn = funcs.get(hist_id, None)
+            if fn is None:
+                continue
+            src = inspect.getsource(fn)
+            # Check that the source defines a function as expected:
+            # first non-decorator line should start with 'def'
+            for line in src.splitlines():
+                if line.strip()[0] == '@':
+                    continue
+                elif line.strip()[:3] != 'def':
+                    raise RuntimeError(
+                        "Something went wrong when retrieve an update function's source. "
+                        "Make sure the source file is saved and try reloading the Jupyter "
+                        "notebook. Source should start with `def`, but we got:\n" + src)
+                else:
+                    break
+            # TODO: Remove indentation common to all lines
+            if hist_id != hist_nm:
+                hist_desc = f"{hist_id} ({hist_nm})"
+            else:
+                hist_desc = hist_id
+            srcs[hist_desc] = src.split('\n', 1)[1]
+                # 'split' is used to replace the `def` line: callers use
+                # the `hist_desc` value to create a more explicit string
+        return srcs
+
+    @class_or_instance_method
     def summarize(self, hists=None):
         nested_models = self._model_identifiers
         if isinstance(self, type):
@@ -1404,87 +1561,12 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         nameline += '\n' + '-'*len(nameline) + '\n'  # Add separating line under name
         stateline = "State variables: " + ', '.join(self.State.__annotations__)
         stateline = stateline + "\n"
+        updateblock = '\n\n'.join([
+            f"Update function for {hist_desc}:\n" + upd_src
+            for hist_desc, upd_src in self.get_update_summaries(hists).items()])
         summary = (nameline + stateline + paramline + nestedline
-                   + '\n' + self.summarize_updates(hists))
+                   + '\n' + updateblock)
         return '\n'.join((summary, *nested_summaries))
-
-    @class_or_instance_method
-    def summarize_updates(self, hists=None):
-        """
-        Return a string summarizing the update function. By default, returns those of `self.state`.
-        May be called on the class itself, or an instance.
-
-        FIXME
-        -----
-        hists
-
-        Parameters
-        ----------
-        hists: list|tuple of histories|str
-            List of histories for which to print the update.
-            For each history given, retrieves its update function.
-            Alternatively, a history's name can be given as a string
-        """
-        # Default for when `hists=None`
-        if hists is None:
-            hists = list(self.State.__annotations__.keys())
-        # Normalize to all strings; take care that identifiers may differ from the history's name
-        histsdict = {}
-        nonnested_hists = getattr(self, 'nonnested_histories', None)
-        for h in hists:
-            if isinstance(h, History):
-                h_id = None
-                for nm, hist in nonnested_hists.items():
-                    if hist is h:
-                        h_id = nm
-                        break
-                if h_id is None:
-                    continue
-                h_nm = h.name
-            else:
-                assert isinstance(h, str)
-                if h not in self.__annotations__:
-                    continue
-                h_id = h
-                h_nm = h
-            histsdict[h_id] = h_nm
-        hists = histsdict
-        funcs = {pending.hist_nm: pending.upd_fn
-                 for pending in self._pending_update_functions}
-        if not all(isinstance(h, str) for h in hists):
-            raise ValueError(
-                "`hists` must be a list of histories or history names.")
-
-        # For each function, retrieve its source
-        srcs = []
-        for hist_id, hist_nm in hists.items():
-            fn = funcs.get(hist_id, None)
-            if fn is None:
-                continue
-            src = inspect.getsource(fn)
-            # Check that the source defines a function as expected:
-            # first non-decorator line should start with 'def'
-            for line in src.splitlines():
-                if line.strip()[0] == '@':
-                    continue
-                elif line.strip()[:3] != 'def':
-                    raise RuntimeError(
-                        "Something went wrong when retrieve an update function's source. "
-                        "Make sure the source file is saved and try reloading the Jupyter "
-                        "notebook. Source should start with `def`, but we got:\n" + src)
-                else:
-                    break
-            # TODO: Remove indentation common to all lines
-            if hist_id != hist_nm:
-                hist_desc = f"{hist_id} ({hist_nm})"
-            else:
-                hist_desc = hist_id
-            # Replace the `def` line by a more explicit string
-            src = f"Update function for {hist_desc}:\n" + src.split('\n', 1)[1]
-            srcs.append(src)
-
-        # Join everything together and return
-        return '\n\n'.join(srcs)
 
     def get_tidx(self, t, allow_rounding=False):
         # Copied from History.get_tidx
