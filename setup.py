@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 
 setup(
       name='sinn',
-      version='0.2.0rc1',
+      version='0.2.0rc2',
       description="A package for Simulation and Inference of Neuron Networks",
 
       author="Alexandre René",
@@ -25,7 +25,7 @@ setup(
 
       install_requires=['numpy >= 1.13',
                         'scipy',
-                        'pydantic',
+                        'pydantic >= 1.7.1',
                         'mackelab-toolbox[iotools,utils,typing,parameters,theano] >= 0.2.0a1',
                         'theano_shim >= 0.2.3',
                         'theano-pymc',
