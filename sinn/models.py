@@ -2,7 +2,7 @@
 """
 Created on Thu Jan 17 2017
 
-Copyright 2017-2020 Alexandre René
+Copyright 2017-2021 Alexandre René
 
 TODO
 ----
@@ -37,6 +37,7 @@ from pydantic.typing import AnyCallable
 from typing import Any, Optional, Union, Tuple, Sequence, List, Dict, Callable as CallableT
 from types import SimpleNamespace
 from dataclasses import dataclass
+from parameters import ParameterSet
 
 import theano_shim as shim
 import mackelab_toolbox as mtb
@@ -50,7 +51,7 @@ from mackelab_toolbox.utils import class_or_instance_method
 import sinn
 import sinn.config as config
 import sinn.common as com
-from sinn.axis import DiscretizedAxis
+from sinn.axis import DiscretizedAxis, AbstractAxisIndex
 from sinn.histories import (
     History, TimeAxis, AutoHist, HistoryUpdateFunction, Series, Spiketrain)
 from sinn.kernels import Kernel
@@ -110,8 +111,14 @@ def get_model(modelname, *args, **kwargs):
 from mackelab_toolbox.typing import IndexableNamespace
 
 class ModelParams(BaseModel):
+
     class Config:
         json_encoders = mtb.typing.json_encoders
+
+    def __init__(self, *args, **kwargs):
+        # Reconstruct hierarchies from dotted parameter names
+        kwargs = ParameterSet(kwargs)
+        super().__init__(*args, **kwargs)
 
     def get_values(self):  # -> NumericModelParams
         """
@@ -119,7 +126,9 @@ class ModelParams(BaseModel):
         Returns a copy of the ModelParams, where each shared variable has
         been replaced by its current numeric value.
         """
-        d = {k: v.get_value() if shim.isshared(v) else v
+        d = {k: v.get_values() if isinstance(v, ModelParams) else
+                v.get_value() if shim.isshared(v) else
+                v
              for k,v in self}
         return IndexableNamespace(**d)
 
@@ -160,12 +169,23 @@ class ModelParams(BaseModel):
         if must_not_set_other_params and not set(values_dict) <= set(self.__fields__):
             raise ValueError("The following parameters are not recognized by the model: "
                              f"{set(values_dict) - set(self.__fields__)}")
+        # Build hierarchies, in case `values` uses dotted keys
+        values_dict = ParameterSet(values_dict)
         for k, v in values_dict.items():
-            self_v = getattr(self, k)
-            if shim.isshared(self_v):
-                self_v.set_value(v)
+            # Special track for nested models
+            if isinstance(v, (dict, SimpleNamespace)):
+                subΘ = getattr(self, k)
+                assert isinstance(subΘ, ModelParams)
+                subΘ.set_values(v, must_not_set_other_params=False)
+                    # At present, nested model params don't know what model
+                    # they attach to, and therefore can't validate their inputs
+            # Normal track
             else:
-                setattr(self, k, v)
+                self_v = getattr(self, k)
+                if shim.isshared(self_v):
+                    self_v.set_value(v)
+                else:
+                    setattr(self, k, v)
 ModelParams.update_forward_refs()
 
 # Model decorators
@@ -318,6 +338,15 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
                 raise TypeError(f"The attribute '{attr}' is disallowed for "
                                 "subclasses of 'sinn.models.Model'.")
 
+        # Replace any unnecessarily 'stringified' types
+        # (Sometimes, even if types are in the namespace, they still
+        #  get set as strings in the annotations)
+        # c.f. pydantic.main.update_forward_refs & pydantic.typing.evaluate_forwardref
+        globalns = sys.modules[namespace['__module__']].__dict__
+        for nm, T in annotations.items():
+            if isinstance(T, str):
+                annotations[nm] = globalns.get(T, T)
+
         ## `time` parameter
         if 'time' not in annotations:
             annotations['time'] = TimeAxis
@@ -340,12 +369,6 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         for nm, T in annotations.items():
             if nm in new_annotations:
                 raise TypeError(f"Name clash in {cls} definition: '{nm}'")
-            # c.f. pydantic.main.update_forward_refs & pydantic.typing.evaluate_forwardref
-            globalns = sys.modules[namespace['__module__']].__dict__
-            if isinstance(T, str):
-                # Sometimes, even if types are in the namespace, they still
-                # get set as strings in the annotations
-                T = globalns.get(T, T)
             new_annotations[nm] = T
             if isinstance(T, type) and issubclass(T, History):
                 _hist_identifiers.add(nm)
@@ -365,6 +388,7 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
                 State = getattr(C, 'State', None)
                 if State is not None:
                     break
+
         if abc.ABC in bases:
             # Deactivate warnings for abstract models
             pass
@@ -388,7 +412,8 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
             # Resolve string annotations (for 3.9+, annotations are always strings)
             for nm, annot in State.__annotations__.items():
                 if isinstance(annot, str):
-                    State.__annotations__[nm] = sys.modules[metacls.__module__].__dict__.get(annot, annot)
+                    # State.__annotations__[nm] = sys.modules[metacls.__module__].__dict__.get(annot, annot)
+                    State.__annotations__[nm] = globalns.get(annot, annot)
             for nm, T in State.__annotations__.items():
                 histT = all_annotations.get(nm, None)
                 if histT is None:
@@ -431,6 +456,8 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         #         f"BaseModel. `{cls}.Parameters.mro()`: {Parameters.mro()}.")
 
         # Ensure `Parameters` inherits from ModelParams
+        # FIXME: When doing this, ensure Parameters.__module__ is the same as
+        #        originally (and not 'abc')
         if not issubclass(Parameters, ModelParams):
             # We can't have multiple inheritance if the parents don't have the
             # same metaclass. Standard solution: Create a new metaclass, which
@@ -556,9 +583,11 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         # Update namespace
         namespace['Config'] = Config
         namespace['Parameters'] = Parameters
-        namespace['_kernel_identifiers'] = list(_kernel_identifiers)
-        namespace['_hist_identifiers'] = list(_hist_identifiers)
-        namespace['_model_identifiers'] = list(_model_identifiers)
+        # It's not essential to have sorted identifiers (`list` would also work)
+        # but predictability helps with debugging, and may affect serialization.
+        namespace['_kernel_identifiers'] = sorted(_kernel_identifiers)
+        namespace['_hist_identifiers'] = sorted(_hist_identifiers)
+        namespace['_model_identifiers'] = sorted(_model_identifiers)
         namespace['_pending_update_functions'] = list(_pending_update_functions.values())
         namespace['__annotations__'] = new_annotations
 
@@ -1090,11 +1119,11 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         stateline += ', '.join([f'<code>{v}</code>' for v in summary.state_vars])
         stateline += '</li>'
         paramblock = '<li>Parameters\n<ul>\n'
-        if isinstance(summary.params, dict):
-            for name, val in summary.params.items():
+        if isinstance(summary.params, IndexableNamespace):
+            for name, val in summary.params:
                 paramblock += f'<li><code> {name}={val}</code></li>\n'
         else:
-            for name, val in summary.params:
+            for name in summary.params:
                 paramblock += f'<li><code> {name}</code></li>\n'
         paramblock += '</ul>\n</li>'
         updfnblock = ""
@@ -1106,7 +1135,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         else:
             nestedblock = '<li>Nested models:\n<ul>'
             for nestedmodel in summary.nested_models:
-                nestedblock += f'<li>{nestedmodel._repr_html_()}</li>'
+                nestedblock += f'<li style="margin-bottom:.6em">{nestedmodel._repr_html_()}</li>'
             nestedblock += '</ul></li>\n'
 
         return "\n".join([
@@ -1142,6 +1171,11 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 else:
                     # Return PyMC3 prior
                     return param.prior
+
+        # Return attributes from nested models
+        elif '.' in attr:
+            submodel, subattr = attr.split('.', 1)
+            return getattr(getattr(self, submodel), subattr)
 
         else:
             return super().__getattribute__(attr)
@@ -1183,6 +1217,16 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     @property
     def nonnested_history_set(self):
         return {getattr(self, nm) for nm in self._hist_identifiers}
+    @property
+    def nested_histories(self):
+        """
+        Return the model's histories as {name: History} pairs, with the names
+        of nested histories prefixed by the their submodel name: "{submodel}.{name}".
+        """
+        return {**self.nonnested_histories,
+                **{f"{submodel_nm}.{hist_nm}": hist
+                   for submodel_nm, submodel in self.nested_models.items()
+                   for hist_nm, hist in submodel.nested_histories.items()}}
     @property
     def history_set(self):
         return set(chain(self.nonnested_history_set,
@@ -1444,7 +1488,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         else:
             params = getattr(self, 'params', None)
             if params:
-                summary.params = params.dict()
+                summary.params = params.get_values()
             else:
                 summary.params = {}
         summary.update_functions = self.get_update_summaries(hists)
@@ -1720,12 +1764,21 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         """
         # TODO?: Allow resetting only certain entries in _advance_updates ?
         #        Or: Option for each entry to be seeded the same way ?
-        shim.reseed_rng(self.rng, seed)
+        rngs = {id(rng): rng for rng in self.rng_inputs}
+            # Dictionary allows multiple submodels to have an RNG, as long
+            # as it is shared.
+        if len(rngs) == 0:
+            logger.warning(f"Model {self} has no RNGs; nothing to reseed.")
+        if len(rngs) > 1:
+            raise NotImplementedError("`reseed_rngs` doesn't support models "
+                                      "with multiple random number generators.")
+        rng = next(iter(rngs.values()))
+        shim.reseed_rng(rng, seed)
         # Find all the Theano RNG streams and reseed them.
         # This is analogous to what `seed` does with the streams listed in `rng.state_updates`
         srs = sys.modules.get('theano.tensor.shared_RandomStream', None)
         if srs is not None:
-            seedgen = self.rng.gen_seedgen  # Was seeded by `reseed_rng` above
+            seedgen = rng.gen_seedgen  # Was seeded by `reseed_rng` above
             for update_dict in self._advance_updates.values():
                 for v in update_dict:
                     if isinstance(v, srs.RandomStateSharedVariable):
@@ -1760,7 +1813,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             # TODO: Simply cast as NumericModelParams
             # Wait until kernels have been cached before updating model params
 
-        # TODO: Everyting with old_ids, clear_advance_fn should be deprecatable
+        # TODO: Everything with old_ids & clear_advance_fn should be deprecatable
         # We don't need to clear the advance function if all new parameters
         # are just the same Theano objects with new values.
         old_ids = {name: id(val) for name, val in self.params}
@@ -1862,9 +1915,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         ti = self.cur_tidx
         return self.State(*(h[ti-self.t0idx+h.t0idx] for h in self.statehists))
 
-    def advance(self,
-                upto: Union[int, float],
-                histories: Union[Tuple[History],History]=()):
+    def integrate(self,
+                  upto: Union[int, float],
+                  histories: Union[Tuple[History],History]=()):
         """
         Advance (i.e. integrate) a model.
         For a non-symbolic model the usual recursion is used – it's the
@@ -1877,9 +1930,10 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
         Parameters
         ----------
-        upto: int, float
+        upto: int, float, AxisIndex
             Compute history up to this point (inclusive).
             May also be the string 'end'
+            If an AxisIndex, it must be compatible with ``self.time``.
         histories: Tuple of histories to integrate. State histories do not need to
             be included; they are added automatically.
             If only one history is specified, it doesn't need to be wrapped in
@@ -1905,6 +1959,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         if end == 'end':
             endtidx = self.tnidx
         else:
+            if isinstance(end, AbstractAxisIndex):
+                end = end.convert(self.time)
             endtidx = self.get_tidx(end)
 
         # Make sure we don't go beyond given data
@@ -1931,7 +1987,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         else:
             if not shim.graph.is_computable(
                 [hist._sym_tidx for hist in self.statehists]):
-                raise TypeError("Advancing models is only implemented for "
+                raise TypeError("Integrating models is only implemented for "
                                 "histories with a computable current time "
                                 "index (i.e. the value of `hist._sym_tidx` "
                                 "must only depend on symbolic constants and "
@@ -1951,7 +2007,6 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 self._advance(histories)(curtidx, endtidx+1)
                 # _advance applies the updates, so should get rid of them
                 self.theano_reset()
-    integrate = advance
 
     @property
     def no_updates(self):
