@@ -604,7 +604,7 @@ class History(HistoryBase, abc.ABC):
                  '_sym_data', '_num_data',  # Symbolic and numeric (shared) data
                  '_sym_tidx', '_num_tidx',  # Trackers for the current symbolic & concrete time indices
                  '_update_pos', '_update_pos_stop',  # See _compute_up_to
-                 '_batch_loop_flag'  # See _is_batch_computable
+                 '_batch_loop_flag',        # See _is_batch_computable
                  '_update_function', '_range_update_function'
                  )
     @property
