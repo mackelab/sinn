@@ -292,6 +292,11 @@ class HistoryUpdateFunction(BaseModel):
     #     d['namespace'] = self.namespace
     #     return d
     def dict(self, *a, **kw):
+        """
+        `namespace` is excluded by default, unless it is explicitely requested
+        with the `include` keyword. This prevents it from being included in
+        serializations (which would typically lead to inifinite recursion).
+        """
         # Make a shallow copy of the namespace; in general namespace is a
         # module, class or Model, and we don't want to copy it.
         # In particular if it is a Model, this prevents ∞-recursion
@@ -302,10 +307,12 @@ class HistoryUpdateFunction(BaseModel):
         #         " which is not serializable. If you are attempting to export "
         #         " to JSON, use a Transform object, which supports serialization.")
         excl = kw.pop('exclude', None)
-        exclude_namespace = excl is not None and ('namespace' in excl)
+        # exclude_namespace = excl is not None and ('namespace' in excl)
+        include_namespace = (kw.get('include', None) is not None
+                             and 'namespace' in kw['include'])
         excl = add_exclude_mask(excl, {'namespace'})
         d = super().dict(*a, exclude=excl, **kw)
-        if not exclude_namespace:
+        if include_namespace:
             d['namespace'] = self.namespace
         # The input_names are stored as a set, therefore have undefined order
         # smttask relies on having consistent hashes of the serialization,
