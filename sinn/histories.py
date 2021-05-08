@@ -3,7 +3,7 @@
 """
 Created on Mon Jan 16 2017
 
-Copyright 2017-2020 Alexandre René
+Copyright 2017-2021 Alexandre René
 """
 from __future__ import annotations
     # Postponed annotations allow cleaner self-referencing models
@@ -947,7 +947,7 @@ class History(HistoryBase, abc.ABC):
         """
         Returns the time index up to which the history has been computed.
         Returned index is not corrected for padding; to get the number of bins
-        computed beyond t0, do `hist.cur_tidx - hist.t0idx`.
+        computed beyond t0, do ``hist.cur_tidx - hist.t0idx + 1``.
         """
         curtidx = self._num_tidx.get_value()
         if curtidx > self.tnidx:
@@ -1281,7 +1281,8 @@ class History(HistoryBase, abc.ABC):
 
     @property
     def time_stops(self):
-        return self.time.unpadded_stops_array
+        return self.get_time_stops()
+        # return self.time.unpadded_stops_array
     times = time_stops  # In interactive sessions `time_stops` is too verbose
 
     @property
