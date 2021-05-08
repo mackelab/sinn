@@ -709,9 +709,12 @@ class AxisIndexMeta(abc.ABCMeta):
         if isinstance(value, cls.Delta):  # Includes both abs and delta
             return value
         elif isinstance(value,  (AbstractAxisIndex, AbstractAxisIndexDelta)):
-            raise IndexTypeOperationError(
-                "`AxisIndex.make_index` cannot convert "
-                "between indexes attached to different dimensions.")
+            if cls.is_compatible(value):
+                return cls(value.plain)
+            else:
+                raise IndexTypeOperationError(
+                    "`AxisIndex.make_index` cannot convert "
+                    "between indexes attached to different dimensions.")
         # elif (isinstance(value, numbers.Integral)  # <-- does not include 0-dim arrays
         #       or shim.is_symbolic(value) and shim.is_type(value, 'int')):
         elif (shim.isscalar(value) and shim.istype(value, 'int')):
@@ -767,8 +770,8 @@ class AxisIndexMeta(abc.ABCMeta):
           - `idx` is an index delta of another type, but with the same
             step size as `cls`.
           - `idx` is a plain integer, which is castable to `cls.dtype`. Note
-            that we compare types, so `np.int64(2)` is still not castable to
-            `int32`.
+            that we compare types, so ``np.int64(2)`` is still not castable to
+            ``int32``.
         """
         idx_types = [_idx if isinstance(_idx, type) and issubclass(_idx, AbstractAxisIndexDelta)
                      else type(_idx) if isinstance(_idx, AbstractAxisIndexDelta)

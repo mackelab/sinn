@@ -234,6 +234,11 @@ def _test_regular_axis(cglib):
     assert axis1.Index.is_compatible(axis2.Index(5)) is False
     assert axis1.Index.is_compatible(5)
     assert axis1.Index.is_compatible(axis2.Index.Delta(5))
+    # After reporting compatibility, check that we can actually perform arithmetic
+    # TODO: Make a new arithmetic checking section ?Q
+    i1 = axis1.Index(10); i2 = axis2.Index.Delta(5)
+    assert i1 - i2 == 5
+    assert i1 + i2 == 15
 
     assert len(axis1) == len(axis2) + 1 == len(axis3) == 101
     assert axis1.index(1*ureg.s) == axis1.index(1.*ureg.s) == 10
