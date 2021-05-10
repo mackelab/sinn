@@ -914,6 +914,23 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         Both arguments are meant for internal use and documented with comments
         in the source code.
         """
+        # If there are submodels, make their parameters match those of the
+        # container (in particular, for Theano shared vars, the two parameter
+        # sets will point to the same instance, allowing either to be used.)
+        for submodelname, submodel in self.nested_models.items():
+            for subθname, θ in submodel.params:
+                subparams = getattr(self.params, submodelname)
+                assert subθname in subparams.__dict__, (
+                    f"Parameter set for submodel '{submodelname}' does not contain a parameter '{subθname}'.")
+                setattr(subparams, subθname, θ)
+                # Update the variable name to include the parent model.
+                # (with a guard in case we run this twice)
+                if hasattr(θ, 'name') and submodelname not in θ.name:
+                    # (There are ways the test above can fail (e.g. if the 
+                    # parameter's name is the same as the submodel's), but
+                    # those seem quite unlikely.
+                    θ.name = submodelname + "." + θ.name
+        
         if update_functions is not None:
             # 1) update_functions should be a dict, and will override update function
             # defs from the model declaration.
