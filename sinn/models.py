@@ -67,6 +67,8 @@ registered_models = _models.keys()
     # Registering models allows us to save the model name within a parameter
     # file, and write a function which can build the correct model
     # automatically based on only on that parameter file.
+    # NOTE: sinn-full uses a much nicer mechanism of TaggedCollections
+    # which mostly makes _models (and the functions below) obsolete.
 
 expensive_asserts = True
 
@@ -102,6 +104,29 @@ def get_model(modelname, *args, **kwargs):
     """Retrieves the model associated with the model name. Same arguments as dict.get()."""
     global _models
     return _models.get(modelname, *args, **kwargs)
+
+# def nesteddictwalk(d, separator='.', terminate=()):
+#     """
+#     Walk a nested dict structure, using a generator.
+#      Values associated to keys matching one of the values in `terminate` are not
+#      recursed into, even if they are dictionaries.
+# 
+#     Composite keys are created by joining each key to the key of the parent dict
+#     using `separator`.
+# 
+#     .. Note:: Copied from the parameters package (parameters.__init__.py), to
+#        add the `terminate` argument.
+#     """
+#     # Used in Model.__init__ to delay creation of update functions until all
+#     # histories are created.
+#     if isinstance(terminate, str):
+#         terminate = [terminate]
+#     for key1, value1 in d.items():
+#         if isinstance(value1, dict) and key1 not in terminate:
+#             for key2, value2 in nesteddictwalk(value1, separator, terminate=terminate):  # recurse into subdict
+#                     yield "%s%s%s" % (key1, separator, key2), value2
+#         else:
+#             yield key1, value1
 
 # Parameters
 
@@ -811,13 +836,17 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         update_functions = {}
         replace_in_dict = {}
         kwargs = copy.copy(kwargs)
+        # NB: We specifically don't recurse into kwargs for submodels:
+        #     the update_function specs for submodels need to remain in kwargs
+        #     until they reach their submodel, so that it can attach it correctly
         for attr, v in kwargs.items():
             # Deals with the case where we initialize from a .dict() export
             if isinstance(v, dict) and 'update_function' in v:
-                update_functions[attr] = v['update_function']
+                update_functions[f"{attr}.update_function"] = v['update_function']
+                update_functions[f"{attr}.range_update_function"] = v.get('range_update_function', None)
                 replace_in_dict[attr] = copy.copy(v)
                 replace_in_dict[attr]['update_function'] = None
-                # v['update_function'] = None
+                replace_in_dict[attr]['range_update_function'] = None
         # We do it this way to avoid mutating the kwargs
         for attr, v in replace_in_dict.items():
             kwargs[attr] = v
@@ -858,7 +887,10 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         #            for h in hists.values())
         excl_nmspc = {attr: {'update_function': {'namespace'}}
                       for attr in hists}
-        exclude = add_exclude_mask(exclude, excl_nmspc)
+        # Remove connected hists which are actually part of another submodel
+        excl_conn = {attr: ... for attr, hist in hists.items()
+                     if attr != hist.name}
+        exclude = add_exclude_mask(exclude, {**excl_nmspc, **excl_conn})
         # Proceed with parent's dict method
         obj = super().dict(*args, exclude=exclude, **kwargs)
         # Add the model name
@@ -905,7 +937,10 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 HistoryUpdateFunction._deserialization_locals = HistoryUpdateFunction._deserialization_locals.copy()
                 HistoryUpdateFunction._deserialization_locals['updatefunction'] = idempotent
             # Attach all explicitly passed update functions
-            for hist_name, upd_fn in update_functions.items():
+            for upd_fn_key, upd_fn in update_functions.items():
+                if upd_fn is None:
+                    continue
+                hist_name, method_name = upd_fn_key.rsplit('.', 1)
                 hist = getattr(self, hist_name)
                 ns = upd_fn.get('namespace', self)
                 if ns is not self:
@@ -914,7 +949,13 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                         "not necessary, and if done, should match the model "
                         "instance where it is defined.")
                 upd_fn['namespace'] = self
-                hist._set_update_function(HistoryUpdateFunction.parse_obj(upd_fn))
+                if method_name == "update_function":
+                    hist._set_update_function(HistoryUpdateFunction.parse_obj(upd_fn))
+                elif method_name == "range_update_function":
+                    hist._set_range_update_function(HistoryUpdateFunction.parse_obj(upd_fn))
+                else:
+                    raise ValueError(f"Unknown update function '{method_name}'. "
+                                     "Recognized values: 'update_function', 'range_update_function'.")
             # Reset deserializaton locals
             HistoryUpdateFunction._deserialization_locals = stored_locals
 

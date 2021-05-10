@@ -682,7 +682,17 @@ class History(HistoryBase, abc.ABC):
 
         # The update_function setter takes care of attaching history
         # (This clears the data, so do it before assigning to tidx & data)
-        self.update_function       = update_function
+        msg = ("Attempting to recreate a serialized update function. "
+               "Typically this is more reliably done by deserializing "
+               "a Model, which appropriately links the model instance.")
+        if isinstance(update_function, dict):
+            warn(msg)
+            update_function = HistoryUpdateFunction.parse_obj(update_function)
+        self.update_function = update_function
+        if isinstance(range_update_function, dict):
+            warn(msg)
+            range_update_function = HistoryUpdateFunction.parse_obj(
+                range_update_function)
         self.range_update_function = range_update_function
 
         # Initialize symbolic & concrete data & index
@@ -991,7 +1001,7 @@ class History(HistoryBase, abc.ABC):
     # We split the setter into two methods, so that Model._base_initialize can
     # call _set_update_function without the side-effect of clearing the history
     def _set_update_function(self, f: HistoryUpdateFunction):
-        assert isinstance(f, HistoryUpdateFunction) or f is None
+        assert isinstance(f, HistoryUpdateFunction) or f is None, "`f` must be a HistoryUpdateFunction"
         if shim.pending_updates():
             symb_upds = shim.get_updates().keys()
             raise RuntimeError(
@@ -1021,8 +1031,8 @@ class History(HistoryBase, abc.ABC):
             `self.clear()` is called to invalidate preexisting data.
         """
         return self._range_update_function
-    @range_update_function.setter
-    def range_update_function(self, f :HistoryUpdateFunction):
+    
+    def _set_range_update_function(self, f :HistoryUpdateFunction):
         assert isinstance(f, HistoryUpdateFunction) or f is None
         if shim.pending_updates():
             symb_upds = shim.get_updates().keys()
@@ -1032,11 +1042,15 @@ class History(HistoryBase, abc.ABC):
         if f is not None:
             f.return_dtype = self.dtype
         object.__setattr__(self, '_range_update_function', f)
+    @range_update_function.setter
+    def range_update_function(self, f :HistoryUpdateFunction):
+        self._set_range_update_function(f)
         # Invalidate any existing data
         if hasattr(self, '_num_data'):
             # During instantiation, update function is assigned before creating
             # the data structure; nothing to clear in that case.
             self.clear()
+
 
     def __hash__(self):
         """
