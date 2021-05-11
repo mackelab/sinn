@@ -172,8 +172,11 @@ def add_exclude_mask(exclude, mask):
         else:
             assert isinstance(mask, dict)
             for attr, excl in mask.items():
-                exclude[attr] = add_exclude_mask(
-                    exclude.get(attr, None), excl)
+                if excl == ...:
+                    exclude[attr] = ...
+                else:
+                    exclude[attr] = add_exclude_mask(
+                        exclude.get(attr, None), excl)
     else:
         if exclude is None:
             exclude = set()
