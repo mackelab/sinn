@@ -1054,11 +1054,14 @@ class History(HistoryBase, abc.ABC):
 
     def __hash__(self):
         """
-        Current implementation just hashes the history name.
+        Current implementation just returns the object id.
         I'm still not convinced this is a good idea, but it allows Histories
         to used in sets (Model) and tested for inclusion in sets (SimpleEval).
         """
-        return stableintdigest(self.name)
+        return id(self)
+        # return stableintdigest(self.name)
+            # Hashing the name is fragile – nested models may contain several
+            # submodels with histories of the same name.
     @property
     def digest(self):
         return stablehexdigest(self.json())
@@ -2144,6 +2147,8 @@ class PopulationHistory(PopulationHistoryBase, History):
                 kwargs['pop_sizes'] = template.pop_sizes
         super().__init__(template=template, **kwargs)
 
+    __hash__ = History.__hash__  # Not inherited; see https://github.com/samuelcolvin/pydantic/issues/2422#issuecomment-828439446
+
     @validator('pop_sizes')
     def check_pop_sizes(cls, pop_sizes):
         if not isinstance(pop_sizes, Sized):  # Tests if len() is valid
@@ -2359,6 +2364,8 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         json_encoders = {**History.Config.json_encoders,
                          shim.sparse.csr_matrix_wrapper:
                             shim.sparse.csr_matrix_wrapper.json_encoder}
+
+    __hash__ = History.__hash__  # Not inherited; see https://github.com/samuelcolvin/pydantic/issues/2422#issuecomment-828439446
 
     @History.update_function.setter
     def update_function(self, f: Optional[HistoryUpdateFunction]):
@@ -3011,6 +3018,8 @@ class Series(ConvolveMixin, History):
 
     # _strict_index_rounding = True
     dtype : DType = shim.config.floatX  # Set default dtype
+
+    __hash__ = History.__hash__  # Not inherited; see https://github.com/samuelcolvin/pydantic/issues/2422#issuecomment-828439446
 
     def initialized_data(self, init_data=None):
         """
@@ -3718,7 +3727,7 @@ class PopulationSeries(PopulationHistory, Series):
           total number of units.
     As for Spiketrain, the `shape` argument is replaced by `pop_sizes`.
     """
-    pass
+    __hash__ = History.__hash__  # Not inherited; see https://github.com/samuelcolvin/pydantic/issues/2422#issuecomment-828439446
 
 class AutoHist:
     """
