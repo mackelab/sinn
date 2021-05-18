@@ -2,6 +2,7 @@ from pydantic import BaseModel, validator
 from pydantic.typing import AnyCallable
 from typing import Callable as CallableT
 from inspect import signature
+from parameters import ParameterSet
 
 ## initializer decorator
 def initializer(
@@ -150,7 +151,9 @@ def add_exclude_mask(exclude, mask):
     in order to ensure certain attributes are always excluded from export.
 
     :param exclude: set | dict | None
-    :param mask: set | dict
+    :param mask: set | dict | ParameterSet
+        Hierarchies can be indicated with either nested dicts or by separating
+        the levels in the key names with a period.
     :returns: set | dict
         Returns dict if `exclude` or `mask` are a dict, otherwise returns
         set.
@@ -171,10 +174,13 @@ def add_exclude_mask(exclude, mask):
             exclude.update({attr: ... for attr in mask})
         else:
             assert isinstance(mask, dict)
-            for attr, excl in mask.items():
-                if excl == ...:
+            # Use ParameterSet to resolve dotted hierarchies
+            for attr, excl in ParameterSet(mask).items():
+                if excl is ...:
                     exclude[attr] = ...
-                else:
+                elif exclude.get(attr, None) is not ...:
+                    # If it matches ..., there is nothing to do:
+                    # everything under 'attr' is already excluded
                     exclude[attr] = add_exclude_mask(
                         exclude.get(attr, None), excl)
     else:

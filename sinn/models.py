@@ -352,7 +352,7 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         new_annotations = {}
         _kernel_identifiers = inherited_kernel_identifiers
         _hist_identifiers = inherited_hist_identifiers
-        _model_identifiers = set()
+        _model_identifiers = {}  # Use dict as an ordered set
         _pending_update_functions = inherited_pending_updates
             # pending updates use a dict to allow derived classes to override
 
@@ -400,7 +400,7 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
             elif isinstance(T, type) and issubclass(T, Kernel):
                 _kernel_identifiers.add(nm)
             elif isinstance(T, type) and cls != 'Model' and issubclass(T, Model):
-                _model_identifiers.add(nm)
+                _model_identifiers[nm] = None  # We use dict as an ordered set
             elif isinstance(T, PendingUpdateFunction):
                 # FIXME: Remove. I don't remember why I originally put this branch
                 raise AssertionError("Leftover PendingUpdateFunction")
@@ -612,7 +612,7 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         # but predictability helps with debugging, and may affect serialization.
         namespace['_kernel_identifiers'] = sorted(_kernel_identifiers)
         namespace['_hist_identifiers'] = sorted(_hist_identifiers)
-        namespace['_model_identifiers'] = sorted(_model_identifiers)
+        namespace['_model_identifiers'] = list(_model_identifiers)
         namespace['_pending_update_functions'] = list(_pending_update_functions.values())
         namespace['__annotations__'] = new_annotations
 
@@ -888,8 +888,16 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         excl_nmspc = {attr: {'update_function': {'namespace'}}
                       for attr in hists}
         # Remove connected hists which are actually part of another submodel
-        excl_conn = {attr: ... for attr, hist in hists.items()
-                     if attr != hist.name}
+        already_seen = set()
+        excl_conn = {}
+        # NB: The order in which we iterate over nested_models is set by  
+        #     the order in which submodels are defined in the class
+        for subnm, submodel in self.nested_models.items():
+            for histnm, hist in submodel.nested_histories.items():
+                if id(hist) in already_seen:
+                    excl_conn[f"{subnm}.{histnm}"] = ...
+                else:
+                    already_seen.add(id(hist))
         exclude = add_exclude_mask(exclude, {**excl_nmspc, **excl_conn})
         # Proceed with parent's dict method
         obj = super().dict(*args, exclude=exclude, **kwargs)

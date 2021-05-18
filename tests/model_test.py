@@ -40,6 +40,9 @@ def cd_to_test_dir():
         import sinn
         os.chdir(Path(sinn.__file__).parent.parent/'tests')
 
+# TODO: Test serialization of nested models, especially that histories
+#       connecting submodels are not serialized twice, and correctly reconnected.
+
 def _test_model(cgshim):
     # All sinn imports need to be guarded inside functions, to avoid
     # shim state being messed up
@@ -65,6 +68,9 @@ def _test_model(cgshim):
                       time = TimeAxis(min=0, max=10),
                       rng = shim.config.RandomStream())
 
+    # Ensure that the automatic excludes added in `model.dict` aren't too aggressive
+    assert {"λ", "spikes"} <= set(model.dict())
+                      
     # Compute series history a few time steps
     model.λ(2*model.dt)
 
