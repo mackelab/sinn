@@ -545,8 +545,16 @@ def hist_compare(hist1, hist2):
     assert hist1.time == hist2.time
     assert hist1.time.label == hist2.time.label
     assert np.all(hist1.time.stops_array == hist2.time.stops_array)
-    assert hist1.time.pad_left  != hist2.time.pad_left
-    assert hist1.time.pad_right != hist2.time.pad_right
+    assert type(hist1.time.pad_left)  != type(hist2.time.pad_left)
+    assert type(hist1.time.pad_right) != type(hist2.time.pad_right)
+    # Since `pad_left` is a index interval, it can compare equal between
+    # histories if the time step is the same
+    if hist1.dt == hist2.dt:
+        assert hist1.time.pad_left  == hist2.time.pad_left
+        assert hist1.time.pad_right == hist2.time.pad_right
+    else:
+        assert hist1.time.pad_left  != hist2.time.pad_left
+        assert hist1.time.pad_right != hist2.time.pad_right
     assert hist1.time.pad_left.plain  == hist2.time.pad_left.plain
     assert hist1.time.pad_right.plain == hist2.time.pad_right.plain
 
