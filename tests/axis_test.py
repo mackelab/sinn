@@ -63,6 +63,17 @@ def _test_map_axis(cglib):
     assert axis1.Index.is_compatible(axis2.Index.Delta(5)) is False
         # Fails because axes don't have a step (so Δs can't be compared)
         # For RangeAxis below, last assert is True
+        
+    assert axis1.is_compatible_value(5.*Q.m)
+    assert axis2.is_compatible_value(5.*ureg.s)
+    assert axis1.is_compatible_value(np.array(5.)*Q.m)
+    assert axis2.is_compatible_value(np.array(5.)*ureg.s)
+    #assert not axis1.is_compatible_value(5*Q.m)     # (Q.m auto converts to float, scalar array)
+    assert not axis2.is_compatible_value(5*ureg.s)   # wrong dtype
+    assert not axis1.is_compatible_value(5.*ureg.s)  # wrong units
+    assert not axis2.is_compatible_value(5.*Q.m)
+    assert not axis1.is_compatible_value(5.)         # wrong (no) units
+    assert not axis2.is_compatible_value(5.)
 
     assert np.all(np.array(axis1.stops) == (0.1*np.arange(50))**2)
     assert np.all(axis1.stops_array == (0.1*np.arange(50))**2)
@@ -235,10 +246,16 @@ def _test_regular_axis(cglib):
     assert axis1.Index.is_compatible(5)
     assert axis1.Index.is_compatible(axis2.Index.Delta(5))
     # After reporting compatibility, check that we can actually perform arithmetic
-    # TODO: Make a new arithmetic checking section ?Q
+    # TODO: Make a new arithmetic checking section ?
     i1 = axis1.Index(10); i2 = axis2.Index.Delta(5)
     assert i1 - i2 == 5
     assert i1 + i2 == 15
+        
+    assert axis2.is_compatible_value(5.*ureg.s)
+    assert axis2.is_compatible_value(np.array(5.)*ureg.s)
+    assert not axis2.is_compatible_value(5*ureg.s)   # wrong dtype
+    assert not axis2.is_compatible_value(5.*Q.m)     # wrong units
+    assert not axis2.is_compatible_value(5.)         # wrong (no) units
 
     assert len(axis1) == len(axis2) + 1 == len(axis3) == 101
     assert axis1.index(1*ureg.s) == axis1.index(1.*ureg.s) == 10

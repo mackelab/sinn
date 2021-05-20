@@ -406,11 +406,12 @@ class Axis(BaseModel, abc.ABC):
 
         """
         # For theano vars, we can't use `np.dtype(type(value))`, and dtype
-        # is ust a string
-        if hasattr(value, 'dtype'):
-            kind = np.dtype(value.dtype).kind
+        # is just a string
+        numvalue = getattr(value, 'magnitude', value)
+        if hasattr(numvalue, 'dtype'):
+            kind = np.dtype(numvalue.dtype).kind
         else:
-            kind = np.dtype(type(value)).kind
+            kind = np.dtype(type(numvalue)).kind
         return (
             kind == np.dtype(self.stops_dtype).kind
             and mtb.units.detect_unit_library(value) == mtb.units.detect_unit_library(self.unit)
