@@ -1916,12 +1916,10 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             diskcache.save(str(hash(kernel)), kernel)
             kernel.update_params(**pending_params.dict())
 
-        # Update self.params in place; TODO: there's likely a cleaner way
-        # for nm in pending_params.__fields__:
-        #     setattr(self.params, nm, getattr(pending_params, nm))
+        # Update self.params in place
         self.params.set_values(pending_params)
 
-        # TODO: Everyting with old_ids, clear_advance_fn should be deprecatable
+        # TODO: Everything with old_ids, clear_advance_fn should be deprecatable
         clear_advance_fn = any(id(val) != old_ids[name]
                                for name, val in self.params)
 
