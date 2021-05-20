@@ -242,6 +242,7 @@ class Axis(BaseModel, abc.ABC):
     unit_label: Optional[str]
 
     class Config:
+        allow_population_by_field_name = True  # More reliable deserialization
         json_encoders = {**mtb.typing.json_encoders,
                          UnitlessT: lambda u: None }  # FIXME: Doesn't work
 
@@ -275,6 +276,11 @@ class Axis(BaseModel, abc.ABC):
         object.__setattr__(m, '_unit_check', self._unit_check)
         object.__setattr__(m, '_unit_convert', self._unit_convert)
         return m
+        
+    def dict(self, **kwargs):
+        # Default to exporting by alias, so that 'min_' exports as 'min'.
+        by_alias = kwargs.get('by_alias', True)
+        return super().dict(**{**kwargs, 'by_alias': by_alias})
 
     @root_validator(skip_on_failure=True)  # Executing when either set_label or set_transform fails just throws a confusing error
     def label_or_transform(cls, values):
@@ -464,8 +470,8 @@ class Axis(BaseModel, abc.ABC):
         desc['unit'] = self.transformed_unit
         desc['min'] = min_ if min_ is None else self.transform(min_)
         desc['max'] = max_ if max_ is None else self.transform(max_)
-        del desc['min_']  # Remove the internal min/max variables
-        del desc['max_']
+        desc.pop('min_', None)  # Remove the internal min/max variables
+        desc.pop('max_', None)
         return desc
 
     @property
