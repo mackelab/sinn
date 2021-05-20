@@ -2,7 +2,7 @@ from ._globals import _NoValue
 
 import sinn.config as config
 from .common import *
-from .histories import History
+from .histories import TimeAxis, History
 from .models import Model, ModelParams
 
 # Set __version__
