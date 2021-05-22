@@ -277,10 +277,12 @@ class Axis(BaseModel, abc.ABC):
         object.__setattr__(m, '_unit_convert', self._unit_convert)
         return m
         
-    def dict(self, **kwargs):
+    def dict(self, *args, **kwargs):
         # Default to exporting by alias, so that 'min_' exports as 'min'.
-        by_alias = kwargs.get('by_alias', True)
-        return super().dict(**{**kwargs, 'by_alias': by_alias})
+        # by_alias = kwargs.get('by_alias', True)
+            # We can't always control kwargs (e.g. with smttask's TaskDesc.Config.json_encoders.Task)
+            # We get more consistent serialization if we always export aliases
+        return super().dict(*args, **{**kwargs, 'by_alias': True})
 
     @root_validator(skip_on_failure=True)  # Executing when either set_label or set_transform fails just throws a confusing error
     def label_or_transform(cls, values):
