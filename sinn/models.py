@@ -22,7 +22,7 @@ from warnings import warn
 import logging
 logger = logging.getLogger(__name__)
 import abc
-from collections import namedtuple, OrderedDict, ChainMap
+from collections import namedtuple, OrderedDict, ChainMap, defaultdict
 from collections.abc import Sequence, Iterable, Callable
 import inspect
 from inspect import isclass
@@ -32,7 +32,7 @@ import copy
 import sys
 
 import pydantic
-from pydantic import BaseModel, validator, root_validator
+from pydantic import BaseModel, PrivateAttr, validator, root_validator
 from pydantic.typing import AnyCallable
 from typing import Any, Optional, Union, Tuple, Sequence, List, Dict, Callable as CallableT
 from types import SimpleNamespace
@@ -612,7 +612,7 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         # but predictability helps with debugging, and may affect serialization.
         namespace['_kernel_identifiers'] = sorted(_kernel_identifiers)
         namespace['_hist_identifiers'] = sorted(_hist_identifiers)
-        namespace['_model_identifiers'] = list(_model_identifiers)
+        namespace['_model_identifiers'] = list(_model_identifiers)  # Must not be sorted: order sets precedence
         namespace['_pending_update_functions'] = list(_pending_update_functions.values())
         namespace['__annotations__'] = new_annotations
 
@@ -767,11 +767,13 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
        `~Model.reseed_rngs` method. Simply setting the state of `self.rng`
        will work for NumPy RNGs, but not symbolic ones.
     """
-    # ALTERNATIVE: Have a SimpleNamespace attribute `priv` in which to place
-    #              private attributes, instead of listing them all here.
+    # TODO: Use the new PrivateAttr instead of __slots__
     __slots__ = ('graph_cache', 'compile_cache', '_pymc', #'batch_start_var', 'batch_size_var',
                  '_num_tidx', '_curtidx_var', '_stoptidx_var', '_batchsize_var',
                  '_advance_updates', '_compiled_advance_fns')
+    _rng_updates: defaultdict=PrivateAttr(defaultdict(lambda:[]))
+        # Store RNG updates generated in `get_advance_updates`, so that
+        # `reseed_RNGs` knows which RNG need to be seeded.
 
     class Config:
         # Allow assigning other attributes during initialization.
@@ -1813,7 +1815,6 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             kernel.theano_reset()
 
         for rng in self.rng_inputs:
-            # FIXME: `.state_updates` is Theano-only
             if (isinstance(rng, shim.config.SymbolicRNGTypes)
                 and len(rng.state_updates) > 0 and warn_rng):
                 rng_name = getattr(rng, 'name', str(rng))
@@ -1839,18 +1840,43 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             raise NotImplementedError("`reseed_rngs` doesn't support models "
                                       "with multiple random number generators.")
         rng = next(iter(rngs.values()))
+        cur_state_updates = getattr(rng, 'updates', None)
+        if cur_state_updates:
+            cur_state_updates = cur_state_updates()
+        stashed_state_updates = self._rng_updates.get(rng, None)
+        if cur_state_updates is None and stashed_state_updates:
+            raise RuntimeError(f"The model {self.name} seems to have recorded "
+                               "Theano state updates, but uses a plain NumPy "
+                               "RNG. This is likely a bug in sinn.Model")
+        elif stashed_state_updates and rng in self._rng_updates:
+            # We have a Theano RNG, either RandomStream or MRG
+            # We know cur_state_updates is a list, because we didn't raise RuntimeError
+            # Assumption: Any stashed state updates should come before current ones
+            # (in fact, `cur_state_updates` should probably always be empty)
+            rng.state_updates = stashed_state_updates + cur_state_updates
+        # Having reattached state updates, rng.seed will update them all
         shim.reseed_rng(rng, seed)
-        # Find all the Theano RNG streams and reseed them.
-        # This is analogous to what `seed` does with the streams listed in `rng.state_updates`
-        srs = sys.modules.get('theano.tensor.shared_RandomStream', None)
-        if srs is not None:
-            seedgen = rng.gen_seedgen  # Was seeded by `reseed_rng` above
-            for update_dict in self._advance_updates.values():
-                for v in update_dict:
-                    if isinstance(v, srs.RandomStateSharedVariable):
-                        old_r_seed = seedgen.randint(2 ** 30)
-                        v.set_value(np.random.RandomState(int(old_r_seed)),
-                                    borrow=True)
+        # Detach the state updates to return the graph in the state it was before
+        if stashed_state_updates:
+            rng.state_updates = rng.state_updates[len(stashed_state_updates):]
+                # NB: `reseed_rng` has changed the state updates, so we can't
+                #     just reuse cur_state_updates.
+            
+        # The code below did not require stashing RNG updates, but only works
+        # with RandomStream (MRG updates cannot as easily be identified in
+        # the symbolic updates, because they appear as complex expressions
+        # rather than special RNG types)
+        # # Find all the Theano RNG streams and reseed them.
+        # # This is analogous to what `seed` does with the streams listed in `rng.state_updates`
+        # srs = sys.modules.get('theano.tensor.shared_RandomStream', None)
+        # if srs is not None:
+        #     seedgen = rng.gen_seedgen  # Was seeded by `reseed_rng` above
+        #     for update_dict in self._advance_updates.values():
+        #         for v in update_dict:
+        #             if isinstance(v, srs.RandomStateSharedVariable):
+        #                 old_r_seed = seedgen.randint(2 ** 30)
+        #                 v.set_value(np.random.RandomState(int(old_r_seed)),
+        #                             borrow=True)
 
     def update_params(self, new_params, **kwargs):
         """
@@ -2161,10 +2187,14 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         for h in self.statehists:
             h.stash()  # Stash unfinished symbolic updates
         updates_stash = shim.get_updates()
+        assert len(self._rng_updates) == 0, "`sinn.Model._rng_updates should only be modified by `get_advance_updates`"
         shim.reset_updates()
 
         # Get advance updates
         updates = self.advance_updates(self.curtidx_var, self.stoptidx_var, histories)
+        # Store the RNG updates so they can be used for reseeding RNGs
+        for rng in self.rng_inputs:
+            self._rng_updates[rng] = rng.updates()
         # Reset symbolic updates to their previous state
         shim.reset_updates()
         self.theano_reset(warn_rng=False)
@@ -2173,7 +2203,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         for h in self.statehists:
             h.stash.pop()
         shim.config.symbolic_updates = updates_stash
-        logger.info("Done.")
+        logger.info("Done constructing the update graph.")
         return updates
 
     def cached_compile(self, inputs, outputs, updates, **kwargs):
