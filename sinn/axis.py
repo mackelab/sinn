@@ -352,7 +352,7 @@ class Axis(BaseModel, abc.ABC):
         object.__setattr__(self, '_unit_convert', _unit_convert_factory(self, unitlib))
 
     # Placeholder unit check, unit convert methods
-    def unit_convert(self, value :float):
+    def convert(self, value: float):  # NOTE: Included in public API
         """
         Convert a float value with units into the reference units for this axis.
 
@@ -367,6 +367,7 @@ class Axis(BaseModel, abc.ABC):
         float [axis units]
         """
         return self._unit_convert(value)
+    unit_convert = convert  # Alias for old name
     def unit_check(self, *values):
         """
         Return True if all values have units equivalent to the axis'
@@ -382,7 +383,7 @@ class Axis(BaseModel, abc.ABC):
         """
         return self._unit_check(*values)
 
-    def unit_remove(self, value):
+    def magnitude_in_axis_units(self, value):
         """
         Returns the magnitude of `value`, first converting to the axis unit
         if necessary.
@@ -392,6 +393,7 @@ class Axis(BaseModel, abc.ABC):
             return self._unit_convert(value).magnitude
         else:
             return value
+    unit_remove = magnitude_in_axis_units  # Alias
 
     # ----------------
     # Public API
