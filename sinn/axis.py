@@ -151,14 +151,14 @@ def _unit_convert_factory(axis, unit_library):
                 return [unit_convert(v for v in value)]
             elif isinstance(value, tuple):
                 return tuple(unit_convert(v for v in value))
-            return value.to(axisunit).astype(axis.stops_dtype)
+            return value.to(axisunit).astype(axis.stops_nptype)
     elif unit_library == 'quantities':
         def unit_convert(value):
             if isinstance(value, list):
                 return [unit_convert(v for v in value)]
             elif isinstance(value, tuple):
                 return tuple(unit_convert(v for v in value))
-            return value.rescale(axisunit).astype(axis.stops_dtype)
+            return value.rescale(axisunit).astype(axis.stops_nptype)
     else:
         assert axisunit is unitless
         def unit_convert(value):
@@ -417,9 +417,9 @@ class Axis(BaseModel, abc.ABC):
         else:
             kind = np.dtype(type(numvalue)).kind
         return (
-            kind == np.dtype(self.stops_dtype).kind
+            kind == np.dtype(self.stops_nptype).kind
             and mtb.units.detect_unit_library(value) == mtb.units.detect_unit_library(self.unit)
-            and safe_can_cast(value, self.stops_dtype))
+            and safe_can_cast(value, self.stops_nptype))
 
     def is_compatible_index(self, value):
         """
@@ -1370,7 +1370,7 @@ def get_AxisIndex(axis, dtype=None):
     ----------
     axis: DiscretizedAxis
         The axis instance to attach the index to. The index type
-        can be set by first setting `axis.index_dtype`; this must
+        can be set by first setting `axis.index_nptype`; this must
         be an integer type, and should subclass `int` or `np.integer`.
         If `axis` does not specify an index type, `int` is used.
 
@@ -1414,10 +1414,10 @@ def get_AxisIndex(axis, dtype=None):
             if axis is None:
                 dtype = np.int32
             else:
-                dtype = getattr(axis, 'index_dtype', np.int32)
+                dtype = getattr(axis, 'index_nptype', np.int32)
         nptype = np.dtype(dtype).type
         if not issubclass(nptype, (numbers.Integral)):
-            raise TypeError("Axis' `index_dtype` is {}, but must be an integral type."
+            raise TypeError("Axis' `index_nptype` is {}, but must be an integral type."
                             .format(nptype))
 
         # Symbolic indices are either shared varibles, or computable expressions
@@ -2728,7 +2728,7 @@ class BinRef(Enum):
                 "`bin_ref` must be a string or Enum type compatible with "
                 "{}.".format(BinRef.__qualname__))
 
-def determine_index_dtype(stops_len):
+def determine_index_nptype(stops_len):
     return np.min_scalar_type(-2*max(stops_len, 1))
         # Leave enough space in time indices to double the time array
         # Using a negative value forces the type to be `int` and not
@@ -2747,9 +2747,9 @@ class DiscretizedAxis(Axis):
             TRANSFORMED: Use the transformed axis when converting from bins
             to edges.
             Can also specify as a string.
-        stops_dtype: Dtype, optional. (default: `shim.config.floatX`)
+        stops_nptype: Dtype, optional. (default: `shim.config.floatX`)
             Type to use for stop values
-        index_dtype: NPValue[integer], optional (default: computed)
+        index_nptype: NPValue[integer], optional (default: computed)
             Type to use for index. Generally not necessary to specify: it is
             determined automatically from the length of `stops`.
             Specifically: the smallest possible type is chosen which allows
@@ -2766,19 +2766,19 @@ class DiscretizedAxis(Axis):
     stops    : SequenceMapping
     bin_align: BinAlign = 'centers'
     bin_ref  : BinRef   = 'self'
-    stops_dtype     : NPValue[np.generic] = np.dtype(shim.config.floatX).type
+    stops_nptype     : NPValue[np.generic] = np.dtype(shim.config.floatX).type
         # Type to use for stop values
-    index_dtype     : Type[np.integer] = None
+    index_nptype     : Type[np.integer] = None
         # Type to use for index.
 
     class Config:
         keep_untouched = (type,)  # FIXME: This doesn't work with `type`
 
     # HACK: Because `keep_untouched` doesn't work, we forcefully remove
-    # 'index_dtype' from the returned dict.
+    # 'index_nptype' from the returned dict.
     def dict(self, *args, **kwargs):
         d = super().dict(*args, **kwargs)
-        del d['index_dtype']
+        del d['index_nptype']
         return d
 
     @validator('bin_align', pre=True, always=True)
@@ -2801,11 +2801,11 @@ class DiscretizedAxis(Axis):
             warn("Axis stops exceed its stated maximum")
         return stops
 
-    @validator('index_dtype', pre=True, always=True)
-    def determine_index_dtype(cls, v, values):
+    @validator('index_nptype', pre=True, always=True)
+    def determine_index_nptype(cls, v, values):
         stops = values.get('stops', None)
         if v is None and stops is not None:
-            v = determine_index_dtype(len(stops)).type
+            v = determine_index_nptype(len(stops)).type
         return v
 
     # def __init__(self, **kwargs):
@@ -3033,15 +3033,15 @@ class DiscretizedAxis(Axis):
                                     "expected units ({})."
                                     .format(value, self.unit))
                 value = self.unit_remove(self.unit_convert(value))
-                    # We explicitly cast to the stops_dtype, so that Index
+                    # We explicitly cast to the stops_nptype, so that Index
                     # recognizes as a stop value.
                     # Otherwise things like 1*ureg.s get sent as int, and Index
                     # thinks they are indices.
-                if not safe_can_cast(value, self.stops_dtype):
+                if not safe_can_cast(value, self.stops_nptype):
                     raise TypeError(
                         "`index` expects an input of type "
-                        f"{self.stops_dtype} (received {type(value)}).")
-                value = self.stops_dtype(value)
+                        f"{self.stops_nptype} (received {type(value)}).")
+                value = self.stops_nptype(value)
             # else:
             #     value_dtype = np.array(value).dtype.type
             return self.stops.data_index(value)
@@ -3084,15 +3084,15 @@ class DiscretizedAxis(Axis):
                                     "expected units ({})."
                                     .format(value, self.unit))
                 value = self.unit_remove(self.unit_convert(value))
-                    # We explicitly cast to the stops_dtype, so that Index
+                    # We explicitly cast to the stops_nptype, so that Index
                     # recognizes as a stop value.
                     # Otherwise things like 1*ureg.s get sent as int, and Index
                     # thinks they are indices.
-                if not safe_can_cast(value, self.stops_dtype):
+                if not safe_can_cast(value, self.stops_nptype):
                     raise TypeError(
                         "`index` expects an input of type "
-                        f"{self.stops_dtype} (received {type(value)}).")
-                value = self.stops_dtype(value)
+                        f"{self.stops_nptype} (received {type(value)}).")
+                value = self.stops_nptype(value)
             # else:
             #     value_dtype = np.array(value).dtype.type
             return self.stops.index(value, **index_kwds)
@@ -3340,7 +3340,7 @@ class MapAxis(DiscretizedAxis):
                 "You must specify either `index_map` and `index_range`, or "
                 "`stops`.")
         if stops is None:
-            dtype = determine_index_dtype(len(index_range))
+            dtype = determine_index_nptype(len(index_range))
             Index = get_AxisIndex(None, dtype=dtype)
             v = Index.Delta(0)  # DEBUG
             stops = SequenceMapping(index_range = index_range,
@@ -3358,7 +3358,7 @@ class MapAxis(DiscretizedAxis):
         it is replaced by a new one pointing to the newly created object.
         """
         if isinstance(obj, dict):
-            dtype = obj['stops'].get('index_dtype', None)
+            dtype = obj['stops'].get('index_nptype', None)
         else:
             dtype = None
         Index = get_AxisIndex(None, dtype=dtype)
@@ -3479,7 +3479,7 @@ class RangeAxis(MapAxis):
                 max = mtb.units.unit_convert(max, unit).magnitude
                 step = mtb.units.unit_convert(step, unit).magnitude
             kwargs['min'] = min; kwargs['max'] = max; kwargs['step'] = step
-            idx_dtype = determine_index_dtype(L)
+            idx_dtype = determine_index_nptype(L)
             Index = get_AxisIndex(None, dtype=idx_dtype)
             stops = RangeMapping(index_range=range(0, L),
                                  i0=0, x0=min, step=step,
@@ -3498,7 +3498,7 @@ class RangeAxis(MapAxis):
                 index_range = Range.validate(index_range)
             assert isinstance(index_range, range)
             L = len(index_range)
-            idx_dtype = determine_index_dtype(L)
+            idx_dtype = determine_index_nptype(L)
             Index = get_AxisIndex(None, dtype=idx_dtype)
             stops = RangeMapping(**stops, index_type=Index)
             kwargs['stops'] = stops
@@ -3637,7 +3637,7 @@ class ArrayAxis(DiscretizedAxis):
         # if not hasattr(self, 'Index'):  #  Avoid overwriting subclass index
         #     object.__setattr__(self, 'Index', get_AxisIndex(self))
         if isinstance(stops, np.ndarray):
-            dtype = determine_index_dtype(len(stops))
+            dtype = determine_index_nptype(len(stops))
             Index = get_AxisIndex(None, dtype)
             stops = ArrayMapping(index_range = range(len(stops)),
                                   index_map   = stops,

@@ -775,7 +775,7 @@ class History(HistoryBase, abc.ABC):
         object.__setattr__(m, '_sym_data', m._num_data)
         object.__setattr__(m, '_num_tidx',
                            shim.shared(np.array(self.cur_tidx.copy(),
-                                                dtype=m.time.index_dtype),
+                                                dtype=m.time.index_nptype),
                                        name = ' t idx (' + m.name + ')',
                                        symbolic = m.symbolic))
         object.__setattr__(m, '_sym_tidx'      , m._num_tidx)
@@ -919,7 +919,7 @@ class History(HistoryBase, abc.ABC):
         return self.time.dtype
     @property
     def tidx_dtype(self):
-        return self.time.index_dtype
+        return self.time.index_nptype
     @property
     def idx_dtype(self):
         return np.min_scalar_type(max(self.shape))
@@ -2494,7 +2494,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
                 shim.shared(init_csr.indptr, name=f'{self.name} - indptr')
                 )
         cur_tidx = shim.shared(np.array(cur_datatidx-self.time.t0idx,
-                                        dtype=self.time.index_dtype),
+                                        dtype=self.time.index_nptype),
                                name = 't idx (' + self.name + ')',
                                symbolic = self.symbolic)
         return data, cur_tidx
@@ -3107,7 +3107,7 @@ class Series(ConvolveMixin, History):
                     borrow = True
                     )
             tidx_val = self.time.data_to_axis_index(data_length - 1)
-        cur_tidx = shim.shared(np.array(tidx_val, dtype=self.time.index_dtype),
+        cur_tidx = shim.shared(np.array(tidx_val, dtype=self.time.index_nptype),
                                name = 't idx (' + self.name + ')',
                                symbolic = self.symbolic)
         return data, cur_tidx

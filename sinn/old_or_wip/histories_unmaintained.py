@@ -475,7 +475,7 @@ class SpiketrainCOO(ConvolveMixin, PopulationHistory):
             data = csc_data.tocoo()
             # WARNING: This will break with Theano until/if we implement a
             #          coo matrix interface in theano_shim.
-        cur_tidx = shim.shared(np.array(tidx_val, dtype=self.time.index_dtype),
+        cur_tidx = shim.shared(np.array(tidx_val, dtype=self.time.index_nptype),
                                name = 't idx (' + self.name + ')',
                                symbolic = self.symbolic)
         return data, cur_tidx
