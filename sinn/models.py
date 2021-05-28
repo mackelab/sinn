@@ -605,6 +605,11 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
                     raise TypeError("Unrecognized history type; recognized "
                         "types:\n    Series, Spiketrain")
 
+        # Add connected hists validators
+        for submodel_nm in _model_identifiers:
+            namespace[f"_connect_hists_{submodel_nm}"] = \
+                connect_hists_validator(submodel_nm)
+
         # Update namespace
         namespace['Config'] = Config
         namespace['Parameters'] = Parameters
@@ -709,6 +714,64 @@ def init_autospiketrain(cls, autohist: AutoHist, values) -> Spiketrain:
     else:
         return Spiketrain(time=time, **autohist.kwargs)
 
+def connect_hists_validator(submodel_name):
+    """
+    One of these validators is added for each submodel in a composite model.
+    When a history is part of multiple submodels, it is only serialized once.
+    This validator adds histories back into the dictionaries for submodels
+    where they are missing.
+    
+    Example usage::
+    >>> class A(Model):
+          ha: History
+        class B(Model):
+          hb: History
+        class C(Model):
+          a: A
+          b: B
+          _connect_hists_a = connect_hists_validator('a')
+          _connect_hists_b = connect_hists_validator('b')
+          
+    Actual usage: The Model metaclass adds these validators automatically,
+      so users do not need to do so in their models.
+    """
+    def f(submodel, values):
+        if not isinstance(submodel, dict):
+            # This function only makes sense if `submodel` is not yet instantiated
+            # but instead is a dict of attribute values
+            # TODO: For instantiated models, we should still check that histories
+            #       are correctly connected
+            return submodel
+        hist_conns = values.get('history_connections')
+        if hist_conns:
+            for lowerhist, upperhist in hist_conns.items():
+                if upperhist.count('.') > 1:
+                    raise NotImplementedError(
+                        "This function _might_ work when `upperhist` references "
+                        "more deeply nested models, but it should be tested first.")
+                uppermodel, histname = upperhist.rsplit('.')
+                if uppermodel != submodel_name:
+                    continue
+                if histname in submodel:
+                    raise ValueError(f"Connect connect history '{lowerhist}' to "
+                                     f"'{upperhist}': '{upperhist}' is already "
+                                     "defined.")
+                # Recursively retrieve the lowerhist. Objects at different levels
+                # may be both dicts and Models, so we need to support both `get`
+                # and`getattr` (for the same reason, relying on ParameterSet
+                # to do this won't work, since it won't recurse into objects.
+                o = values
+                for attr in lowerhist.split('.'):
+                    try:
+                        o = getattr(o, attr)
+                    except AttributeError:
+                        o = o[attr]
+                # Connect the lower history to the upper one
+                submodel[histname] = o
+        return submodel
+    f.__name__ = f"connect_hists_to_{submodel_name.replace('.', '_')}"
+    return validator(submodel_name, pre=True, allow_reuse=True)(f)
+
 class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     """Abstract model class.
 
@@ -774,6 +837,15 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     _rng_updates: defaultdict=PrivateAttr(defaultdict(lambda:[]))
         # Store RNG updates generated in `get_advance_updates`, so that
         # `reseed_RNGs` knows which RNG need to be seeded.
+    history_connections: Optional[Dict[str,str]]
+        # Used to connect histories between submodels; mostly used for deserialization
+        # Defines connection pairs for histories in different submodels
+        # Order: {lower model.hist name : upper model.hist name},
+        # where the "lower" model is the one which can be instantiated first
+        # IMPORTANT: It is not required to set this variable in order to connect
+        #    histories; simply reusing the same history instance will do.
+        #    Once a model is constructed, its `history_connections` attribute
+        #    is updated to reflect actual history connections.
 
     class Config:
         # Allow assigning other attributes during initialization.
@@ -890,21 +962,13 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         excl_nmspc = {attr: {'update_function': {'namespace'}}
                       for attr in hists}
         # Remove connected hists which are actually part of another submodel
-        already_seen = set()
-        excl_conn = {}
-        # NB: The order in which we iterate over nested_models is set by  
-        #     the order in which submodels are defined in the class
-        for subnm, submodel in self.nested_models.items():
-            for histnm, hist in submodel.nested_histories.items():
-                if id(hist) in already_seen:
-                    excl_conn[f"{subnm}.{histnm}"] = ...
-                else:
-                    already_seen.add(id(hist))
+        excl_conn = {conn_hist: ... for conn_hist in self.history_connections.values()}
         exclude = add_exclude_mask(exclude, {**excl_nmspc, **excl_conn})
         # Proceed with parent's dict method
         obj = super().dict(*args, exclude=exclude, **kwargs)
         # Add the model name
         obj['ModelClass'] = mtb.iotools.find_registered_typename(self)
+        
         return obj
 
     @classmethod
@@ -1025,6 +1089,22 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         #     # object.__setattr__(self, 'batch_size_var',
         #     #                    shim.shared(size, name='batch_size'))
         #     # #     # Must be large enough so that test_value slices are not empty
+        
+        # Set the value of history_connections so that it reflects actual connections
+        # TODO: Put in a root_validator (requires `nested_models` which works as class method)
+        already_seen = {}  # Keeps track of histories that have been seen
+        conn_hists = {}    # Connection pairs for histories in different submodels
+                           # Order: lower model.hist name : upper model.hist name,
+                           # where the "lower" model is the one which can be instantiated first
+        # NB: The order in which we iterate over nested_models is set by  
+        #     the order in which submodels are defined in the class
+        for subnm, submodel in self.nested_models.items():
+            for histnm, hist in submodel.nested_histories.items():
+                if id(hist) in already_seen:
+                    conn_hists[already_seen[id(hist)]] = f"{subnm}.{histnm}"
+                else:
+                    already_seen[id(hist)] = f"{subnm}.{histnm}"
+        self.history_connections = conn_hists
 
     @abc.abstractmethod
     def initialize(self, initializer: Any=None):
@@ -1070,7 +1150,6 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                         f"History time index: {hist.time}\n"
                         f"Model time index: {time}")
         return values
-
 
     # Called by validators in model implementations
     @classmethod
