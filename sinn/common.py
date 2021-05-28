@@ -474,7 +474,6 @@ class OpCache:
                 try:
                     new_new_data = new_data.eval()
                 except shim.getT().gof.fg.MissingInputError as e:
-                    raise  # DEBUG
                     logger.warning("Unable to precompute a cached op between {} and {}. "
                                    "Typically this is because there are inputs in the graph; "
                                    "you likely want to replace those inputs by shared variables.\n\n"

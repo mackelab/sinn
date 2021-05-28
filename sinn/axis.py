@@ -3342,7 +3342,6 @@ class MapAxis(DiscretizedAxis):
         if stops is None:
             dtype = determine_index_nptype(len(index_range))
             Index = get_AxisIndex(None, dtype=dtype)
-            v = Index.Delta(0)  # DEBUG
             stops = SequenceMapping(index_range = index_range,
                                    index_map   = index_map,
                                    index_type  = Index)
