@@ -979,7 +979,7 @@ class History(HistoryBase, abc.ABC):
     def cur_t(self):
         """
         Returns the time up to which the history has been computed.
-        Equivalent to `self._tarr[self.cur_tidx]`.
+        Equivalent to `self.time[self.cur_tidx]`.
         """
         return self.time[self.cur_tidx]
 

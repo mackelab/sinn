@@ -1488,6 +1488,13 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         """
         return self.get_min_tidx(self.statehists)
 
+    @property
+    def cur_t(self):
+        """
+        Returns the time up to which all state histories are computed computed.
+        Equivalent to `self.time[self.cur_tidx]`.
+        """
+        return self.time[self.cur_tidx]
 
     # Symbolic variables for use when compiling unanchored functions
     # Building as `shim.tensor(np.array(...))` assigns a test value to the
