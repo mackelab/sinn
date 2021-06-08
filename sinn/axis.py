@@ -1272,7 +1272,11 @@ class NumericAxisIndexMeta(SpecAxisIndexMeta):
 
     @staticmethod
     def _instance___str__(self):
-        s = "NumericIndex"
+        # HACK
+        if "delta" in type(self).__name__.lower():
+            s = "NumericIndexDelta"
+        else:
+            s = "NumericIndex"
         if hasattr(self, 'axis'):
            s += f" (axis: {self.axis})"
         return s
@@ -1330,7 +1334,11 @@ class SymbolicAxisIndexMeta(SpecAxisIndexMeta, shim.graph.GraphExpressionMeta):
 
     @staticmethod
     def _instance___str__(self):
-        s = "SymbolicIndex"
+        # HACK
+        if "delta" in type(self).__name__.lower():
+            s = "SymbolicIndexDelta"
+        else:
+            s = "SymbolicIndex"
         if hasattr(self, 'axis'):
            s += f" (axis: {self.axis})"
         return s
