@@ -834,7 +834,14 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     __slots__ = ('graph_cache', 'compile_cache', '_pymc', #'batch_start_var', 'batch_size_var',
                  '_num_tidx', '_curtidx_var', '_stoptidx_var', '_batchsize_var',
                  '_advance_updates', '_compiled_advance_fns')
-    _rng_updates: defaultdict=PrivateAttr(defaultdict(lambda:[]))
+    _num_tidx_objs: dict=PrivateAttr({})
+        # _num_tidx objects are shared variables which can be used in
+        # computational graphs. This caching attribute ensures the same object
+        # is always returned, so that it can be properly substituted in the
+        # computational graph. Since the variable depends on which state
+        # histories are unlocked, a different object is returned for different
+        # unlocked history combinations (hence the need for a dict)
+    _rng_updates  : defaultdict=PrivateAttr(defaultdict(lambda:[]))
         # Store RNG updates generated in `get_advance_updates`, so that
         # `reseed_RNGs` knows which RNG need to be seeded.
     history_connections: Optional[Dict[str,str]]
@@ -1432,6 +1439,10 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         return (h for h in self.statehists if h.locked)
 
     @property
+    def locked_histories(self):
+        return (h for h in self.history_set if h.locked)
+
+    @property
     def unlocked_histories(self):
         return (h for h in self.history_set if not h.locked)
 
@@ -1559,6 +1570,19 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         """
         A shared variable corresponding to the current time point of
         the model. This is only defined if all histories are synchronized.
+        (*Locked* histories need not be synchronized, but must be computed at
+        least as far as unlocked histories.)
+        
+        Special case: if all listed histories are locked (or `histories` is
+        empty), then a tidx corresponding to `self.t0idx` is returned.
+        Rationale: the time point of locked histories is meaningless, since
+        they cannot be updated, and it makes no sense to force them to be
+        synchronized. The only thing we expect is that whatever value is
+        returned by `num_tidx` is already computed for all locked histories.
+        Since the purpose of this method is to return a time index suitable
+        for constructing a graph, if there are no histories to update, the time
+        point itself does not matter. Thus we return the index corresponding to
+        t0, since this requires the least data.
 
         Always returns the same object, so that it can be substituted in
         computational graphs.
@@ -1569,6 +1593,12 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
            This does not return an AxisIndex, so always wrap this variable
            with [model].time.Index or [model].time.Index.Delta before using
            it to index into a history.
+           
+        .. Warning::
+           Each computational graph should only involve calls to `get_num_tidx`
+           with the same list of histories. Different lists of histories
+           may return different objects. Different objects will also be
+           returned if the lock status of some histories changes.
 
         .. Dev note::
            If someone can suggest a way to make SymbolicAxisIndexMeta._instance_plain
@@ -1580,23 +1610,42 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         ----------
         histories: Set of histories
         """
+        # TODO: Since we assert that all unlocked state histories are
+        # synchronized, I'm not sure how useful it is to also allow `histories`
+        # to be specified (we could just always use unlocked state hists)
         if not self.histories_are_synchronized():
             raise RuntimeError(
                 f"Histories for the {self.name}) are not all "
                 "computed up to the same point. The compilation of the "
                 "model's integration function is ill-defined in this case.")
-        tidx = self.get_min_tidx(histories)
-        if not hasattr(self, '_num_tidx'):
-            object.__setattr__(
-                self, '_num_tidx',
-                shim.shared(np.array(tidx, dtype=self.tidx_dtype),
-                            f"t_idx ({self.name})") )
+        unlocked_histories = [h for h in histories if not h.locked]
+        if unlocked_histories:
+            key = tuple(id(h) for h in unlocked_histories)
+            tidx = self.get_min_tidx(unlocked_histories)
         else:
-            self._num_tidx.set_value(tidx)
-        return self._num_tidx
+            # DEV NOTE: I put this restriction here because all current use cases
+            #    for `num_tidx` are to index into the history, hence we need
+            #    a value at which the histories are computed. But theoretically
+            #    it could also return a negative index if nothing is computed,
+            #    like History.cur_tidx does. The issue then is what is the most
+            #    sensible thing to do if histories have different left padding.
+            assert self.get_min_tidx(self.locked_histories) >= self.t0idx, \
+                "`get_num_tidx` requires histories be computed at least up to `t0idx`"
+            key = ()
+            tidx = self.t0idx
+        if key not in self._num_tidx_objs:
+            self._num_tidx_objs[key] = shim.shared(
+                np.array(tidx, dtype=self.tidx_dtype), f"t_idx ({self.name})")
+        else:
+            self._num_tidx_objs[key].set_value(tidx)
+        return self._num_tidx_objs[key]
 
     @property
     def num_tidx(self):
+        """
+        Return a shared variable suitable to use as an anchor time index for
+        building computational graphs.
+        """
         return self.get_num_tidx(self.statehists)
 
     def histories_are_synchronized(self):
@@ -2435,15 +2484,16 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             pass
 
         # First, declare a “anchor” time index
-        # HACK: I've had cases where all my state histories were locked, which is why I add the locked state histories as well
-        anchor_tidx = self.get_num_tidx(histories+tuple(self.statehists))
+        # # HACK: I've had cases where all my state histories were locked, which is why I add the locked state histories as well
+        # anchor_tidx = self.get_num_tidx(histories+tuple(self.statehists))
+        anchor_tidx = self.num_tidx
+            # `get_num_tidx` asserts that histories are synchronized
         if not self.time.Index(anchor_tidx+1).in_bounds:
             raise RuntimeError(
                 "In order to compute a scan function, the model must "
                 "have at least one uncomputed time point.")
         # Build the substitution dictionary to convert all history time indices
         # to that of the model. This requires that histories be synchronized.
-        assert self.histories_are_synchronized()
         anchor_tidx_typed = self.time.Index(anchor_tidx)  # Do only once to keep graph as clean as possible
         tidxsubs = {h._num_tidx: anchor_tidx_typed.convert(h.time)
                     for h in self.unlocked_histories}
@@ -2455,7 +2505,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                                "a scan graph.")
 
         if not ( set(shim.graph.symbolic_inputs(updates.values()))
-                & (set(h._num_tidx for h in self.unlocked_histories)  | set([anchor_tidx])) ):
+                & (set(h._num_tidx for h in self.unlocked_histories)
+                   | set([anchor_tidx])) ):
             raise RuntimeError("The updates dictionary has no dependency on "
                                "any time index. Cannot build a scan graph.")
         anchored_updates = {k: shim.graph.clone(g, replace=tidxsubs)
@@ -2482,10 +2533,10 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # Now we can construct the scan graph.
         # We discard outputs since everything is in the updates
         _, upds = shim.scan(onestep,
-                           sequences = [shim.arange(curtidx, stoptidx,
-                                                    dtype=self.tidx_dtype)],
-#                           outputs_info = [curtidx],
-                           name = f"scan ({self.name})")
+                            sequences = [shim.arange(curtidx, stoptidx,
+                                                     dtype=self.tidx_dtype)],
+                            # outputs_info = [curtidx],
+                            name = f"scan ({self.name})")
 
         return upds
 
@@ -2574,7 +2625,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 assert shim.is_pure_symbolic(curtidx) and shim.is_pure_symbolic(batchsize)
                 # TODO: Make cost a symbolic variable, and pass it to scan as `outputs_info`
                 # time index anchor
-                numtidx = self.num_tidx  # Raises RuntimeError if errors are not synchronized
+                numtidx = self.num_tidx  # NB: Must be the same as used to create
+                                         #     anchor_tidx in convert_point_updates_to_scan
                 if not self.time.Index(numtidx+start_offset).in_bounds:
                     raise RuntimeError(
                         "In order to compute a scan function, the model must "
