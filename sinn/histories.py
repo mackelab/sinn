@@ -1155,8 +1155,8 @@ class History(HistoryBase, abc.ABC):
                     "Indexing a history with an empty array is disallowed "
                     "because Theano can't handle it. "
                     f"History: {self.name}, index: {key}.")
-            latest = shim.largest(axis_index)
-            earliest = shim.smallest(axis_index)
+            latest = self.time.Index(shim.max(axis_index))
+            earliest = self.time.Index(shim.min(axis_index))
         else:
             raise RuntimeError("Unrecognized key {} of type {}. (history: {})"
                                .format(key, type(key), self.name))

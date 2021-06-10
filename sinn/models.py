@@ -986,6 +986,50 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         m = super().parse_obj(obj)
         return m
 
+    def set_submodel_params(self):
+        """
+        Keep submodel parameters in sync with the container model.
+        This method has no effect if there are no submodels.
+        
+        This method has the following effect (`submodel.params` is the
+        parameter set of the submodel, and `model.subparams` is the
+        corresponding subset of parameters of the container model)::
+        
+            params_values = submodel.Parameters(model.subparams).get_values()
+            submodel.params.set_values(param_values)
+            model.subparams = submodel.params
+        
+        The reasoning is as follows:
+        
+        - We normally set parameter values with `model.params.set_values(value
+          dict)`. The values then need to be propagated to the matching
+          parameters of submodels.
+        - submodel.Parameters may implement validation or normalization, which
+          the model expects to be pre-applied to its parameter set.
+        - Theano graphs will depend submodel.params, so
+          a) we don't want to change the identity of those variables
+          b) we want `model.subparams` and `submodel.params` to point to the
+             same instances, so that either can be used in a graph.
+        """
+        for submodelname, submodel in self.nested_models.items():
+            subparams = getattr(self.params, submodelname)
+            # Apply submodel's Parameters validator
+            subparam_vals = submodel.Parameters.parse_obj(subparams).get_values()
+            # Transfer parameter values to submodel
+            submodel.params.set_values(subparam_vals)
+            # Replace container parameter by corresponding instances of submodel
+            for subθname, θ in submodel.params:
+                assert subθname in subparams.__dict__, (
+                    f"Subparameter set for submodel '{submodelname}' does not contain a parameter '{subθname}'.")
+                setattr(subparams, subθname, θ)
+                # Update the variable name to include the parent model.
+                # (with a guard in case we run this twice)
+                if hasattr(θ, 'name') and submodelname not in θ.name:
+                    # (There are ways the test above can fail (e.g. if the 
+                    # parameter's name is the same as the submodel's), but
+                    # those seem quite unlikely.
+                    θ.name = submodelname + "." + θ.name
+
     def _base_initialize(self,
                          shallow_copy: bool=False,
                          update_functions: Optional[dict]=None):
@@ -995,22 +1039,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         Both arguments are meant for internal use and documented with comments
         in the source code.
         """
-        # If there are submodels, make their parameters match those of the
-        # container (in particular, for Theano shared vars, the two parameter
-        # sets will point to the same instance, allowing either to be used.)
-        for submodelname, submodel in self.nested_models.items():
-            for subθname, θ in submodel.params:
-                subparams = getattr(self.params, submodelname)
-                assert subθname in subparams.__dict__, (
-                    f"Parameter set for submodel '{submodelname}' does not contain a parameter '{subθname}'.")
-                setattr(subparams, subθname, θ)
-                # Update the variable name to include the parent model.
-                # (with a guard in case we run this twice)
-                if hasattr(θ, 'name') and submodelname not in θ.name:
-                    # (There are ways the test above can fail (e.g. if the 
-                    # parameter's name is the same as the submodel's), but
-                    # those seem quite unlikely.
-                    θ.name = submodelname + "." + θ.name
+        self.set_submodel_params()
         
         if update_functions is not None:
             # 1) update_functions should be a dict, and will override update function
@@ -2079,8 +2108,10 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
         # Update self.params in place
         self.params.set_values(pending_params)
+        self.set_submodel_params()
 
-        # TODO: Everything with old_ids, clear_advance_fn should be deprecatable
+        # NB: I think the only way params can change identity if if we have
+        #     a nested model and `set_submodel_params` reassigns them.
         clear_advance_fn = any(id(val) != old_ids[name]
                                for name, val in self.params)
 
