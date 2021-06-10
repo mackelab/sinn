@@ -330,6 +330,10 @@ class Axis(BaseModel, abc.ABC):
 
     def __str__(self):
         s = type(self).__name__
+        return s
+
+    def __repr__(self):
+        s = type(self).__name__
         if self.label is not None:
             s += f" '{self.label}'"
         unit = "" if self.unit is unitless else f"{self.unit}, "
@@ -860,6 +864,8 @@ class SpecAxisIndexMeta(type):
         }
         if hasattr(metacls, '_instance___str__'):
             methods['__str__'] = metacls._instance___str__
+        if hasattr(metacls, '_instance___repr__'):
+            methods['__repr__'] = metacls._instance___repr__
         static_methods = {
             '_check_in_bounds': staticmethod(AxisIndexMeta._check_in_bounds)
         }
@@ -1271,7 +1277,7 @@ class NumericAxisIndexMeta(SpecAxisIndexMeta):
         SpecAxisIndexMeta.__clsinit__(self, x)
 
     @staticmethod
-    def _instance___str__(self):
+    def _instance___repr__(self):
         # HACK
         if "delta" in type(self).__name__.lower():
             s = "NumericIndexDelta"
@@ -1333,7 +1339,7 @@ class SymbolicAxisIndexMeta(SpecAxisIndexMeta, shim.graph.GraphExpressionMeta):
                 self.tag.test_value = shim.get_test_value(x)
 
     @staticmethod
-    def _instance___str__(self):
+    def _instance___repr__(self):
         # HACK
         if "delta" in type(self).__name__.lower():
             s = "SymbolicIndexDelta"
@@ -1342,6 +1348,8 @@ class SymbolicAxisIndexMeta(SpecAxisIndexMeta, shim.graph.GraphExpressionMeta):
         if hasattr(self, 'axis'):
            s += f" (axis: {self.axis})"
         return s
+        
+    # _instance___str__ = _instance___repr__
 
     # Instance property
     @staticmethod
@@ -1665,8 +1673,12 @@ class SequenceMapping(BaseModel):
 
     def __str__(self):
         s = type(self).__name__
-        s += (f" (i={self.x0idx}..{self.xnidx}, x={self.index_map[self.x0idx]}"
-              f"..{self.index_map[self.xnidx]})")
+        return s
+    
+    def __repr__(self):
+        s = type(self).__name__
+        s += (f" (i={self.x0idx}..{self.xnidx}, x={self.index_map(self.x0idx)}"
+              f"..{self.index_map(self.xnidx)})")
         return s
 
     # ------------------
