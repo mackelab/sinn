@@ -2893,6 +2893,22 @@ class DiscretizedAxis(Axis):
     #     except: # Don't let an exception prevent from printing
     #             # -> half the time we use this is when debugging.
     #         return super().__str__()
+    def __repr__(self):
+        s = super().__repr__()
+        try:
+            nstops = len(self)
+        except: # Don't let an exception prevent from printing
+                # -> half the time we use this is when debugging.
+            return s
+        else:
+            # Append number of stops to repr
+            rbracket = s[-1]
+            if rbracket in ")>]":
+                s = s[:-1]
+            else:
+                rbracket = ""
+            return f"{s}, len: {nstops}{rbracket}"
+        
     def __eq__(self, other):
         # We try to short-circuit comparison by starting with cheap tests
         if self is other: return True
@@ -3525,6 +3541,23 @@ class RangeAxis(MapAxis):
             Index.attach_axis(self)  # After self.stops has been defined
         else:
             super().__init__(**kwargs)
+
+    def __repr__(self):
+        s = super().__repr__()
+        try:
+            step = self.step
+        except: # Don't let an exception prevent from printing
+                # -> half the time we use this is when debugging.
+            return s
+        else:
+            # Append number of stops to repr
+            rbracket = s[-1]
+            if rbracket in ")>]":
+                s = s[:-1]
+            else:
+                rbracket = ""
+            return f"{s}, Δ: {step}{rbracket}"
+
 
     def copy(self, *a, **kw):
         m = super().copy(*a, **kw)
