@@ -841,9 +841,11 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # computational graph. Since the variable depends on which state
         # histories are unlocked, a different object is returned for different
         # unlocked history combinations (hence the need for a dict)
-    _rng_updates  : defaultdict=PrivateAttr(defaultdict(lambda:[]))
+    _rng_updates  : defaultdict=PrivateAttr(
+        defaultdict(lambda: defaultdict(lambda: [])))
         # Store RNG updates generated in `get_advance_updates`, so that
         # `reseed_RNGs` knows which RNG need to be seeded.
+        # Structure: _rng_updates[cache_key][rng] = [upd1, upd2, ...]
     history_connections: Optional[Dict[str,str]]
         # Used to connect histories between submodels; mostly used for deserialization
         # Defines connection pairs for histories in different submodels
@@ -2007,24 +2009,42 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         cur_state_updates = getattr(rng, 'updates', None)
         if cur_state_updates:
             cur_state_updates = cur_state_updates()
-        stashed_state_updates = self._rng_updates.get(rng, None)
-        if cur_state_updates is None and stashed_state_updates:
-            raise RuntimeError(f"The model {self.name} seems to have recorded "
-                               "Theano state updates, but uses a plain NumPy "
-                               "RNG. This is likely a bug in sinn.Model")
-        elif stashed_state_updates and rng in self._rng_updates:
-            # We have a Theano RNG, either RandomStream or MRG
-            # We know cur_state_updates is a list, because we didn't raise RuntimeError
-            # Assumption: Any stashed state updates should come before current ones
-            # (in fact, `cur_state_updates` should probably always be empty)
-            rng.state_updates = stashed_state_updates + cur_state_updates
-        # Having reattached state updates, rng.seed will update them all
-        shim.reseed_rng(rng, seed)
-        # Detach the state updates to return the graph in the state it was before
-        if stashed_state_updates:
-            rng.state_updates = rng.state_updates[len(stashed_state_updates):]
-                # NB: `reseed_rng` has changed the state updates, so we can't
-                #     just reuse cur_state_updates.
+        # Each compiled function maps to a different cache_key in _rng_updates
+        # Iterate over each set of updates and reseed the RNGs
+        if len(self._rng_updates) > 1:
+            warn("Support for multiple compiled integration functions is still "
+                 "WIP. For reliably deterministic reseeding of RNGs, ensure "
+                 "only one function is compiled.")
+        _num_updates = None
+        for update_stash in self._rng_updates.values():
+            stashed_state_updates = update_stash.get(rng, [])
+            if cur_state_updates is None and stashed_state_updates:
+                raise RuntimeError(f"The model {self.name} seems to have recorded "
+                                   "Theano state updates, but uses a plain NumPy "
+                                   "RNG. This is likely a bug in sinn.Model")
+            elif stashed_state_updates:
+                # We have a Theano RNG, either RandomStream or MRG
+                # We know cur_state_updates is a list, because we didn't raise RuntimeError
+                # Assumption: Any stashed state updates should come before current ones
+                # (in fact, `cur_state_updates` should probably always be empty)
+                rng.state_updates = stashed_state_updates + cur_state_updates
+            if _num_updates is None:
+                _num_updates = len(rng.state_updates)
+            elif _num_updates != len(rng.state_updates):
+                warn("There are multiple compiled integration functions, and they "
+                     "update the RNG state a different number of times. This "
+                     "will still work, in the sense that functions the the model "
+                     "can be integrated without errors. However, we have not "
+                     "confirmed that result will be is entirely deterministic: "
+                     "they may depend on the order in which the functions are "
+                     "compiled, or whether another function is compiled or not.")
+            # Having reattached state updates, rng.seed will update them all
+            shim.reseed_rng(rng, seed)
+            # Detach the state updates to return the graph in the state it was before
+            if stashed_state_updates:
+                rng.state_updates = rng.state_updates[len(stashed_state_updates):]
+                    # NB: `reseed_rng` has changed the state updates, so we can't
+                    #     just reuse cur_state_updates.
             
         # The code below did not require stashing RNG updates, but only works
         # with RandomStream (MRG updates cannot as easily be identified in
@@ -2258,14 +2278,13 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             curtidx = self.get_min_tidx(histories + tuple(self.statehists))
             assert(curtidx >= -1)
 
-
             if curtidx < endtidx:
                 self._advance(histories)(curtidx, endtidx+1)
                 # _advance applies the updates, so should get rid of them
                 self.theano_reset()
 
     @property
-    def no_updates(self):
+    def no_histories_have_updates(self):
         """
         Return `True` if none of the model's histories have unevaluated
         symbolic updates.
@@ -2289,6 +2308,11 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 "({}), but there are none in the update dictionary "
                 "(`shim.get_updates()`)".forma(hlist))
         return no_updates
+        
+    def _get_cache_key(self, histories=()):
+        # The compiled function depends both on the histories we want to update,
+        # and on which histories are locked.
+        return (histories, tuple(sorted(self.locked_histories)))
 
     def _advance(self, histories=()):
         """
@@ -2299,9 +2323,10 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         histories: Set of histories to update. State histories do not need to
             be included; they are added automatically.
         """
-        if histories not in self._advance_updates:
-            self._advance_updates[histories] = self.get_advance_updates(histories)
-        _advance_updates = self._advance_updates[histories]
+        cache_key = self._get_cache_key(histories)
+        if cache_key not in self._advance_updates:
+            self._advance_updates[cache_key] = self.get_advance_updates(histories)
+        _advance_updates = self._advance_updates[cache_key]
             # DEBUG
             # for i, s in enumerate(['base', 'value', 'start', 'stop']):
             #     self._advance_updates[self.V._num_data].owner.inputs[i] = \
@@ -2310,13 +2335,13 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             #     self._advance_updates[self.n._num_data].owner.inputs[i] = \
             #         shim.print(self._advance_updates[self.n._num_data]
             #                    .owner.inputs[i], s + ' n')
-        if self.no_updates:
-            if histories not in self._compiled_advance_fns:
+        if self.no_histories_have_updates:
+            if cache_key not in self._compiled_advance_fns:
                 logger.info("Compiling the update function")
-                self._compiled_advance_fns[histories] = self.cached_compile(
+                self._compiled_advance_fns[cache_key] = self.cached_compile(
                     [self.curtidx_var, self.stoptidx_var], [], _advance_updates)
                 logger.info("Done.")
-            _advance_fn = self._compiled_advance_fns[histories]
+            _advance_fn = self._compiled_advance_fns[cache_key]
         else:
             # TODO: Use _compiled_advance_fns to cache these compilations
             # We would need to cache the compilation for each different
@@ -2333,6 +2358,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 [self.curtidx_var, self.stoptidx_var], [], advance_updates)
             logger.info("Done.")
 
+        # I think the point of this lambda is to allow keyword args
         return lambda curtidx, stoptidx: _advance_fn(curtidx, stoptidx)
 
     def get_advance_updates(self, histories=()):
@@ -2347,20 +2373,21 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             be included; they are added automatically.
         """
         cur_tidx = self.cur_tidx
+        cache_key = self._get_cache_key(histories)
 
         logger.info("Constructing the update graph.")
         # Stash current symbolic updates
         for h in self.statehists:
             h.stash()  # Stash unfinished symbolic updates
         updates_stash = shim.get_updates()
-        assert len(self._rng_updates) == 0, "`sinn.Model._rng_updates should only be modified by `get_advance_updates`"
+        assert len(self._rng_updates[cache_key]) == 0, "`sinn.Model._rng_updates should only be modified by `get_advance_updates`"
         shim.reset_updates()
 
         # Get advance updates
         updates = self.advance_updates(self.curtidx_var, self.stoptidx_var, histories)
         # Store the RNG updates so they can be used for reseeding RNGs
         for rng in self.rng_inputs:
-            self._rng_updates[rng] = rng.updates()
+            self._rng_updates[cache_key][rng] = rng.updates()
         # Reset symbolic updates to their previous state
         shim.reset_updates()
         self.theano_reset(warn_rng=False)

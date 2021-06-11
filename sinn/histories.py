@@ -1056,7 +1056,8 @@ class History(HistoryBase, abc.ABC):
         """
         Current implementation just returns the object id.
         I'm still not convinced this is a good idea, but it allows Histories
-        to used in sets (Model) and tested for inclusion in sets (SimpleEval).
+        to used in sets (Model), as keys (Model) and tested for inclusion in
+        sets (SimpleEval).
         """
         return id(self)
         # return stableintdigest(self.name)
@@ -1071,8 +1072,11 @@ class History(HistoryBase, abc.ABC):
         return len(self.time)
 
     def __lt__(self, other):
-        # This allows histories to be sorted. IPyParallel sometimes requires this
+        """Return self.name < other.name."""
+        # This allows histories to be sorted. This is useful to 
         if isinstance(other, History):
+            if self.name == other.name:
+                warn("Both histories have the same name. Sorting may be non-deterministic.")
             return self.name < other.name
         else:
             raise TypeError("'Lesser than' comparison is not supported between objects of type History and {}."
