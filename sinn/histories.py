@@ -1376,8 +1376,8 @@ class History(HistoryBase, abc.ABC):
         Functionally equivalent to clearing the data, keeping the padding.
         Discards symbolic updates by calling `~History.theano_reset()`.
 
-        *Note* If this history is part of a model, you should use that
-        model's :py:meth:`~Model.clear_history()` method instead.
+        *Note* If this history is part of a model, you should generally use that
+        model's :py:meth:`~Model.clear()` method instead.
 
         Parameters
         ----------

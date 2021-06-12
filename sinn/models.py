@@ -1896,6 +1896,19 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         for hist in self.history_set:
             hist.lock()
     def clear(self,after=None):
+        """
+        Invalidate the model data, forcing histories to be recomputed the next
+        time they are queried.
+        Functionally equivalent to clearing the data, keeping the padding.
+        Discards symbolic updates by calling `shim.reset_updates()` and
+        `~History.theano_reset()`.
+
+        Parameters
+        ----------
+        after: AxisIndex
+            If given, history will only be cleared after this point.
+            `cur_tidx` will be set to `after`, rather than `t0idx-1`.
+            """
         shim.reset_updates()
         if after is not None:
             after = self.time.Index(after)
