@@ -2670,15 +2670,22 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             # If so, attach the model to it.
             # This is similar to the same pattern used in histories.HistoryUpdateFunction
             sig = inspect.signature(f)
-            if any(p.kind in (inspect._ParameterKind.VAR_POSITIONAL,
-                              inspect._ParameterKind.VAR_KEYWORD)
+            if any(p.kind in (inspect._ParameterKind.VAR_POSITIONAL,)
+                              #inspect._ParameterKind.VAR_KEYWORD)
                    for p in sig.parameters.values()):
                raise ValueError("Sinn accumulators don't support variadic "
                                "arguments at this time.")
+            extra_required_args = [p for p in list(sig.parameters.values())[2:]
+                                   if p.default is not inspect._empty]
+            if extra_required_args:
+                raise ValueError(
+                    f"The function {func.__qualname__} (signature: {sig}) "
+                    "should require at most two arguments (typically ``(model, tidx)``), "
+                    f"but it also requires {extra_required_args}.")
             if len(sig.parameters) == 1:
                 # Do not include `self`
                 firstarg = ()
-            elif len(sig.parameters) == 2:
+            elif len(sig.parameters) >= 2:
                 first_arg_name = next(iter(inspect.signature(f).parameters.keys()))
                 if first_arg_name not in ("self", "model"):
                     warn("If an accumulator function accepts two arguments, "
@@ -2688,7 +2695,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             else:
                 raise ValueError(
                     f"The function {func.__qualname__} (signature: {sig}) "
-                    "should accept two arguments (typically ``(self, tidx)``), "
+                    "should accept two arguments (typically ``(model, tidx)``), "
                     f"but is defined with {len(sig.parameters)}.")
             # Create the accumulator function
             def accumulated_function(curtidx, batchsize):
