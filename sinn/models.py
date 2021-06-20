@@ -424,8 +424,12 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
                 warn(f"Model {cls} does not define a set of state variables.")
             State = type('State', (), {'__annotations__': {}})
             namespace['State'] = State
+        elif not hasattr(State, '__annotations__'):
+            # We end up with sate-less histories, which are indicated with an empty State class
+            State.__annotations__ = {}
         elif len(getattr(State, '__annotations__', {})) == 0:
-            warn(f"Model {cls} has an empty `State` class.")
+            pass
+            # warn(f"Model {cls} has an empty `State` class.")
         else:
             if issubclass(State, BaseModel):
                 raise TypeError(f"Model {cls} `State` must be a plain class, "
@@ -1528,6 +1532,12 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         """
         Return the earliest time index for which all state histories are computed.
         """
+        if not self.statehists:
+            raise RuntimeError("`cur_tidx` is undefined for a model with no "
+                               "state histories, since any time point can be "
+                               "computed at any time.\nIf you need an anchor "
+                               "time point for building a computational graph, "
+                               "use `num_tidx` instead.")
         return self.get_min_tidx(self.statehists)
 
     @property
@@ -1632,7 +1642,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
            returned if the lock status of some histories changes.
 
         .. Dev note::
-           If someone can suggest a way to make SymbolicAxisIndexMeta._instance_plain
+           If we can find a way to make SymbolicAxisIndexMeta._instance_plain
            return the original underlying symbolic variable (the one which
            appears in graphs), I will gladly change this method to return a
            proper symbolic index.
@@ -1660,8 +1670,10 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             #    it could also return a negative index if nothing is computed,
             #    like History.cur_tidx does. The issue then is what is the most
             #    sensible thing to do if histories have different left padding.
-            assert self.get_min_tidx(self.locked_histories) >= self.t0idx, \
-                "`get_num_tidx` requires histories be computed at least up to `t0idx`"
+            _locked_histories = list(self.locked_histories)  # Consume generator
+            if _locked_histories:
+                assert self.get_min_tidx(_locked_histories) >= self.t0idx, \
+                    "`get_num_tidx` requires histories be computed at least up to `t0idx`"
             key = ()
             tidx = self.t0idx
         if key not in self._num_tidx_objs:
@@ -2385,7 +2397,6 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         histories: Set of histories to update. State histories do not need to
             be included; they are added automatically.
         """
-        cur_tidx = self.cur_tidx
         cache_key = self._get_cache_key(histories)
 
         logger.info("Constructing the update graph.")
