@@ -34,7 +34,9 @@ import sys
 import pydantic
 from pydantic import BaseModel, PrivateAttr, validator, root_validator
 from pydantic.typing import AnyCallable
-from typing import Any, Optional, Union, Tuple, Sequence, List, Dict, Callable as CallableT
+from typing import (
+    Any, Optional, Union, Tuple, Sequence, List, Dict, Set, Generator,
+    Callable as CallableT)
 from types import SimpleNamespace
 from dataclasses import dataclass
 from parameters import ParameterSet
@@ -611,8 +613,8 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
 
         # Add connected hists validators
         for submodel_nm in _model_identifiers:
-            namespace[f"_connect_hists_{submodel_nm}"] = \
-                connect_hists_validator(submodel_nm)
+            namespace[f"_connect_submodel_{submodel_nm}"] = \
+                connect_submodel_validator(submodel_nm)
 
         # Update namespace
         namespace['Config'] = Config
@@ -718,14 +720,14 @@ def init_autospiketrain(cls, autohist: AutoHist, values) -> Spiketrain:
     else:
         return Spiketrain(time=time, **autohist.kwargs)
 
-def connect_hists_validator(submodel_name):
+def connect_submodel_validator(submodel_name):
     """
     One of these validators is added for each submodel in a composite model.
     When a history is part of multiple submodels, it is only serialized once.
     This validator adds histories back into the dictionaries for submodels
     where they are missing.
     
-    Example usage::
+    Demonstrative usage::
     >>> class A(Model):
           ha: History
         class B(Model):
@@ -733,8 +735,8 @@ def connect_hists_validator(submodel_name):
         class C(Model):
           a: A
           b: B
-          _connect_hists_a = connect_hists_validator('a')
-          _connect_hists_b = connect_hists_validator('b')
+          _connect_submodel_a = connect_submodel_validator('a')
+          _connect_submodel_b = connect_submodel_validator('b')
           
     Actual usage: The Model metaclass adds these validators automatically,
       so users do not need to do so in their models.
@@ -746,26 +748,26 @@ def connect_hists_validator(submodel_name):
             # TODO: For instantiated models, we should still check that histories
             #       are correctly connected
             return submodel
-        hist_conns = values.get('history_connections')
-        if hist_conns:
-            for lowerhist, upperhist in hist_conns.items():
-                if upperhist.count('.') > 1:
+        conns = values.get('connections')
+        if conns:
+            for lowerobj, upperobj in conns.items():
+                if upperobj.count('.') > 1:
                     raise NotImplementedError(
-                        "This function _might_ work when `upperhist` references "
+                        "This function _might_ work when `upperobj` references "
                         "more deeply nested models, but it should be tested first.")
-                uppermodel, histname = upperhist.rsplit('.')
+                uppermodel, histname = upperobj.rsplit('.')
                 if uppermodel != submodel_name:
                     continue
                 if histname in submodel:
-                    raise ValueError(f"Connect connect history '{lowerhist}' to "
-                                     f"'{upperhist}': '{upperhist}' is already "
+                    raise ValueError(f"Connect history '{lowerobj}' to "
+                                     f"'{upperobj}': '{upperobj}' is already "
                                      "defined.")
-                # Recursively retrieve the lowerhist. Objects at different levels
+                # Recursively retrieve the lowerobj. Objects at different levels
                 # may be both dicts and Models, so we need to support both `get`
                 # and`getattr` (for the same reason, relying on ParameterSet
                 # to do this won't work, since it won't recurse into objects.
                 o = values
-                for attr in lowerhist.split('.'):
+                for attr in lowerobj.split('.'):
                     try:
                         o = getattr(o, attr)
                     except AttributeError:
@@ -773,7 +775,7 @@ def connect_hists_validator(submodel_name):
                 # Connect the lower history to the upper one
                 submodel[histname] = o
         return submodel
-    f.__name__ = f"connect_hists_to_{submodel_name.replace('.', '_')}"
+    f.__name__ = f"connect_submodel_{submodel_name.replace('.', '_')}"
     return validator(submodel_name, pre=True, allow_reuse=True)(f)
 
 class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
@@ -850,14 +852,14 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # Store RNG updates generated in `get_advance_updates`, so that
         # `reseed_RNGs` knows which RNG need to be seeded.
         # Structure: _rng_updates[cache_key][rng] = [upd1, upd2, ...]
-    history_connections: Optional[Dict[str,str]]
+    connections: Optional[Dict[str,str]]
         # Used to connect histories between submodels; mostly used for deserialization
         # Defines connection pairs for histories in different submodels
         # Order: {lower model.hist name : upper model.hist name},
         # where the "lower" model is the one which can be instantiated first
         # IMPORTANT: It is not required to set this variable in order to connect
         #    histories; simply reusing the same history instance will do.
-        #    Once a model is constructed, its `history_connections` attribute
+        #    Once a model is constructed, its `connections` attribute
         #    is updated to reflect actual history connections.
 
     class Config:
@@ -974,8 +976,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         #            for h in hists.values())
         excl_nmspc = {attr: {'update_function': {'namespace'}}
                       for attr in hists}
-        # Remove connected hists which are actually part of another submodel
-        excl_conn = {conn_hist: ... for conn_hist in self.history_connections.values()}
+        # Remove connected objects which are actually part of another submodel
+        excl_conn = {conn_obj: ... for conn_obj in self.connections.values()}
         exclude = add_exclude_mask(exclude, {**excl_nmspc, **excl_conn})
         # Proceed with parent's dict method
         obj = super().dict(*args, exclude=exclude, **kwargs)
@@ -1132,21 +1134,22 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         #     #                    shim.shared(size, name='batch_size'))
         #     # #     # Must be large enough so that test_value slices are not empty
         
-        # Set the value of history_connections so that it reflects actual connections
+        # Set the value of `connections` so that it reflects actual connections
         # TODO: Put in a root_validator (requires `nested_models` which works as class method)
         already_seen = {}  # Keeps track of histories that have been seen
-        conn_hists = {}    # Connection pairs for histories in different submodels
-                           # Order: lower model.hist name : upper model.hist name,
+        conn_objs = {}     # Connection pairs for objects in different submodels
+                           # Order: lower model.obj name : upper model.obj name,
                            # where the "lower" model is the one which can be instantiated first
         # NB: The order in which we iterate over nested_models is set by  
         #     the order in which submodels are defined in the class
         for subnm, submodel in self.nested_models.items():
-            for histnm, hist in submodel.nested_histories.items():
-                if id(hist) in already_seen:
-                    conn_hists[already_seen[id(hist)]] = f"{subnm}.{histnm}"
+            for objnm, obj in ChainMap(submodel.nested_histories,
+                                       submodel.nested_rngs      ).items():
+                if id(obj) in already_seen:
+                    conn_objs[already_seen[id(obj)]] = f"{subnm}.{objnm}"
                 else:
-                    already_seen[id(hist)] = f"{subnm}.{histnm}"
-        self.history_connections = conn_hists
+                    already_seen[id(obj)] = f"{subnm}.{objnm}"
+        self.connections = conn_objs
 
     @abc.abstractmethod
     def initialize(self, initializer: Any=None):
@@ -1397,17 +1400,17 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     # FIXME: what to do with histories which aren't part of model (e.g.
     #        returned from an operation between hists) ?
     @property
-    def name(self):
+    def name(self) -> str:
         return getattr(self, '__name__', type(self).__name__)
 
     @property
-    def nonnested_histories(self):
+    def nonnested_histories(self) -> Dict[str, History]:
         return {nm: getattr(self, nm) for nm in self._hist_identifiers}
     @property
-    def nonnested_history_set(self):
+    def nonnested_history_set(self) -> Set[History]:
         return {getattr(self, nm) for nm in self._hist_identifiers}
     @property
-    def nested_histories(self):
+    def nested_histories(self) -> Dict[str,History]:
         """
         Return the model's histories as {name: History} pairs, with the names
         of nested histories prefixed by the their submodel name: "{submodel}.{name}".
@@ -1417,24 +1420,24 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                    for submodel_nm, submodel in self.nested_models.items()
                    for hist_nm, hist in submodel.nested_histories.items()}}
     @property
-    def history_set(self):
+    def history_set(self) -> Set[History]:
         return set(chain(self.nonnested_history_set,
                          *(m.history_set for m in self.nested_models_list)))
     @property
-    def nonnested_kernels(self):
+    def nonnested_kernels(self) -> Dict[str, Kernel]:
         return {nm: getattr(self, nm) for nm in self._kernel_identifiers}
     @property
-    def nonnested_kernel_list(self):
+    def nonnested_kernel_list(self) -> List[Kernel]:
         return [getattr(self, nm) for nm in self._kernel_identifiers]
     @property
-    def kernel_list(self):
+    def kernel_list(self) -> List[Kernel]:
         return list(chain(self.nonnested_kernel_list,
                           *(m.kernel_list for m in self.nested_models_list)))
     @property
-    def nested_models(self):
+    def nested_models(self) -> Dict[str, Model]:
         return {nm: getattr(self, nm) for nm in self._model_identifiers}
     @property
-    def nested_models_list(self):
+    def nested_models_list(self) -> List[Model]:
         return [getattr(self, nm) for nm in self._model_identifiers]
 
     @property
@@ -1457,7 +1460,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         return self.time.dt
 
     @property
-    def statehists(self):
+    def statehists(self) -> utils.FixedGenerator:
         nested_len = sum(len(m.statehists) for m in self.nested_models_list)
         return utils.FixedGenerator(
             chain(
@@ -1466,23 +1469,23 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             nested_len + len(self.State.__annotations__) )
 
     @property
-    def unlocked_statehists(self):
+    def unlocked_statehists(self) -> Generator[History]:
         return (h for h in self.statehists if not h.locked)
 
     @property
-    def locked_statehists(self):
+    def locked_statehists(self) -> Generator[History]:
         return (h for h in self.statehists if h.locked)
 
     @property
-    def locked_histories(self):
+    def locked_histories(self) -> Generator[History]:
         return (h for h in self.history_set if h.locked)
 
     @property
-    def unlocked_histories(self):
+    def unlocked_histories(self) -> Generator[History]:
         return (h for h in self.history_set if not h.locked)
 
     @property
-    def nonstatehists(self):
+    def nonstatehists(self) -> utils.FixedGenerator:
         statehists = list(self.statehists)
         return utils.FixedGenerator(
             (h for h in self.history_set if h not in statehists),
@@ -1493,7 +1496,13 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         return (h for h in self.nonstatehists if not h.locked)
 
     @property
-    def rng_inputs(self):
+    def rng_inputs(self) -> List[mtb.typing.AnyRNG]:
+        """
+        Return a list of all RNGs on which _unlocked_ histories depend.
+        RNGs which only appear as inputs for _locked_ histories are excluded;
+        thus the returned list can usually be assumed to be those RNGs which
+        would be triggered by integration, with the current lock statuses.
+        """
         rng_inputs = []
         for h in self.unlocked_histories:
             for nm in h.update_function.input_names:
@@ -1502,9 +1511,27 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                     and inp not in rng_inputs):
                     rng_inputs.append(inp)
         return rng_inputs
+        
+    @property
+    def nonnested_rngs(self) -> Dict[str, mtb.typing.AnyRNG]:
+        d = {}
+        for attr in self.__fields__:
+            obj = getattr(self, attr, None)
+            if isinstance(obj, shim.config.RNGTypes):
+                d[attr] = obj
+        return d
+    @property
+    def nested_rngs(self) -> Dict[str, mtb.typing.AnyRNG]:
+        return {**self.nonnested_rngs,
+                **{f"{submodel_nm}.{rng_nm}": rng
+                   for submodel_nm, submodel in self.nested_models.items()
+                   for rng_nm, rng in submodel.nested_rngs.items()}}
 
     @property
-    def rng_hists(self):
+    def rng_hists(self) -> List[History]:
+        """
+        Return a list of stochastic histories (those with an RNG as input.)
+        """
         rng_hists = []
         for h in self.unlocked_histories:
             for nm in h.update_function.input_names:
