@@ -1278,14 +1278,19 @@ class NumericAxisIndexMeta(SpecAxisIndexMeta):
 
     @staticmethod
     def _instance___repr__(self):
-        # HACK
+        axis_str = getattr(self, 'axis', '')
+        name_str = getattr(self, 'name', '')
+        # HACK: We differentiate Delta indices by inspect the type name
         if "delta" in type(self).__name__.lower():
-            s = "NumericIndexDelta"
+            axis_type_str = "NumericIndexDelta"
         else:
-            s = "NumericIndex"
-        if hasattr(self, 'axis'):
-           s += f" (axis: {self.axis})"
-        return s
+            axis_type_str = "NumericIndex"
+        if name_str:
+            name_str += ", "
+        if axis_str:
+            axis_type_str += ", "
+        info_str = f"{name_str}{axis_type_str}{axis_str}"
+        return f"{self.plain} ({info_str})"
 
 class SymbolicAxisIndexMeta(SpecAxisIndexMeta, shim.graph.GraphExpressionMeta):
     def __new__(metacls, name, bases, namespace, axis, nptype):
@@ -1340,13 +1345,21 @@ class SymbolicAxisIndexMeta(SpecAxisIndexMeta, shim.graph.GraphExpressionMeta):
 
     @staticmethod
     def _instance___repr__(self):
-        # HACK
+        axis_str = getattr(self, 'axis', '')
+        name_str = getattr(self, 'name', '')
+        # HACK: We differentiate Delta indices by inspect the type name
         if "delta" in type(self).__name__.lower():
-            s = "SymbolicIndexDelta"
+            axis_type_str = "SymbolicIndexDelta"
         else:
-            s = "SymbolicIndex"
-        if hasattr(self, 'axis'):
-           s += f" (axis: {self.axis})"
+            axis_type_str = "SymbolicIndex"
+        if name_str:
+            if axis_str:
+                axis_str = f", axis: {axis_str}"
+            s = f"{name_str} ({axis_type_str}{axis_str})"
+        else:
+            if axis_str:
+                axis_str = f" (axis: {axis_str})"
+            s = f"{axis_type_str}{self.axis}"
         return s
         
     # _instance___str__ = _instance___repr__
