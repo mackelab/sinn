@@ -1172,11 +1172,6 @@ class History(HistoryBase, abc.ABC):
         except shim.graph.TooCostly:
             pass
         # Ensure axis has been sufficiently computed
-        if self.update_function is None:
-            raise RuntimeError(
-                f"No update function was assigned to history {self.name}. If "
-                "you only need to access values, use indexing syntax (`[]`) "
-                "instead of calling syntax (`()`).")
         self._compute_up_to(latest)
         # Now return the requested index
         return self._getitem_internal(axis_index)
@@ -1336,6 +1331,10 @@ class History(HistoryBase, abc.ABC):
         # NOTE: One could probably do something fancy with the duplicate t
         #       to minimize memory footprint, but that beyond the current scope
         data = self.get_data_trace(include_padding=False)
+        if len(data) == 0:
+            warn(f"History '{self.name}' has no computed values. Returning "
+                 "empty traces.")
+            return [[] for xidx in np.ndindex(self.shape)]
         times = self.time.unpadded_stops_array
         return [[(t, data[(tidx, *xidx)]) for tidx, t in enumerate(times)]
                 for xidx in np.ndindex(self.shape)]
@@ -1660,11 +1659,17 @@ class History(HistoryBase, abc.ABC):
                  "require large amounts of memory and extremely long "
                  "compilation times.")
 
-        # From this point on we can assume somthing needs to be calculated
+        # From this point on we can assume something needs to be calculated
 
         if self.locked:
             raise LockedHistoryError("Cannot compute locked history {}."
                                      .format(self.name))
+        
+        if self.update_function is None:
+            raise RuntimeError(
+                f"No update function was assigned to history {self.name}. If "
+                "you only need to access values, use indexing syntax (`[]`) "
+                "instead of calling syntax (`()`).")
 
         #########
         # Did not abort the computation => now let's do the computation
