@@ -882,6 +882,8 @@ class SpecAxisIndexMeta(type):
                      - (set(class_attrs) | set(properties) | set(methods) | set(static_methods) | set(class_methods)) )
 
         suffix = "" if axis is None else f" ({str(axis)})"
+        if suffix.strip() in name:  # Don't duplicate suffixes added by get_AxisIndex
+            suffix = ""
 
         T = super().__new__(metacls,
                             name + suffix,
@@ -1337,7 +1339,9 @@ class SymbolicAxisIndexMeta(SpecAxisIndexMeta, shim.graph.GraphExpressionMeta):
             if name is None:
                 name = f"Idx ({str(self.axis):.10})"
             else:
-                name += f" (idx, {str(self.axis):.10})"
+                suffix = f" (AxisIndex:{str(self.axis)})"
+                if suffix.strip() not in name:
+                    name += suffix
             SpecAxisIndexMeta.__clsinit__(self, x, name=name)
                 # super() seems to get confused within metaclasses
             if shim.config.compute_test_value != 'off':
@@ -1455,6 +1459,8 @@ def get_AxisIndex(axis, dtype=None):
             # Base symbolic type for tensors, shared vars, symbolic expressions
             # If Theano isn't loaded, returns an empty tuple
 
+        # TODO?: We actually only need to add suffix for the AbstractAxisIndexDelta,
+        #   since SpecAxisIndexMeta.__new__ adds it if it isn't already present
         suffix = "" if axis is None else f" ({str(axis)})"
 
         NumericAxisIndexDelta = NumericAxisIndexMeta(
