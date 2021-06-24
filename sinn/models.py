@@ -1682,10 +1682,16 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # synchronized, I'm not sure how useful it is to also allow `histories`
         # to be specified (we could just always use unlocked state hists)
         if not self.histories_are_synchronized():
+            L = max(len(hnm) for hnm in self.nested_histories)
+            tidcs = "\n".join(f"{hnm:<{L}}: {h.cur_tidx.convert(self.time.Index)}"
+                              for hnm, h in self.nested_histories.items()
+                              if not h.locked)
             raise RuntimeError(
-                f"Histories for the {self.name}) are not all "
-                "computed up to the same point. The compilation of the "
-                "model's integration function is ill-defined in this case.")
+                f"Unlocked histories for the {self.name} model are not all "
+                "computed up to the same point, or further than some locked "
+                "histories. The compilation of the model's integration function "
+                "is ill-defined in this case.\nTime indexes for unlocked "
+                f"histories (converted to model's time axis):\n{tidcs}")
         unlocked_histories = [h for h in histories if not h.locked]
         if unlocked_histories:
             key = tuple(id(h) for h in unlocked_histories)
@@ -1948,6 +1954,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             If given, history will only be cleared after this point.
             `cur_tidx` will be set to `after`, rather than `t0idx-1`.
             """
+        if shim.is_symbolic(after):
+            raise TypeError(
+                "`clear` requires a numeric (not symbolic) time index.")
         shim.reset_updates()
         if after is not None:
             after = self.time.Index(after)
@@ -2622,7 +2631,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                             for k,g in updates.items()}
 
         # Now we build the step function that will be passed to `scan`.
-        def onestep(tidx):
+        def onestep(tidx, *args):
             step_updates = OrderedDict(
                 (k, shim.graph.clone(g, replace={anchor_tidx: tidx}))
                 for k,g in anchored_updates.items())
@@ -2641,11 +2650,22 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
         # Now we can construct the scan graph.
         # We discard outputs since everything is in the updates
+        # NB: Providing the list of shared variables is not required, but
+        #    supposedly helps keep the graph cleaner and more efficient – which can
+        #    be especially beneficial with complex history update functions.
+        #    (https://theano-pymc.readthedocs.io/en/latest/library/scan.html?highlight=scan#using-shared-variables-gibbs-sampling)
+        #    I don't know how much of a difference this makes in practice, since 
+        #    I generally don't see a difference in the output of debug print.
+        shared_vars_in_graph = [
+            v for v in shim.graph.shared_inputs(anchored_updates.values())
+            if v is not anchor_tidx]  # anchor_tidx is replaced inside onestep
         _, upds = shim.scan(onestep,
                             sequences = [shim.arange(curtidx, stoptidx,
                                                      dtype=self.tidx_dtype)],
                             # outputs_info = [curtidx],
-                            name = f"scan ({self.name})")
+                            non_sequences=shared_vars_in_graph,
+                            name = f"scan ({self.name})",
+                            )
 
         return upds
 

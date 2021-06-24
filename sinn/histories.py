@@ -610,6 +610,7 @@ class History(HistoryBase, abc.ABC):
     __slots__ = ('ndim', 'stash',
                  '_sym_data', '_num_data',  # Symbolic and numeric (shared) data
                  '_sym_tidx', '_num_tidx',  # Trackers for the current symbolic & concrete time indices
+                                            # These are in axis space (not data space)
                  '_update_pos', '_update_pos_stop',  # See _compute_up_to
                  '_batch_loop_flag',        # See _is_batch_computable
                  '_update_function', '_range_update_function'
@@ -963,8 +964,8 @@ class History(HistoryBase, abc.ABC):
     def cur_tidx(self):
         """
         Returns the time index up to which the history has been computed.
-        Returned index is not corrected for padding; to get the number of bins
-        computed beyond t0, do ``hist.cur_tidx - hist.t0idx + 1``.
+        Returned index is not corrected for a shifted t0 index; to get the
+        number of bins computed beyond t0, do ``hist.cur_tidx - hist.t0idx + 1``.
         """
         curtidx = self._num_tidx.get_value()
         if curtidx > self.tnidx:
@@ -1369,7 +1370,7 @@ class History(HistoryBase, abc.ABC):
         return self.time.unpadded_length
 
 
-    def clear(self,after=None):
+    def clear(self, after=None):
         """
         Invalidate the history data, forcing it to be recomputed the next time it is queried.
         Functionally equivalent to clearing the data, keeping the padding.
@@ -1387,7 +1388,10 @@ class History(HistoryBase, abc.ABC):
         if self.locked:
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))
-        if after is not None:
+        elif shim.is_symbolic(after):
+            raise TypeError(
+                "`clear` requires a numeric (not symbolic) time index.")
+        elif after is not None:
             after = self.time.Index(after)
             self._num_tidx.set_value(after)
         else:
@@ -1546,7 +1550,8 @@ class History(HistoryBase, abc.ABC):
 
         .. Warning::
         For symbolic `tidx`, the logic in this function assumes them to be
-        constant offsets from the current evaluated point. Things like
+        constant offsets from the current evaluated point (stored as
+        ``_num_tidx`` and retrievable as ``cur_tidx``). Things like 
         ``hist._compute_up_to(5*hist._sym_tidx)`` may pass the input check,
         but will not work.
 
@@ -1562,7 +1567,7 @@ class History(HistoryBase, abc.ABC):
         fill histories, one can then replace ``_num_tidx`` in the final
         graph by ``scan_tidx``, and all indices become relative to that moving
         time point. This is the approach used by :py:class:`Model` to generate
-        the :py:meth:`Model.advance` method.
+        the :py:meth:`Model.integrate` method.
 
         Parameters
         ----------
