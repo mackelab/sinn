@@ -15,6 +15,7 @@ from abc import abstractmethod
 import collections
 from collections import deque
 from collections.abc import Iterable, Sized, Callable
+import numbers
 from odictliteral import odict
 from copy import deepcopy
 import itertools
@@ -32,10 +33,11 @@ import scipy.sparse
 
 import theano_shim as shim
 import theano_shim.sparse
+from theano_shim.graph import TooCostly
 
 from types import FunctionType, MethodType
 from typing import ClassVar, Tuple, Set, Optional, Any, Union
-from pydantic import validator, root_validator, BaseModel, Field
+from pydantic import validator, root_validator, BaseModel, Field, PrivateAttr
 from pydantic.typing import Type
 import mackelab_toolbox as mtb
 import mackelab_toolbox.typing
@@ -43,7 +45,7 @@ import mackelab_toolbox.iotools
 from mackelab_toolbox.transform import Transform
 from mackelab_toolbox.typing import (
     Array, NPValue, DType, Number, Integral, Real, PintValue, QuantitiesValue,
-    FloatX)
+    Shared, FloatX)
 
 from inspect import signature, isabstract
 
@@ -607,14 +609,24 @@ class History(HistoryBase, abc.ABC):
 
     """
     instance_counter: ClassVar[int] = 0
-    __slots__ = ('ndim', 'stash',
-                 '_sym_data', '_num_data',  # Symbolic and numeric (shared) data
-                 '_sym_tidx', '_num_tidx',  # Trackers for the current symbolic & concrete time indices
-                                            # These are in axis space (not data space)
-                 '_update_pos', '_update_pos_stop',  # See _compute_up_to
+    __slots__ = ('ndim',
+                 # '_sym_data', '_num_data',  # Symbolic and numeric (shared) data
+                 # '_sym_tidx', '_num_tidx',  # Trackers for the current symbolic & concrete time indices
+                 #                            # These are in axis space (not data space)
                  '_batch_loop_flag',        # See _is_batch_computable
                  '_update_function', '_range_update_function'
                  )
+    _num_data: Union[Shared[Array],Tuple[Shared[Array],...]]=PrivateAttr()
+        # Numeric (shared) data
+    _num_tidx: Shared[int]=PrivateAttr()
+        # Tracker for the current numeric time index
+        # This is in axis space (not data space)
+    _stash: Stash=PrivateAttr()
+    _taps : dict =PrivateAttr({})
+    _update_pos     : Optional[int]=PrivateAttr(None)
+    # _update_pos_stop: Optional[int]=PrivateAttr(None)
+        # When computing a symbolic update, store the absolute start and end time indices
+        # Used to detect recursion; see _compute_up_to
     @property
     def input_list(self):
         raise DeprecationWarning
@@ -626,6 +638,8 @@ class History(HistoryBase, abc.ABC):
       # WARNING: Don't use actual dtypes for defaults, just strings.
       #   dtype's __eq__ is broken (https://github.com/numpy/numpy/issues/5345)
       #   and makes reasonable Pydantic code raise an exception
+      # UPDATE: Should be fixed now (https://github.com/samuelcolvin/pydantic/issues/2483)
+      #   but not yet tested
 
     iterative   : bool = True
     symbolic    : bool = None
@@ -700,28 +714,31 @@ class History(HistoryBase, abc.ABC):
         object.__setattr__(self, 'ndim', len(self.shape))
         data, tidx = self.initialized_data(data)
         # Data storage. Values > _num_tidx are undefined
-        object.__setattr__(self, '_num_data', data)
-        object.__setattr__(self, '_sym_data', self._num_data)
+        self._num_data = data
+        self._taps = {}
+        # self._sym_data = self._num_data
         # Tracker for the latest time bin for which we know history
-        object.__setattr__(self, '_num_tidx', tidx)
-        object.__setattr__(self, '_sym_tidx', self._num_tidx)
+        self._num_tidx = tidx
+        # self._sym_tidx = self._num_tidx
         # Allow for shared variables & tuples of shared vars, but not symbolic tensors
         if shim.is_pure_symbolic(self._num_data):
-            raise AssertionError(f"{cls.__qualname__}.parse_obj: `_num_data` "
+            raise AssertionError(f"{cls.__qualname__}.__init__: `_num_data` "
                                  "must not be a symbolic variable.")
         # Ensure _num_tidx is a shared variable
         if not shim.isshared(self._num_tidx):
-            raise AssertionError(f"{cls.__qualname__}.parse_obj: `_num_tidx` "
+            raise AssertionError(f"{cls.__qualname__}.__init__: `_num_tidx` "
                                  "must be a shared variable.")
         # Trackers for the dynamic updates – These are always initialized to
         # `None`, same as _num_tidx is always initialized to _sym_tidx
-        object.__setattr__(self, '_update_pos'     , None)
-        object.__setattr__(self, '_update_pos_stop', None)
+        self._update_pos      = None
+        # self._update_pos_stop = None
 
         # Following allows to stash Theano updates
-        object.__setattr__(
-            self, 'stash', Stash(self, ('_sym_tidx', '_num_tidx'),
-                                       ('_sym_data', '_num_data')))
+        # Signature: Stash(obj, (attr_name, attr_default), (), ...)
+        # object.__setattr__(
+            # self, '_stash', Stash(self, ('_sym_tidx', '_num_tidx'),
+            #                             ('_sym_data', '_num_data')))
+        self._stash = Stash(self, ('_taps', {}))
 
     def copy(self, *args, **kwargs):
         """
@@ -760,8 +777,8 @@ class History(HistoryBase, abc.ABC):
         object.__setattr__(m, '_range_update_function', None)
 
         # Don't copy trackers for dynamic updates
-        object.__setattr__(m, '_update_pos'     , None)
-        object.__setattr__(m, '_update_pos_stop', None)
+        m._update_pos      = None
+        # m._update_pos_stop = None
 
         # Copy the data and time index tracker
         # Simply copying the shared var would still point to the same
@@ -772,19 +789,20 @@ class History(HistoryBase, abc.ABC):
         else:
             assert isinstance(self._num_data, tuple)
             num_copy = tuple(deepcopy(v) for v in self._num_data)
-        object.__setattr__(m, '_num_data', num_copy)
-        object.__setattr__(m, '_sym_data', m._num_data)
-        object.__setattr__(m, '_num_tidx',
-                           shim.shared(np.array(self.cur_tidx.copy(),
-                                                dtype=m.time.index_nptype),
-                                       name = ' t idx (' + m.name + ')',
-                                       symbolic = m.symbolic))
-        object.__setattr__(m, '_sym_tidx'      , m._num_tidx)
+        m._num_data = num_copy
+        # m._sym_data = m._num_data
+        m._taps = {}
+        m._num_tidx = shim.shared(np.array(self.cur_tidx.copy(),
+                                           dtype=m.time.index_nptype),
+                                  name = ' t idx (' + m.name + ')',
+                                  symbolic = m.symbolic)
+        # m._sym_tidx = m._num_tidx
 
         # Setup stash
-        object.__setattr__(
-            m, 'stash', Stash(m, ('_sym_tidx', '_num_tidx'),
-                                 ('_sym_data', '_num_data')))
+        # object.__setattr__(
+        #     m, '_stash', Stash(m, ('_sym_tidx', '_num_tidx'),
+        #                          ('_sym_data', '_num_data')))
+        m._stash = Stash(m, ('_taps', {}))
         return m
 
     def dict(self, *args, exclude=None, **kwargs):
@@ -831,10 +849,11 @@ class History(HistoryBase, abc.ABC):
             m.range_update_function = HistoryUpdateFunction.parse_obj(rg_upd_f)
         # Initialize symbolic & concrete data & index
         data, tidx = m.initialized_data(data)
-        object.__setattr__(m, '_num_data', data)
-        object.__setattr__(m, '_sym_data', m._num_data)
-        object.__setattr__(m, '_num_tidx', tidx)
-        object.__setattr__(m, '_sym_tidx', m._num_tidx)
+        m._num_data = data
+        # m._sym_data = m._num_data
+        m._taps = {}
+        m._num_tidx = tidx
+        # m._sym_tidx = m._num_tidx
         if shim.is_pure_symbolic(m._num_data):
             raise AssertionError(f"{cls.__qualname__}.parse_obj: `_num_data` "
                                  "must not be a symbolic variable.")
@@ -842,12 +861,13 @@ class History(HistoryBase, abc.ABC):
             raise AssertionError(f"{cls.__qualname__}.parse_obj: `_num_tidx` "
                                  "must be a shared variable.")
         # Initialize dynamic update trackers
-        object.__setattr__(m, '_update_pos'     , None)
-        object.__setattr__(m, '_update_pos_stop', None)
+        m._update_pos      = None
+        # m._update_pos_stop = None
         # Stash
-        object.__setattr__(
-            m, 'stash', Stash(m, ('_sym_tidx', '_num_tidx'),
-                                 ('_sym_data', '_num_data')))
+        # object.__setattr__(
+        #     m, '_stash', Stash(m, ('_sym_tidx', '_num_tidx'),
+        #                           ('_sym_data', '_num_data')))
+        m._stash = Stash(m, ('_taps', {}))
         return m
 
     def json(self, *a, **kw):
@@ -951,7 +971,7 @@ class History(HistoryBase, abc.ABC):
         return self.time.pad_right
     @property
     def padding(self):
-        """Returns a tuple with the left and right padding."""
+        """Return a tuple with the left and right padding."""
         warn("Use `.pad_left` and/or `.pad_right`", DeprecationWarning)
         return (self.time.pad_left, self.time.pad_right)
 
@@ -963,7 +983,7 @@ class History(HistoryBase, abc.ABC):
     @property
     def cur_tidx(self):
         """
-        Returns the time index up to which the history has been computed.
+        Return the time index up to which the history has been computed.
         Returned index is not corrected for a shifted t0 index; to get the
         number of bins computed beyond t0, do ``hist.cur_tidx - hist.t0idx + 1``.
         """
@@ -979,10 +999,46 @@ class History(HistoryBase, abc.ABC):
     @property
     def cur_t(self):
         """
-        Returns the time up to which the history has been computed.
+        Return the time up to which the history has been computed.
         Equivalent to `self.time[self.cur_tidx]`.
         """
         return self.time[self.cur_tidx]
+        
+    @property
+    def _latest_tap(self) -> int:
+        """
+        Return the largest tap value (symbolic offset wrt num_tidx) or 0,
+        whichever is higher. Used to determine how far ahead of num_tidx we are.
+        """
+        return max(itertools.chain(self._taps, [0]))
+        
+    @property
+    def _earliest_tap(self) -> int:
+        """
+        Return the smallest tap value (symbolic offset wrt num_tidx) or 0,
+        whichever is smaller. Used to determine how far behind num_tidx we are.
+        """
+        return min(itertools.chain(self._taps, [0]))
+        
+    def _pending_ops_str(self) -> str:
+        """
+        Return an empty string if and only if there are no pending symbolic updates.
+        Returns from 0 to 2 lines (each line preceded by '\n'):
+        One listing taps (if any), one listing global shared updates (if any).
+        Used in assertions to ensure History is an a clean state before
+        performing certain operations.
+        """
+        if self._latest_tap:
+            taps_str = ("\nTime points from this hist used in pending symbolic "
+                        f"operations: {[k for k in self._taps.keys() if k > 0]}")
+        else:
+            taps_str = ""
+        if shim.pending_updates():
+            pending_str = ("\nShared variables with pending symbolic updates: "
+                           f"{shim.pending_updates().keys()}")
+        else:
+            pending_str = ""
+        return f"{taps_str}{pending_str}"
 
     # We use getter+setter for update functions to ensure they are correctly
     # attached to the history (i.e. their return type matches)
@@ -1003,11 +1059,11 @@ class History(HistoryBase, abc.ABC):
     # call _set_update_function without the side-effect of clearing the history
     def _set_update_function(self, f: HistoryUpdateFunction):
         assert isinstance(f, HistoryUpdateFunction) or f is None, "`f` must be a HistoryUpdateFunction"
-        if shim.pending_updates():
-            symb_upds = shim.get_updates().keys()
+        # if shim.pending_updates():
+        if self._pending_ops_str():
             raise RuntimeError(
                 f"Can't assign a new update function to history '{self.name}' "
-                f"while there are pending updates: {symb_upds}.")
+                f"while there are pending updates:{self._pending_ops_str()}.")
         if f is not None:
             f.return_dtype = self.dtype
         object.__setattr__(self, '_update_function', f)
@@ -1035,11 +1091,11 @@ class History(HistoryBase, abc.ABC):
     
     def _set_range_update_function(self, f :HistoryUpdateFunction):
         assert isinstance(f, HistoryUpdateFunction) or f is None
-        if shim.pending_updates():
-            symb_upds = shim.get_updates().keys()
+        # if shim.pending_updates():
+        if self._pending_ops_str():
             raise RuntimeError(
                 f"Can't assign a new update function to history '{self.name}' "
-                f"while there are pending updates: {symb_upds}.")
+                f"while there are pending updates:{self._pending_ops_str()}")
         if f is not None:
             f.return_dtype = self.dtype
         object.__setattr__(self, '_range_update_function', f)
@@ -1244,7 +1300,8 @@ class History(HistoryBase, abc.ABC):
         if not (earliest.in_bounds and latest.in_bounds):
             raise IndexError(f"Index {axis_index} is out of bounds for "
                              f"history {self.name}.")
-        if shim.eval(latest, max_cost=None) > shim.eval(self._sym_tidx, max_cost=None):
+        # if shim.eval(latest, max_cost=None) > shim.eval(self._sym_tidx, max_cost=None):
+        if shim.eval(latest, max_cost=None) - self.cur_tidx > self._latest_tap:
             return NotComputed.NotYetComputed
         # Within bounds => retrieve the cached value
         else:
@@ -1287,8 +1344,9 @@ class History(HistoryBase, abc.ABC):
               and len(axis_index.shape) > 0 and axis_index.shape[0] == 0):
             # Empty array => nothing to do
             return
-        if (self._sym_data is not self._num_data
-            or self._sym_tidx is not self._num_tidx):
+        # if (self._sym_data is not self._num_data
+        #     or self._sym_tidx is not self._num_tidx):
+        if self._latest_tap:
             raise RuntimeError(
                 f"Can't assign to the data of history '{self.name}' "
                 "while there it has pending updates.")
@@ -1356,7 +1414,7 @@ class History(HistoryBase, abc.ABC):
     @property
     def data(self):
         """
-        Returns the data which has been computed. This does not include
+        Return the data which has been computed. This does not include
         in-progress symbolic updates.
         """
         return self.get_data_trace()
@@ -1396,7 +1454,8 @@ class History(HistoryBase, abc.ABC):
             self._num_tidx.set_value(after)
         else:
             self._num_tidx.set_value(self.t0idx - 1)
-        object.__setattr__(self, '_sym_tidx', self._num_tidx)
+        # object.__setattr__(self, '_sym_tidx', self._num_tidx)
+        self._taps.clear()
 
         self.theano_reset()
 
@@ -1412,7 +1471,8 @@ class History(HistoryBase, abc.ABC):
         (since once locked, it can no longer be updated). This can be disabled
         by setting `warn` to False.
         """
-        if self._sym_tidx != self._num_tidx:
+        # if self._sym_tidx != self._num_tidx:
+        if self._latest_tap:
             raise RuntimeError("You are trying to lock the history {}, which "
                                "in the midst of building a Theano graph. Reset "
                                "it first".format(self.name))
@@ -1433,10 +1493,11 @@ class History(HistoryBase, abc.ABC):
         # warn(f"Unlocking history {self.name}. Note that unless you are "
         #      "debugging, you shouldn't call this function, since sinn assumes "
         #      "that locked histories will never change.")
-        if shim.pending_updates():
+        # if shim.pending_updates():
+        if self._pending_ops_str():
             warn(f"Failed unlocking history {self.name}. Histories cannot be "
-                 "unlocked while there are pending updates.\n"
-                 f"Pending updates: {shim.get_updates().keys()}")
+                 "unlocked while there are pending updates."
+                 f"{self._pending_ops_str()}")
         else:
             self.locked = False
 
@@ -1469,13 +1530,13 @@ class History(HistoryBase, abc.ABC):
         """
         # TODO: if inplace=False, return a view of the data
         # TODO: invalidate caches ?
-        # TODO: check lock
-        # TODO: Theano _sym_data ? _sym_tidx ?
-        # TODO: Sparse _sym_data (Spiketrain)
         # TODO: Can't pad (resize) after truncate
         warn("Function `truncate()` is a work in progress.")
-        if self._sym_tidx != self._num_tidx:
+        # if self._sym_tidx != self._num_tidx:
+        if self._latest_tap:
             raise NotImplementedError("There are uncommitted symbolic updates.")
+        if inplace and self.locked:
+            raise RuntimeError(f"Tried to truncate locked history {self.name}.")
 
         if end is None:
             end = start
@@ -1489,17 +1550,16 @@ class History(HistoryBase, abc.ABC):
         # imax = len(self._tarr) if end is None else self.get_tidx(end)
 
         hist = self if inplace else self.deepcopy()
-        # TODO: Don't copy _sym_data
 
-        if (shim.issparse(hist._sym_data)
-            and not isinstance(hist._sym_data, sp.sparse.lil_matrix)):
-            object.__setattr__(hist, '_sym_data', self._sym_data.tocsr()[imin:imax+1].tocoo())
-                # CSC matrices can also be indexed by row, but even if _sym_data
+        if (shim.issparse(hist._num_data)
+            and not isinstance(hist._num_data, sp.sparse.lil_matrix)):
+            hist._num_data = self._num_data.tocsr()[imin:imax+1].tocoo()
+                # CSC matrices can also be indexed by row, but even if _num_data
                 # is CSC, converting to CSR first doesn't impact performance
         else:
-            object.__setattr__(hist, '_sym_data', self._sym_data[imin:imax+1])  # +1 because imax must be included
+            hist._num_data = self._num_data[imin:imax+1]  # +1 because imax must be included
         # TODO: use `set_value` ?
-        object.__setattr__(hist, '_num_data', hist._sym_data)
+        # object.__setattr__(hist, '_sym_data', hist._num_data)
         hist._tarr = self._tarr[imin:imax+1]
         if self.t0idx < imin:
             hist.t0 = hist._tarr[0]
@@ -1511,17 +1571,18 @@ class History(HistoryBase, abc.ABC):
 
         if self._num_tidx.get_value() < imin:
             hist._num_tidx.set_value(-1)
-            hist._sym_tidx.set_value(-1)
+            # hist._sym_tidx.set_value(-1)
         elif self._num_tidx.get_value() > imax:
             hist._num_tidx.set_value(imax)
-            hist._sym_tidx.set_value(imax)
+            # hist._sym_tidx.set_value(imax)
         else:
-            # If truncation is done inplace, setting _num_tidx can
-            # change _sym_tidx  => Get indices first
-            oidx = self._num_tidx.get_value()
-            cidx = self._sym_tidx.get_value()
-            hist._num_tidx.set_value(oidx - imin)
-            hist._sym_tidx.set_value(cidx - imin)
+            hist._num_tidx.set_value(self._num_tidx.get_value() - imin)
+            # # If truncation is done inplace, setting _num_tidx can
+            # # change _sym_tidx  => Get indices first
+            # oidx = self._num_tidx.get_value()
+            # cidx = self._sym_tidx.get_value()
+            # hist._num_tidx.set_value(oidx - imin)
+            # hist._sym_tidx.set_value(cidx - imin)
 
         return hist
 
@@ -1552,7 +1613,7 @@ class History(HistoryBase, abc.ABC):
         For symbolic `tidx`, the logic in this function assumes them to be
         constant offsets from the current evaluated point (stored as
         ``_num_tidx`` and retrievable as ``cur_tidx``). Things like 
-        ``hist._compute_up_to(5*hist._sym_tidx)`` may pass the input check,
+        ``hist._compute_up_to(5*hist._num_tidx)`` may pass the input check,
         but will not work.
 
         .. Treatment of symbolic time points::
@@ -1560,8 +1621,8 @@ class History(HistoryBase, abc.ABC):
         which is set to ``self._num_tidx`` (the latest non-symbolic time
         point). This is the only symbolic dependency allowed in the expressions
         for ``tidx``. Thus expressions like
-        ``hist._compute_up_to(hist._sym_tidx + 1)`` are valid, but
-        ``hist._compute_up_to(hist._sym_tidx + a)``, where ``a`` is symbolic,
+        ``hist._compute_up_to(hist._num_tidx + 1)`` are valid, but
+        ``hist._compute_up_to(hist._num_tidx + a)``, where ``a`` is symbolic,
         are not.
         To create a ``scan`` which iterates a ``scan_tidx`` through time to
         fill histories, one can then replace ``_num_tidx`` in the final
@@ -1577,7 +1638,7 @@ class History(HistoryBase, abc.ABC):
             Can also be a string, either
             'end' or 'all', in which case the entire history is computed. The
             difference between these is that 'end' will compute all values
-            starting at the current time, whereas 'all' restarts from 0 and
+            starting from the current time, whereas 'all' restarts from 0 and
             computes everything. Padding is also excluded with 'end', while it
             is included with 'all'. When compiling a Theano graph for
             non-iterative histories, 'all' results in a much cleaner graph,
@@ -1600,22 +1661,23 @@ class History(HistoryBase, abc.ABC):
         sequentially, one time step at a time.
         """
 
-        cur_tidx = self.time.Index(self._sym_tidx)
+        # cur_tidx = self.time.Index(self._sym_tidx)
+        cur_tidx = self.time.Index(self._num_tidx + self._latest_tap)
         if start == 'numeric':
             assert shim.graph.is_computable([cur_tidx])
             cur_tidx = shim.graph.eval(cur_idx, if_too_costly='ignore')
         else:
-            assert start == 'symbolic'
+            assert start == 'symbolic', "_compute_up_to(): `start` argument should be either 'numeric' or 'symbolic'."
             if self.locked:
                 return
             elif not shim.graph.is_computable([tidx, cur_tidx],
-                                            with_inputs=[self._num_tidx]):
-                # Recall: _num_tidx is a shared var with current time
-                # tidx and cur_tidx may be symbolic.
+                                              with_inputs=[self._num_tidx]):
+                # NB: _num_tidx is a shared var with current time
+                #     tidx and cur_tidx may be symbolic.
                 raise TypeError(
                     "We cannot construct the computational graph for updates "
                     "up to arbitrary symbolic times. Use expressions such as "
-                    "`hist._compute_up_to(hist._sym_tidx + 1)`. The only "
+                    "`hist._compute_up_to(hist._num_tidx + 1)`. The only "
                     "allowed symbolic dependency is `self._num_tidx`."
                     "For constructing the graph filling a history up to some "
                     "arbitrary time, see `models.Model.advance`.")
@@ -1641,14 +1703,16 @@ class History(HistoryBase, abc.ABC):
         #    case the difference is independent of `_num_tidx` and we
         #    don't care what value it has.
         # 2) `end` does not depend on `_num_tidx` (b/c tidx == 'end',
-        #    'all'). In this case the difference does depend on,
+        #    'all'). In this case the difference does depend on
         #    `_num_tidx`, and we want it to, so we use the value stored
         #    in its shared storage.
+        #    (Later note: I'm not so sure about the logic of this second case.
+        #    I also don't think I ever used it.)
         # Since it is useful to have non-moving points when dealing with
         # recursion, we calculate absolute positions and subtract the concrete
         # integers to get Δidx
-        absstart = shim.graph.eval(start.plain, max_cost=None)  # _num_tidx is shared var,
-        absstop  = shim.graph.eval(stop.plain, max_cost=None)   # so eval() works fine
+        absstart = self.time.Index(shim.eval(start, max_cost=None))  # _num_tidx is shared var,
+        absstop  = self.time.Index(shim.eval(stop, max_cost=None))   # so eval() works fine
         Δidx = absstop - absstart  # No dependence on _num_tidx if case 1)
         symbolic_times = shim.is_graph_object(start, end)
             # True if either `start` or `end` is symbolic
@@ -1672,21 +1736,21 @@ class History(HistoryBase, abc.ABC):
         
         if self.update_function is None:
             raise RuntimeError(
-                f"No update function was assigned to history {self.name}. If "
-                "you only need to access values, use indexing syntax (`[]`) "
-                "instead of calling syntax (`()`).")
+                f"Cannot update history {self.name}: No update function was "
+                f"assigned. (Requested a time index {Δidx} time steps ahead "
+                f"of the current time {self.cur_tidx}.")
 
         #########
         # Did not abort the computation => now let's do the computation
 
         if self._update_pos is not None:
-            assert self._update_pos_stop is not None
+            # assert self._update_pos_stop is not None
             # We recursed back into this function. Under the causal assumption,
             # we must have:
             #   - That we are evaluating at a point we have already calculated
             #   - That the end point is no further than a point we have already calculated
-            if (absstart >= self._update_pos      # Yes, these are redundant;
-                or absstop  >= self._update_pos): # that's experimental code for you: verbosity + easier to track errors
+            if (absstart >= self._update_pos      # Strictly speaking, these 
+                or absstop  >= self._update_pos): # two check are redundant
                 raise AssertionError(
                     f"The update function for history '{self.name}' seems to "
                     "break the causality assumption. This can happen if the "
@@ -1696,17 +1760,17 @@ class History(HistoryBase, abc.ABC):
             # => skip clean-up of recursion variables since we didn't set them.
         else:
             # We set _update_pos here to detect any (possibly accidental) recursion
-            object.__setattr__(self, '_update_pos', absstart)
+            self._update_pos = absstart
                 # Since this variable depends on the current value of
                 # `_num_tidx`, it must not appear in the final graph.
                 # It is used only to track the iteration through recursions.
-            object.__setattr__(self, '_update_pos_stop', absstop)
-                # At some point I needed (or thought I needed) to push forward the
-                # end point from within an recursed call. I leave this here in
-                # case that need comes up again.
+            # self._update_pos_stop = absstop
+            #     # At some point I needed (or thought I needed) to push forward the
+            #     # end point from within an recursed call. I leave this here in
+            #     # case that need comes up again.
             if (self.range_update_function is not None
                 and self._is_batch_computable(up_to=self.time.axis_to_data_index(stop))):
-                raise NotImplementedError
+                raise NotImplementedError("Waiting for a use case to implement.")
                 # Computation doesn't depend on history – just compute the whole
                 # thing in one go
                 # The time index array is flipped, putting
@@ -1744,8 +1808,7 @@ class History(HistoryBase, abc.ABC):
                                 # Index(shim.arange(start,stop,dtype=Index.nptype))[::-1]
                                 # )[::-1])
             else:
-                i = 0
-                while absstart + i < self._update_pos_stop:
+                for i in range(Δidx):
                     cur_tidx = start + i       # start may be symbolic
                         # make it easier for compiler by having update and
                         # evaluation positions point to the same symbol `cur_tidx`
@@ -1758,14 +1821,13 @@ class History(HistoryBase, abc.ABC):
                         # the exception and continues (or we are in an
                         # interactive session), the internal state would be
                         # inconsistent.
-                        object.__setattr__(self, '_update_pos', None)
-                        object.__setattr__(self, '_update_pos_stop', None)
+                        self._update_pos      = None
+                        # self._update_pos_stop = None
                         raise
-                    i += 1
 
             # We've exited the recursion – clean up variables
-            object.__setattr__(self, '_update_pos', None)
-            object.__setattr__(self, '_update_pos_stop', None)
+            self._update_pos      = None
+            # self._update_pos_stop = None
 
     def get_time_stops(self, time_slice=slice(None, None), include_padding=False):
         """Return the time array.
@@ -1803,7 +1865,7 @@ class History(HistoryBase, abc.ABC):
         # return self._tarr[self._get_time_index_slice(time_slice, include_padding)]
 
     @abstractmethod
-    def _getitem_internal(self, key):
+    def _getitem_internal(self, axis_index):
         raise NotImplementedError  # __getitem__ method is history type specific
 
     @abstractmethod
@@ -1814,6 +1876,14 @@ class History(HistoryBase, abc.ABC):
     def eval(self, max_cost :Optional[int]=None, if_too_costly :str='raise'):
         """
         Apply symbolic updates onto this history.
+        
+        .. warning:: This is a convenience function which can be quite useful
+           during interactive or debugging sessions, but it is not especially
+           robust. 
+           1) If there are multiple histories whose updates depend on each,
+              other, the behaviour is not entirely defined. Especially if
+              random numbers are involved, multiple calls to `eval()`, even on
+              different histories, may lead to duplicate calls to the RNG.
 
         Parameters
         ----------
@@ -1835,31 +1905,53 @@ class History(HistoryBase, abc.ABC):
         **Side-effects**
             Removes updates from :attr:`theano_shim.config.symbolic_updates`.
         """
-        # Adapted from History.eval. See History.eval for docstring
-        if self._num_data is self._sym_data:
-            assert self._num_tidx is self._sym_tidx
+        # NB: This method does not clear the _taps dictionary, since other
+        #     histories may depend on those variables.
+        # FIXME: What to do when `eval()` is called multiple times ? If taps
+        #     are not removed, the history will move forward on each eval.
+        # if self._num_data is self._sym_data:
+        #     assert self._num_tidx is self._sym_tidx
+        if self._latest_tap <= 0:
             # Nothing to do
             return
-        # Note: permissible to have symbolic data & numeric tidx, but
-        #       not permissible to have numeric data & symbolic tidx
+            
+        taps = {tapk: self._taps[tapk] for tapk in sorted(self._taps)
+                if tapk > 0}
+        if list(taps) != list(range(1, len(taps)+1)):
+            raise NotImplementedError("Symbolic (forward) taps must start from "
+                                      "1 and not skip any time steps.")
+            
         kwargs = {'max_cost': max_cost, 'if_too_costly': if_too_costly}
-        updates = shim.get_updates()
-        # All symbolic updates should be in shim's updates dict
-        if self._num_tidx in updates:
-            assert self._sym_tidx is updates[self._num_tidx]
-        assert self._num_data in updates
-        assert self._sym_tidx is updates[self._num_tidx]
-        assert self._sym_data is updates[self._num_data]
-        # TODO: tidx, data = shim.eval([self._sym_tidx, self._sym_data], **kwargs)
-        tidx = shim.eval(self._sym_tidx, **kwargs)
-        data = shim.eval(self._sym_data, **kwargs)
-        self._num_tidx.set_value(tidx)
-        self._num_data.set_value(data)
-        object.__setattr__(self, '_sym_tidx', self._num_tidx)
-        object.__setattr__(self, '_sym_data', self._num_data)
-        if self._num_tidx in updates:
-            del updates[self._num_tidx]
-        del updates[self._num_data]
+        evaled_updates = shim.eval(list(taps.values()), **kwargs)
+        self.theano_reset()  # Clear symbolic updates to replace them with numeric ones
+        cur_tidx = self.cur_tidx  # Keep original cur_tidx, since value changes during iteration
+        for tapk, tapv in zip(taps, evaled_updates):
+            self.update(cur_tidx + tapk, tapv)
+            
+        # if self._num_data is self._sym_data:
+        #     assert self._num_tidx is self._sym_tidx
+        #     # Nothing to do
+        #     return
+        # # Note: permissible to have symbolic data & numeric tidx, but
+        # #       not permissible to have numeric data & symbolic tidx
+        # kwargs = {'max_cost': max_cost, 'if_too_costly': if_too_costly}
+        # updates = shim.get_updates()
+        # # All symbolic updates should be in shim's updates dict
+        # if self._num_tidx in updates:
+        #     assert self._sym_tidx is updates[self._num_tidx]
+        # assert self._num_data in updates
+        # assert self._sym_tidx is updates[self._num_tidx]
+        # assert self._sym_data is updates[self._num_data]
+        # # TODO: tidx, data = shim.eval([self._sym_tidx, self._sym_data], **kwargs)
+        # tidx = shim.eval(self._sym_tidx, **kwargs)
+        # data = shim.eval(self._sym_data, **kwargs)
+        # self._num_tidx.set_value(tidx)
+        # self._num_data.set_value(data)
+        # object.__setattr__(self, '_sym_tidx', self._num_tidx)
+        # object.__setattr__(self, '_sym_data', self._num_data)
+        # if self._num_tidx in updates:
+        #     del updates[self._num_tidx]
+        # del updates[self._num_data]
 
     def time_interval(self, Δt):
         """
@@ -1963,26 +2055,37 @@ class History(HistoryBase, abc.ABC):
     #         return self.get_tidx_for(t, target_hist)
 
     def theano_reset(self):
-        """Allow theano functions to be called again.
+        """
+        Allow theano functions to be called again.
         TODO: Add argument to clear shim.config.symbolic_updates ?
         """
-        if shim.pending_update(self._num_tidx, self._num_data):
+        # if shim.pending_update(self._num_tidx, self._num_data):
+        # if self._pending_ops_str():
+        if shim.pending_update():
+            # raise AssertionError(
+            #     "I don't believe that there is a good reason to have updates "
+            #     "on the attributes '_num_tidx' or '_num_data'. In any case "
+            #     "calling `theano_reset` is not permitted in this situation.")
             raise RuntimeError("There are pending updates in `theano_shim`. "
                                "Clear those first with `shim.reset_updates`.")
         if self.locked:
             raise RuntimeError("Cannot modify the locked history {}."
                                .format(self.name))
 
-        object.__setattr__(self, '_sym_tidx', self._num_tidx)
-        object.__setattr__(self, '_sym_data', self._num_data)
+        self._taps.clear()
+        # self._sym_tidx = self._num_tidx
+        # self._sym_data = self._num_data
         # We shouldn't be in the middle of a compute_up_to recursion
         assert self._update_pos is None
-        assert self._update_pos_stop is None
+        # assert self._update_pos_stop is None
 
         try:
             super().theano_reset()
-        except AttributeError:
-            pass
+        except AttributeError as e:
+            if "'theano_reset'" in str(e):
+                pass
+            else:
+                raise e
 
     def convolve(self, kernel, t=slice(None, None),
                  kernel_slice=slice(None,None),
@@ -2074,7 +2177,7 @@ class History(HistoryBase, abc.ABC):
 
     def _is_batch_computable(self, up_to='end'):
         """
-        Returns true if the history can be computed at all time points
+        Return true if the history can be computed at all time points
         simultaneously.
         WARNING: This function is only to be used for the construction of
         a Theano graph. After compilation, sinn.inputs is cleared, and therefore
@@ -2146,11 +2249,12 @@ class History(HistoryBase, abc.ABC):
 
         return retval
 
-class PopulationHistory(PopulationHistoryBase, History):
+class PopulationHistory(PopulationHistoryBase):
+    # Also importing History causes the error "TypeError: multiple bases have instance lay-out conflict"
     """
     History where traces are organized into populations.
-    This is a base class collecting common functionality; in practice one
-    should use one of the derived classes, like Spiketrain or PopulationSeries.
+    This is a mixin class collecting common functionality; one
+    must use one of the derived classes, like Spiketrain or PopulationSeries.
     """
     pop_sizes:  Tuple[Integral, ...]   # ... indicates variable length
     shape    : Optional[Tuple[Integral, ...]]
@@ -2276,7 +2380,7 @@ class PopulationHistory(PopulationHistoryBase, History):
         else:
             raise NotImplementedError
 
-class Spiketrain(ConvolveMixin, PopulationHistory):
+class Spiketrain(ConvolveMixin, PopulationHistory, History):
     """
     A class to store spiketrains, grouped into populations.
 
@@ -2487,17 +2591,23 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             # csrdata, csridcs, csrindptr = mtydata, mtyidcs, mtyindptr
             cur_datatidx = self.time.t0idx - 1
         elif shim.issparse(init_data):
-            assert shim.eval(init_data.shape[1]) == nneurons, \
-                "Spiketrain.initialized_data: The second dimension of " \
-                "`init_data` must  match the number of neurons. " \
-                f"init_data.shape: {init_data.shape}\n No. neurons: {nneurons}"
+            try:
+                assert shim.eval(init_data.shape[1]) == nneurons, \
+                    "Spiketrain.initialized_data: The second dimension of " \
+                    "`init_data` must  match the number of neurons. " \
+                    f"init_data.shape: {init_data.shape}\n No. neurons: {nneurons}"
+            except TooCostly:
+                pass
             cur_datatidx = init_data.shape[0] - 1
             init_csr[:cur_datatidx+1,:] = init_data
         else:
-            assert shim.eval(init_data.shape[1]) == nneurons, \
-                "Spiketrain.initialized_data: The second dimension of " \
-                "`init_data` must  match the number of neurons. " \
-                f"init_data.shape: {init_data.shape}\n No. neurons: {nneurons}"
+            try:
+                assert shim.eval(init_data.shape[1]) == nneurons, \
+                    "Spiketrain.initialized_data: The second dimension of " \
+                    "`init_data` must  match the number of neurons. " \
+                    f"init_data.shape: {init_data.shape}\n No. neurons: {nneurons}"
+            except TooCostly:
+                pass
             cur_datatidx = len(init_data) - 1
             init_csr[:cur_datatidx+1,:] = scipy.sparse.csr_from_dense(init_data.astype(dtype))
             # This may throw an efficiency warning, but we can ignore it since
@@ -2529,9 +2639,15 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         assert not shim.pending_update(self._num_data)
         data, tidx = self.initialized_data(init_data)
         if after is not None:
-            assert shim.eval(tidx) == after
+            try:
+                assert self.time.Index(shim.eval(tidx)) == after
+            except TooCostly:
+                pass
         else:
-            assert shim.eval(tidx) == self.t0idx - 1
+            try:
+                assert self.time.Index(shim.eval(tidx)) == self.t0idx - 1
+            except TooCostly:
+                pass
         object.__setattr__(self, '_sym_data', data)
         assert shim.graph.is_computable(self._sym_data)
         object.__setattr__(self, '_num_data', self._sym_data)
@@ -2564,7 +2680,8 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         -------
         A csr formatted sparse array.
         """
-        if self._sym_tidx is not self._num_tidx:
+        # if self._sym_tidx is not self._num_tidx:
+        if self._latest_tap:
             raise RuntimeError("You are in the midst of constructing a Theano graph. "
                                "Reset history {} before trying to obtain its trace."
                                .format(self.name))
@@ -2612,7 +2729,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             data indices: i in [0, ..., self.padded_length].
         """
         shape = (self.time.padded_length, self.shape[0])
-        return shim.sparse.CSR(*tuple(shim.eval(self._num_data)),
+        return shim.sparse.CSR(*tuple(shim.eval(self._num_data, max_cost=None)),
                                shape=shape, symbolic=False)
     def _get_sym_csr(self):
         """
@@ -2628,8 +2745,27 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         Theano sparse array
             If symbolic is True.
         """
+        # Apply the sequence of updates stored as taps > 0 to create the
+        # symbolic data. C.f. Spiketrain.update()
+        data, indices, indptr = self._num_data
+        taps = {Δk: self._taps[Δk] for Δk in sorted(self._taps)
+                if Δk > 0}
+        if list(taps) != list(range(1, len(taps)+1)):
+            raise NotImplementedError("Symbolic (forward) taps must start from "
+                                      "1 and not skip any time steps.")
+        for Δk, idcs in taps.items():
+            onevect = shim.ones(idcs.shape, dtype='int8')
+                # vector of ones of the same length as the number of units which fired
+            data = shim.concatenate((data, onevect))
+               # Add as many 1 entries as
+            indices = shim.concatenate((indices, idcs)),
+               # Assign those spikes to neurons (col idx corresponds to neuron index) there are new spikes
+            indptr = shim.inc_subtensor(indptr[ti+1:], idcs.shape[0])
+               # Increment all the index pointers for time bins after ti
+               # by the number of spikes we added
+        # Construct the CSR matrix
         shape = (self.time.padded_length, self.shape[0])
-        return shim.sparse.CSR(*self._sym_data, shape=shape)
+        return shim.sparse.CSR(data, indices, indptr, shape=shape)
 
     def _getitem_internal(self, axis_index):
         """
@@ -2657,23 +2793,76 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             If `key` is a scalar, array is 1D.
             If `key` is a slice or array, array is 2D. First dimension is time.
         """
-        data_index = self.time.axis_to_data_index(axis_index)
-        if not isinstance(data_index, slice):
+        # TODO: C.f. Series._getitem_internal. The tap looping logic is cleaner there.
+        assert shim.isscalar(axis_index) or isinstance(axis_index, slice)  # Mostly to guarantee that data_index is not an array
+        index_is_scalar = shim.isscalar(axis_index)
+        if not isinstance(axis_index, slice):
             # Theano requires indices to sparse arrays to be slices
-            # This also makes scipy.spare's indexing less surprising
-            data_index = slice(data_index, data_index+1)
-
-        shape = (self.time.padded_length, self.shape[0])
-        csr = shim.sparse.CSR(*self._sym_data, shape=shape)
-        if shim.isscalar(axis_index):
-            return shim.sparse.dense_from_sparse(csr[data_index])[0]
-            # return self._sym_data.tocsr()[
-            #     self.time.axis_to_data_index(axis_index)].todense().A[0]
-        else:
-            assert isinstance(axis_index, slice)
-            return shim.sparse.dense_from_sparse(csr[data_index])
-            # return self._sym_data.tocsr()[
-            #     self.time.axis_to_data_index(axis_index)].todense().A
+            # This also makes scipy.sparse's indexing less surprising
+            axis_index = slice(axis_index, axis_index+1)
+        axis_index_evaled = slice(
+            *shim.eval([axis_index.start, axis_index.stop], max_cost=None))
+        Δks = (np.arange(axis_index_evaled.start, axis_index_evaled.stop)
+                 - self.cur_tidx)
+        Δks_neg = [self.time.Index.Delta(Δk) for Δk in Δks if Δk <= 0]
+        Δks_pos = [self.time.Index.Delta(Δk) for Δk in Δks if Δk >  0]
+            
+        
+        outs = []  # Collects time slices to stack for the symbolic op
+        # if axis_index_evaled.stop > self.cur_tidx + 1:
+        #     assert self.symbolic  # If the History were not symbolic, compute_up_to would have advanced cur_tidx
+        #     raise NotImplementedError(
+        #         "Indexing a symbolic history with an index which straddles "
+        #         "cur_tidx is not currently supported")
+        if Δks_neg:
+            # For tidx ≤ cur_tidx, we just need _num_data
+            # This works whether _num_data is symbolic or numeric
+            # data_index = self.time.axis_to_data_index(axis_index)
+            data_index = slice(self.time.axis_to_data_index(self._num_tidx) + Δks_neg[0],
+                               self.time.axis_to_data_index(self._num_tidx) + Δks_neg[-1] + 1)
+                # If symbolic, make data_index symbolic relative to _num_tidx
+                # NB: If not symbolic, we could also convert the slice directly
+            shape = (self.time.padded_length, self.shape[0])
+            csr = shim.sparse.CSR(*self._num_data, shape=shape)
+            out = shim.sparse.dense_from_sparse(csr[data_index])
+            # If history is symbolic, we need to ensure three things:
+            # - That we reuse the symbolic vars for already recorded taps.
+            # - That we create new symbolic vars for new taps and record them.
+            # - That the returned object is the same whether we used recorded taps or
+            #   new ones. (This is why we use `stack` instead of just returning `out`.)
+            if self.symbolic:
+                for i, Δk in enumerate(Δks_neg):
+                    if Δk not in self._taps:
+                        self._taps[Δk] = out[i]
+                    outs.append(self._taps[Δk])
+                # _taps are stacked together below
+        
+        #  Make output 1D if user indexed with a scalar
+        if Δks_pos:
+            assert self.symbolic  # If the History were not symbolic, compute_up_to would have advanced cur_tidx
+            assert all(Δk in self._taps for Δk in Δks_pos)
+                # _compute_up_to should already have been called
+            if index_is_scalar:
+                assert len(Δks) == len(Δks_pos) == 1
+                out = shim.zeros(self.shape, symbolic=True)
+                idcs = self._taps[self.time.Index.Delta(Δks[0])]
+                out = shim.set_subtensor(out[idcs], 1)
+            else:
+                # By using stack, we try to make the returned expressions as similar
+                # as possible between indexing with slices, scalars and eventually arrays
+                for Δk in Δks_pos:
+                    outi = shim.zeros(self.shape, symbolic=True)
+                    idcs = self._taps[self.time.Index.Delta(Δk)]
+                    outi = shim.set_subtensor(outi[idcs], 1)
+                    outs.append(outi)
+                out = shim.stack(outs)
+                
+        if self.symbolic and not index_is_scalar:
+            out = shim.stack(outs)
+        elif not self.symbolic and index_is_scalar:
+            out = out[0]
+            
+        return out
 
     def update(self, tidx, neuron_idcs):
         """
@@ -2684,7 +2873,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         tidx: AxisIndex | Slice[AxisIndex] | Array[AxisIndex]. Possibly symbolic.
             The time index of the spike(s).
             The lowest `tidx` should not correspond to more than one bin ahead
-            of _sym_tidx.
+            of cur_tidx + latest_tap.
             The indices themselves may be symbolic, but the _number_ of indices
             must not be.
         neuron_idcs: iterable
@@ -2746,8 +2935,11 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
                     and isinstance(tidx.stop, time.Index))
             earliestidx = tidx.start
             latestidx = tidx.stop-1
-            assert (len(neuron_idcs)
-                    == shim.eval(tidx.stop) - shim.eval(tidx.start))
+            try:
+                assert (len(neuron_idcs)
+                        == shim.eval(tidx.stop) - shim.eval(tidx.start))
+            except TooCostly:
+                pass
             tidx = shim.arange(tidx.start, tidx.stop, dtype=time.Index.nptype)
                 # Calling `eval` on just start or stop makes better use of
                 # its compilation cache.
@@ -2757,92 +2949,134 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             latestidx = shim.max(tidx)
             try:
                 assert len(neuron_idcs) == shim.eval(tidx.shape[0])
-            except shim.graph.TooCostly:
+            except TooCostly:
                 pass
         try:
-            assert shim.eval(earliestidx) <= shim.eval(self._sym_tidx) + 1
-        except shim.graph.TooCostly:
+            # assert shim.eval(earliestidx) <= shim.eval(self._sym_tidx) + 1
+            assert shim.eval(earliestidx) <= self.cur_tidx + self._latest_tap + 1
+        except TooCostly:
             pass
 
-        # Clear any invalidated data
-        if (shim.eval(earliestidx, max_cost=None)
-            <= shim.eval(self._sym_tidx, max_cost=None)):
+        # Clear any invalidated data before applying the updates
+        if shim.eval(earliestidx, max_cost=None) <= self.cur_tidx:
+            # <= shim.eval(self._sym_tidx, max_cost=None)):
             if shim.is_symbolic(tidx):
                 raise TypeError("Overwriting data (i.e. updating in the past) "
                                 "only works with non-symbolic time indices. "
                                 f"Provided time index: {tidx}.")
-            if shim.pending_update():
+            if self._pending_ops_str():
+                pending_str = self._pending_ops_str()
                 raise TypeError(
                     "Overwriting data (i.e. updating in the past) only works "
-                    "when the symbolic updates dict is empty. Current values "
-                    f"in the updates dictionary: {shim.get_updates().keys()}.")
-            # _orig_dataidx = self.time.data_index(_orig_tidx)
+                    f"when there are no pending symbolic updates.{pending_str}")
+            # _orig_datatidx = self.time.data_index(_orig_tidx)
                 # _orig_tidx is not artifically converted to index array
             shape = (self.time.padded_length, self.shape[0])
-            csr = scipy.sparse.csr_matrix(shim.eval(self._num_data), shape=shape)
+            csr = scipy.sparse.csr_matrix(
+                shim.eval(self._num_data, max_cost=None), shape=shape)
             csr[earliestidx.data_index+1:, :] = 0
             csr.eliminate_zeros()
             self._num_data[0].set_value(csr.data)
             self._num_data[1].set_value(csr.indices)
             self._num_data[2].set_value(csr.indptr)
 
-            # object.__setattr__(self, '_num_data', csc_data.tocoo())
-            object.__setattr__(self, '_sym_data', self._num_data)
+            # No need to clear _taps: we would have raised if they weren't empty
+            # object.__setattr__(self, '_sym_data', self._num_data)
 
-        dataidx = self.time.data_index(tidx)
-        # assert len(dataidx) == len(neuron_idcs)
-        for ti, idcs in zip(dataidx, neuron_idcs):
-            # TODO: Assign in one block
-            onevect = shim.ones(idcs.shape, dtype='int8')
-                # vector of ones of the same length as the number of units which fired
-            data, indices, indptr = self._sym_data
-            object.__setattr__(
-                self, '_sym_data',
-                (shim.concatenate((data, onevect)),
-                    # Add as many 1 entries as
-                 shim.concatenate((indices, idcs)),
-                    # Assign those spikes to neurons (col idx corresponds to neuron index) there are new spikes
-                 shim.inc_subtensor(indptr[ti+1:], idcs.shape[0])
-                    # Increment all the index pointers for time bins after ti
-                    # by the number of spikes we added
-                )
-            )
-        # Set the cur_idx. If tidx was less than the current index, then the latter
-        # is *reduced*, since we no longer know whether later history is valid.
-        if (shim.eval(latestidx, max_cost=None)
-            < shim.eval(self._sym_tidx, max_cost=None)):
-            # I can't imagine a legitimate reason to be here with a symbolic
-            # time index
-            assert not shim.is_graph_object(latest)
-            warn("Moving the current time index of a Spiketrain "
-                 "backwards. Invalidated data is NOT cleared.")
-        #     self._num_tidx.set_value( latestidx )
-        #     assert self._sym_tidx is self._num_tidx
-        # else:
-        #     self._sym_tidx = latestidx
-        # self._sym_tidx = latestidx
-
-        # Add symbolic updates to updates dict
-        data_is_symb = shim.is_symbolic(self._sym_data)
-        tidx_is_symb = shim.is_symbolic(latestidx)
+        datatidx = self.time.data_index(tidx)
+        # assert len(datatidx) == len(neuron_idcs)
+        data_is_symb = shim.is_symbolic(neuron_idcs)
+        tidx_is_symb = shim.is_symbolic(tidx)
+        
         if tidx_is_symb:
-            assert data_is_symb  # Should never have symbolic tidx w/out symbolic data
-            # assert self._num_tidx is not self._sym_tidx
-            object.__setattr__(self, '_sym_tidx', latestidx)
-            shim.add_update(self._num_tidx, self._sym_tidx)
-        else:
-            self._num_tidx.set_value(latestidx)
-            object.__setattr__(self, '_sym_tidx', self._num_tidx)
-
+            # Can't have symbolic tidx w/out symbolic data...
+            assert data_is_symb, "Updating a symbolic time index requires symbolic data."
         if data_is_symb:
-            # But we *can* have symbolic data w/out symbolic tidx
-            assert self._sym_data is not self._num_data
-            for num,sym in zip(self._num_data, self._sym_data):
-                shim.add_update(num, sym)
+            # ...but we *can* have symbolic data w/out symbolic tidx
+            if not tidx_is_symb:
+                # Implementation sketch: Invalidate earliestidx onwards, then apply taps as above
+                raise NotImplementedError("Waiting for use case to implement.")
+            # For symbolic updates, we just store the information required to
+            # reconstruct the sparse matrix later: the list of neurons which fired.
+            # C.f. History.eval(), which expects `taps` values to be valid args to `update()`
+            Δks = shim.eval(tidx, max_cost=None) - self.cur_tidx  # NB: tidx is an arangearray
+            assert min(Δks) > 0  # This must be true otherwise an error would have be raised by the data invalidation block above
+            for Δk, idcs in zip(Δks, neuron_idcs):
+                Δk = self.time.Index.Delta(Δk)
+                if Δk in self._taps:
+                    raise RuntimeError("Attempted to update Spiketrain History "
+                                       f"twice at tap {Δk}.")
+                self._taps[Δk] = idcs
         else:
-            for nv, sv in zip(self._num_data, self._sym_data):
-                nv.set_value(sv)
-            object.__setattr__(self, '_sym_data', self._num_data)
+            # Now that we know that both tidx and data are numeric, update _num_tidx and _num_data
+            data, indices, indptr = self._num_data
+            data_d    = data.get_value(borrow=True)
+            indices_d = indices.get_value(borrow=True)
+            indptr_d  = indptr.get_value(borrow=True)
+            for ti, idcs in zip(datatidx, neuron_idcs):
+                # TODO: Assign in one block
+                onevect = shim.ones(idcs.shape, dtype='int8')
+                    # vector of ones of the same length as the number of units which fired
+                data_d    = np.concatenate((data_d, onevect))
+                indices_d = np.concatenate((indices_d, idcs))
+                indptr_d[ti+1:] += idcs.shape[0]
+                
+            data   .set_value(data_d,    borrow=True)
+            indices.set_value(indices_d, borrow=True)
+            indptr .set_value(indptr_d,  borrow=True)
+                
+            # Set the cur_tidx. If tidx was less than the current index, then the latter
+            # is *reduced*, since we no longer know whether later history is valid.
+            if latestidx < self.cur_tidx:
+                warn("Moving the current time index of a Spiketrain "
+                     "backwards. Invalidated data is NOT cleared.")
+            self._num_tidx.set_value(latestidx)
+                # object.__setattr__(
+                #     self, '_sym_data',
+                #     (shim.concatenate((data, onevect)),
+                #         # Add as many 1 entries as
+                #      shim.concatenate((indices, idcs)),
+                #         # Assign those spikes to neurons (col idx corresponds to neuron index) there are new spikes
+                #      shim.inc_subtensor(indptr[ti+1:], idcs.shape[0])
+                #         # Increment all the index pointers for time bins after ti
+                #         # by the number of spikes we added
+                #     )
+                # )
+            
+        # # Set the cur_tidx. If tidx was less than the current index, then the latter
+        # # is *reduced*, since we no longer know whether later history is valid.
+        # if (shim.eval(latestidx, max_cost=None)
+        #     < self.cur_tidx + self._latest_tap):
+        #     # If latestidx were symbolic, the `Δidx in self._taps` would have caught it
+        #     assert not shim.is_graph_object(latestidx), \
+        #         ("Attempted to update up to a symbolic `tidx` which is before cur_tidx. "
+        #          "I don't see a legitimate reason for this with a symbolic time index.")
+        #     warn("Moving the current time index of a Spiketrain "
+        #          "backwards. Invalidated data is NOT cleared.")
+        #
+        # data_is_symb = shim.is_symbolic(self._sym_data)
+        # tidx_is_symb = shim.is_symbolic(latestidx)
+        # 
+        # # Add symbolic updates to updates dict
+        # if tidx_is_symb:
+        #     assert data_is_symb  # Should never have symbolic tidx w/out symbolic data
+        #     object.__setattr__(self, '_sym_tidx', latestidx)
+        #     shim.add_update(self._num_tidx, self._sym_tidx)
+        # else:
+        #     self._num_tidx.set_value(latestidx)
+        #     object.__setattr__(self, '_sym_tidx', self._num_tidx)
+        # 
+        # if tidx_is_symb:
+        #     # Can't have symbolic tidx w/out symbolic data...
+        #     assert data_is_symb, "Updating a symbolic time index requires symbolic data."
+        # if data_is_symb:
+        #     # ...but we *can* have symbolic data w/out symbolic tidx
+        #     # Nothing to do: symbolic updates are stored in _taps until they are applied
+        #     pass
+        # else:
+        #     for nv, sv in zip(self._num_data, self._sym_data):
+        #         nv.set_value(sv)
+        #     object.__setattr__(self, '_sym_data', self._num_data)
 
     def pad(self, pad_left, pad_right=0):
         """
@@ -2860,10 +3094,11 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         """
         if shim.is_graph_object(pad_left, pad_right):
             raise TypeError("Can only pad with non-symbolic values.")
-        if shim.pending_update():
+        # if shim.pending_update():
+        if self._pending_ops_str():
             raise RuntimeError("Cannot add padding while computing symbolic "
                                "updates.")
-        assert self._sym_data is self._num_data
+        # assert self._sym_data is self._num_data
 
         before_len, after_len = self.time.pad(pad_left, pad_right)
 
@@ -2881,42 +3116,45 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
                                      indptr.get_value(borrow=True)))
                 # move index pointers forward by the number that were added
                 # index pointers themselves don't change, since data didn't change
-        assert shim.eval(indptr).shape[0] == self.time.padded_length + 1
+        try:
+            assert shim.eval(indptr).shape[0] == self.time.padded_length + 1
+        except TooCostly:
+            pass
         self._num_data[2].set_value(indptr, borrow=True)
-        assert self._sym_data is self._num_data
+        # assert self._sym_data is self._num_data
         # object.__setattr__(self, '_num_data', (data, indices, indptr))
         # object.__setattr__(self, '_sym_data', self._num_data)
-        self._sym_tidx.set_value(self._sym_tidx.get_value(borrow=True) - before_len, borrow=True)
-        assert self._num_tidx is self._sym_tidx
+        self._num_tidx.set_value(self._num_tidx.get_value(borrow=True) - before_len, borrow=True)
+        # assert self._num_tidx is self._sym_tidx
 
-    def eval(self, max_cost :Optional[int]=None, if_too_costly :str='raise'):
-        # Adapted from History.eval. See History.eval for docstring
-        if self._num_data is self._sym_data:
-            assert self._num_tidx is self._sym_tidx
-            # Nothing to do
-            return
-        # Note: permissible to have symbolic data & numeric tidx, but
-        #       not permissible to have numeric data & symbolic tidx
-        kwargs = {'max_cost': max_cost, 'if_too_costly': if_too_costly}
-        updates = shim.get_updates()
-        # All symbolic updates should be in shim's updates dict
-        if self._num_tidx in updates:
-            assert self._sym_tidx is updates[self._num_tidx]
-        for nv, sv in zip(self._num_data, self._sym_data):
-            assert nv in updates
-            assert updates[nv] is sv
-        tidx, data, indices, indptr = shim.eval(
-            (self._sym_tidx, *self._sym_data), **kwargs)
-        self._num_tidx.set_value(tidx)
-        self._num_data[0].set_value(data)
-        self._num_data[1].set_value(indices)
-        self._num_data[2].set_value(indptr)
-        object.__setattr__(self, '_sym_data', self._num_data)
-        object.__setattr__(self, '_sym_tidx', self._num_tidx)
-        if self._num_tidx in updates:
-            del updates[self._num_tidx]
-        for nv in self._num_data:
-            del updates[nv]
+    # def eval(self, max_cost :Optional[int]=None, if_too_costly :str='raise'):
+    #     # Adapted from History.eval. See History.eval for docstring
+    #     if self._num_data is self._sym_data:
+    #         assert self._num_tidx is self._sym_tidx
+    #         # Nothing to do
+    #         return
+    #     # Note: permissible to have symbolic data & numeric tidx, but
+    #     #       not permissible to have numeric data & symbolic tidx
+    #     kwargs = {'max_cost': max_cost, 'if_too_costly': if_too_costly}
+    #     updates = shim.get_updates()
+    #     # All symbolic updates should be in shim's updates dict
+    #     if self._num_tidx in updates:
+    #         assert self._sym_tidx is updates[self._num_tidx]
+    #     for nv, sv in zip(self._num_data, self._sym_data):
+    #         assert nv in updates
+    #         assert updates[nv] is sv
+    #     tidx, data, indices, indptr = shim.eval(
+    #         (self._sym_tidx, *self._sym_data), **kwargs)
+    #     self._num_tidx.set_value(tidx)
+    #     self._num_data[0].set_value(data)
+    #     self._num_data[1].set_value(indices)
+    #     self._num_data[2].set_value(indptr)
+    #     object.__setattr__(self, '_sym_data', self._num_data)
+    #     object.__setattr__(self, '_sym_tidx', self._num_tidx)
+    #     if self._num_tidx in updates:
+    #         del updates[self._num_tidx]
+    #     for nv in self._num_data:
+    #         del updates[nv]
 
     def _convolve_single_t(self, discretized_kernel, tidx, kernel_slice):
         """
@@ -2950,6 +3188,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
             this slice (thus implicitly set to zero outside these bounds).
             This achieved simply by indexing the kernel:
             ``discretized_kernel[kernel_slice]``.
+
         Returns
         -------
         TensorWrapper
@@ -2958,7 +3197,10 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
 
         assert isinstance(tidx, self.time.Index)
         kernel_slice = discretized_kernel.time.data_index(kernel_slice)
-        assert shim.eval(kernel_slice.stop > kernel_slice.start)
+        try:
+            assert shim.eval(kernel_slice.stop > kernel_slice.start)
+        except TooCostly:
+            pass
 
         # tidx = self.get_t_idx(tidx)
         #
@@ -2972,11 +3214,17 @@ class Spiketrain(ConvolveMixin, PopulationHistory):
         hist_slice = slice(
             hist_start_idx,
             hist_start_idx + kernel_slice.stop - kernel_slice.start)
-        assert shim.eval(hist_slice.start) >= 0
+        try:
+            assert shim.eval(hist_slice.start) >= 0
+        except TooCostly:
+            pass
 
-        hist_subarray = self._sym_csr()[hist_slice]
+        hist_subarray = self._get_sym_csr()[hist_slice]
 
-        assert shim.eval(discretized_kernel.ndim) <= 2
+        try:
+            assert shim.eval(discretized_kernel.ndim) <= 2
+        except TooCostly:
+            pass
         sliced_kernel = discretized_kernel[kernel_slice]
 
         # To understand why the convolution is taken this way, consider
@@ -3100,10 +3348,13 @@ class Series(ConvolveMixin, History):
                     # Because of parse_obj hackery, must emulate Pydantic coercion
                     init_data = mtb.typing.Array[self.dtype].validate(
                         init_data, field=SimpleNamespace(name='init_data'))
-            assert shim.eval(init_data.shape[1:]) == self.shape, \
-                "Series.initialized_data: initialization data does not match " \
-                "the history's shape.\n" \
-                f"Data shape:{init_data.shape}\nHistory's shape: {self.shape}"
+            try:
+                assert shim.eval(init_data.shape[1:]) == self.shape, \
+                    "Series.initialized_data: initialization data does not match " \
+                    "the history's shape.\n" \
+                    f"Data shape:{init_data.shape}\nHistory's shape: {self.shape}"
+            except TooCostly:
+                pass
             if shim.isshared(init_data):
                 # Use shared variables as-is
                 data_length = len(init_data.get_value())
@@ -3142,12 +3393,45 @@ class Series(ConvolveMixin, History):
         axis_index: Axis index (int) | slice
             AxisIndex of the position to retrieve, or slice where start & stop
             are axis indices.
-
+            
         Returns
         -------
         ndarray
         """
-        return self._sym_data[self.time.axis_to_data_index(axis_index)]
+        if self.symbolic:
+            if isinstance(axis_index, slice):
+                slc = shim.eval(axis_index, max_cost=None)
+                # NB: Casting to Index isn't all that useful: looping over range still returns plain ints
+                Δks = range(self.time.Index(slc.start) - self.cur_tidx,
+                            self.time.Index(slc.stop) - self.cur_tidx)
+            elif shim.isarray(axis_index):
+                Δks = self.time.Index(shim.eval(axis_index, max_cost=None)) - self.cur_tidx
+                if Δks.ndim == 0:
+                    Δks = [Δks]
+            else:
+                Δks = [self.time.Index(shim.eval(axis_index, max_cost=None)) - self.cur_tidx]
+            taps = []
+            for Δk in Δks:
+                Δk = self.time.Index.Delta(Δk)  # For slices and arrays, the type is lost
+                if Δk in self._taps:
+                    taps.append(self._taps[Δk])
+                elif Δk <= 0:
+                    # Keep track of which values were used by adding them to taps
+                    # Also ensure that multiple calls with same axis_index
+                    # return the same instance of a time slice (hence why we
+                    # reuse _taps when possible)
+                    self._taps[Δk] = self._num_data[self.time.axis_to_data_index(self._num_tidx) + Δk]
+                    taps.append(self._taps[Δk])
+                else:
+                    raise AssertionError("_compute_up_to should have precomputed "
+                                         "all forward taps (Δk > 0).")
+            if shim.isscalar(axis_index):
+                assert len(taps) == 1
+                return taps[0]
+            else:
+                return shim.stack(taps)
+        else:
+            return self._num_data[self.time.axis_to_data_index(axis_index)]
 
     def update(self, tidx, value):
         """
@@ -3169,7 +3453,7 @@ class Series(ConvolveMixin, History):
 
 
         **Side-effects**
-            If either `tidx` or `neuron_idcs` is symbolic, adds symbolic updates
+            If either `tidx` or `value` is symbolic, adds symbolic updates
             in :py:mod:`shim`'s :py:attr:`symbolic_updates` dictionary  for
             `_num_tidx` and `_num_data`.
         """
@@ -3210,7 +3494,10 @@ class Series(ConvolveMixin, History):
         elif isinstance(tidx, slice):
             assert (isinstance(tidx.start, time.Index)
                     and isinstance(tidx.stop, time.Index))
-            assert shim.eval(tidx.start) < shim.eval(tidx.stop)
+            try:
+                assert shim.eval(tidx.start) < shim.eval(tidx.stop)
+            except TooCostly:
+                pass
             earliestidx = tidx.start
             latestidx = tidx.stop - 1
             if shim.graph.is_computable(value.shape):
@@ -3219,20 +3506,24 @@ class Series(ConvolveMixin, History):
                             == shim.eval(tidx.stop) - shim.eval(tidx.start))
                     # Calling `eval` on just start or stop makes better use of
                     # its compilation cache.
-                except shim.graph.TooCostly:
+                except TooCostly:
                     pass
         else:
             assert shim.isarray(tidx)
             earliestidx = shim.min(tidx)
             latestidx = shim.max(tidx)
             if shim.graph.is_computable(value.shape):
-                assert shim.eval(value.shape[0]) == shim.eval(tidx.shape[0])
-        # Ensure that we don't break causal assumption by updating too far
-        # into the future.
+                try:
+                    assert shim.eval(value.shape[0]) == shim.eval(tidx.shape[0])
+                except TooCostly:
+                    pass
+        # Ensure that we don't break causal assumption by updating more than
+        # one step into the future.
         try:
             assert (shim.eval(earliestidx, max_cost=30)
-                    <= shim.eval(self._sym_tidx, max_cost=30) + 1)
-        except shim.graph.TooCostly:
+                    <= self.cur_tidx + self._latest_tap + 1)
+                    # <= shim.eval(self._sym_tidx, max_cost=30) + 1)
+        except TooCostly:
             pass
 
         datatidx = self.time.axis_to_data_index(tidx)
@@ -3241,8 +3532,8 @@ class Series(ConvolveMixin, History):
 
             # There are two possibilities:
             # 1. Neither the new value nor time indices are symbolic, AND
-            #    the internal running _sym_data and _sym_tidx have not been
-            #    symbolically updated. In this case we update the underlying
+            #    there are no tracked symbolic updates (the internal _taps
+            #    store is empty). In this case we update the underlying
             #    shared variables and it behaves much like a normal Numpy
             #    update. This typically happens when intializing the history.
             # 2. At least one of the conditions of 1. is not met. In this case
@@ -3254,42 +3545,60 @@ class Series(ConvolveMixin, History):
             assert isinstance(self._num_data, shim.config.SymbolicSharedType)
             assert isinstance(self._num_tidx, shim.config.SymbolicSharedType)
 
-            if (not shim.is_theano_object(latestidx, value)
+            if (not shim.issymbolic(latestidx, value)
                 and (latestidx == tidx or not shim.is_theano_object(tidx.start))
-                and self._sym_tidx == self._num_tidx
-                and self._sym_data == self._num_data):
+                and not self._taps):
+                # and self._sym_tidx == self._num_tidx
+                # and self._sym_data == self._num_data):
                 # 1 : There are no symbolic dependencies – update data directly
-
-                # Not clear how to resolve an update following one where _sym_tidx
-                # was made non-computable, since then we can't know how to compare
-                # the two time points compare.
-                assert self._sym_tidx is self._num_tidx
-                assert self._sym_data is self._num_data
+                # NB: `value` is still a graph object, since we applied `asvariable`
+                #    `shim.eval()` below turns it back into a plain value.
 
                 tmpdata = self._num_data.get_value(borrow=True)
-                tmpdata[datatidx] = value
+                tmpdata[datatidx] = shim.eval(value, max_cost=None)
                 self._num_data.set_value(tmpdata, borrow=True)
                 # Update both the running/symbolic and base time indices
                 self._num_tidx.set_value(shim.cast(latestidx, self.tidx_dtype))
-                object.__setattr__(self, '_sym_tidx', self._num_tidx)
+                # object.__setattr__(self, '_sym_tidx', self._num_tidx)
             else:
-                # 2 : There are symbolic dependencies => update just the running
-                # vars (_sym_tidx & _sym_data) and add to the update dictionary
-                # Update the data
-                tmpdata = self._sym_data
-                object.__setattr__(self, '_sym_data',
-                                   shim.set_subtensor(tmpdata[datatidx], value))
-                # if updates is not None:
-                #     shim.add_updates(updates)
-                shim.add_update(self._num_data, self._sym_data)
-                # Update the time index
-                assert shim.is_theano_object(self._num_tidx)
-                if not isinstance(latestidx, shim.cf.GraphTypes):
-                    name = (self._num_tidx.name
-                            + '[update to {}]'.format(latestidx))
-                    latestidx = shim.asvariable(latestidx, name=name)
-                object.__setattr__(self, '_sym_tidx', latestidx)
-                shim.add_update(self._num_tidx, self._sym_tidx)
+                # 2 : There are symbolic dependencies => update just the
+                # _taps dictionary
+                if shim.isscalar(tidx):
+                    Δk = self.time.Index(shim.eval(tidx, max_cost=None)) - self.cur_tidx
+                    if Δk in self._taps:
+                        raise RuntimeError("Attempted to update Series History "
+                                           f"twice at tap {Δk}.")
+                    self._taps[Δk] = value
+                else:
+                    if isinstance(tidx, slice):
+                        slc = shim.eval(tidx, max_cost=None)
+                        Δks = range(self.time.Index(slc.start) - self.cur_tidx,
+                                    self.time.Index(slc.stop) - self.cur_tidx)
+                    elif shim.isarray(tidx):
+                        Δks = self.time.Index(shim.eval(tidx, max_cost=None)) - self.cur_tidx
+                        if Δks.ndim == 0:
+                            Δks = [Δks]
+                    for i, Δk in enumerate(Δks):
+                        Δk = self.time.Index.Delta(Δk)  # For slices and arrays, the type is lost
+                        if Δk in self._taps:
+                            raise RuntimeError("Attempted to update Series "
+                                               f"History twice at tap {Δk}.")
+                        self._taps[Δk] = value[i]
+                # # Update the data
+                # tmpdata = self._sym_data
+                # object.__setattr__(self, '_sym_data',
+                #                    shim.set_subtensor(tmpdata[datatidx], value))
+                # # if updates is not None:
+                # #     shim.add_updates(updates)
+                # shim.add_update(self._num_data, self._sym_data)
+                # # Update the time index
+                # assert shim.is_theano_object(self._num_tidx)
+                # if not isinstance(latestidx, shim.cf.GraphTypes):
+                #     name = (self._num_tidx.name
+                #             + '[update to {}]'.format(latestidx))
+                #     latestidx = shim.asvariable(latestidx, name=name)
+                # object.__setattr__(self, '_sym_tidx', latestidx)
+                # shim.add_update(self._num_tidx, self._sym_tidx)
 
         else:
             if shim.is_theano_object(value):
@@ -3325,8 +3634,9 @@ class Series(ConvolveMixin, History):
             self._num_data.set_value(dataobject, borrow=True)
             self._num_tidx.set_value(latestidx)
 
-            assert self._sym_data is self._num_data
-            assert self._sym_tidx is self._num_tidx
+            assert not self._taps
+            # assert self._sym_data is self._num_data
+            # assert self._sym_tidx is self._num_tidx
             # oject.__setattr__(self, '_sym_tidx', self._num_tidx)
                 # If we updated in the past, this will reduce _sym_tidx
                 # – which is what we want
@@ -3358,9 +3668,10 @@ class Series(ConvolveMixin, History):
 
         if shim.is_graph_object(pad_left, pad_right):
             raise TypeError("Can only pad with non-symbolic values.")
-        if self._sym_data is not self._num_data:
+        # if self._sym_data is not self._num_data:
+        if self._pending_ops_str():
             raise RuntimeError("Cannot add padding while computing symbolic "
-                               "updates.")
+                               f"updates.{self._pending_ops_str()}")
 
         previous_tarr_shape = (self.time.padded_length,)
         before_len, after_len = self.time.pad(pad_left, pad_right)
@@ -3373,12 +3684,12 @@ class Series(ConvolveMixin, History):
         pad_width = [(before_len, after_len)] + [(0, 0)]*self.ndim
                       # + [(0, 0) for i in range(len(self.shape))] )
 
-        self._sym_data.set_value(shim.pad(self._sym_data.get_value(borrow=True),
+        self._num_data.set_value(shim.pad(self._num_data.get_value(borrow=True),
                                            previous_tarr_shape + self.shape,
                                            pad_width, **kwargs),
                                   borrow=True)
-        self._sym_tidx.set_value(self._sym_tidx.get_value(borrow=True) - before_len, borrow=True)
-        assert self._num_tidx is self._sym_tidx
+        self._num_tidx.set_value(self._num_tidx.get_value(borrow=True) - before_len, borrow=True)
+        # assert self._num_tidx is self._sym_tidx
 
     def zero(self, mode='all'):
         """Zero out the series. Unless mode='all', the initial data point will NOT be zeroed"""
@@ -3387,17 +3698,17 @@ class Series(ConvolveMixin, History):
         else:
             mode_slice = slice(1, None)
 
-        if shim.pending_update():
+        # if shim.pending_update():
+        if self._pending_ops_str():
             raise RuntimeError("Cannot add zero data while computing symbolic "
-                               "updates.")
+                               f"updates.{self._pending_ops_str()}")
 
-        new_data = self._conc_shared.get_value(borrow=True)
+        new_data = self._num_data.get_value(borrow=True)
         new_data[mode_slice] = np.zeros(new_data.shape[mode_slice])
-        self._sym_data.set_value(new_data, borrow=True)
-        assert self._sym_data is self._num_data
+        self._num_data.set_value(new_data, borrow=True)
+        # assert self._sym_data is self._num_data
 
         self.clear()
-            # Invalidate time indices and set _symb_* = _conc_*
 
     def get_data_trace(self, component=None, include_padding=False, time_slice=None):
         """
@@ -3420,7 +3731,8 @@ class Series(ConvolveMixin, History):
         time_slice:
             See get_time_stops.
         """
-        if self._sym_tidx is not self._num_tidx:
+        # if self._sym_tidx is not self._num_tidx:
+        if self._latest_tap:
             raise RuntimeError("You are in the midst of constructing a Theano graph. "
                                "Reset history {} before trying to obtain its time array."
                                .format(self.name))
@@ -3522,6 +3834,7 @@ class Series(ConvolveMixin, History):
             this slice (thus implicitly set to zero outside these bounds).
             This achieved simply by indexing the kernel:
             ``discretized_kernel[kernel_slice]``.
+
         Returns
         -------
         TensorWrapper
@@ -3531,7 +3844,10 @@ class Series(ConvolveMixin, History):
 
         assert isinstance(tidx, self.time.Index)
         kernel_slice = discretized_kernel.time.data_index(kernel_slice)
-        assert shim.eval(kernel_slice.stop > kernel_slice.start)
+        try:
+            assert shim.eval(kernel_slice.stop > kernel_slice.start)
+        except TooCostly:
+            pass
 
         # # Convert None & negative slices into positive start & stop
         # kernel_slice = slice(*kernel.slices.indices(discretized_kernel.padded_length))
@@ -3546,7 +3862,10 @@ class Series(ConvolveMixin, History):
         hist_slice = slice(
             hist_start_idx,
             hist_start_idx + kernel_slice.stop - kernel_slice.start)
-        assert shim.eval(hist_slice.start >= 0)
+        try:
+            assert shim.eval(hist_slice.start >= 0)
+        except TooCostly:
+            pass
 
         dim_diff = discretized_kernel.ndim - self.ndim
         dtype = np.result_type(discretized_kernel.dtype, self.dtype)
@@ -3581,7 +3900,10 @@ class Series(ConvolveMixin, History):
             return shim.zeros((1,)+self.shape, dtype=self.dtype)
         else:
             # Algorithm assumes an increasing kernel_slice
-            assert shim.eval(kernel_slice.stop) > shim.eval(kernel_slice.start)
+            try:
+                assert shim.eval(kernel_slice.stop) > shim.eval(kernel_slice.start)
+            except TooCostly:
+                pass
             disksliced = discretized_kernel[kernel_slice]
 
             # We compute the full 'valid' convolution, for all lags and then
@@ -3596,7 +3918,10 @@ class Series(ConvolveMixin, History):
                             - kernel_slice.stop - discretized_kernel.idx_shift)
             domain_slice = slice(domain_start, domain_start + len(self))
             # Check that there is enough padding before t0
-            assert shim.eval(domain_slice.start >= 0)
+            try:
+                assert shim.eval(domain_slice.start >= 0)
+            except TooCostly:
+                pass
 
             dis_kernel_shape = (kernel_slice.stop - kernel_slice.start,) \
                                + discretized_kernel.shape
@@ -3606,7 +3931,10 @@ class Series(ConvolveMixin, History):
                                dtype=dtype).sum(axis=discretized_kernel.contravariant_axes)
             if shim.graph.is_computable(retval.shape):
                 # Check that there is enough padding after tn
-                assert shim.eval(retval.shape[0]) == len(self)
+                try:
+                    assert shim.eval(retval.shape[0]) == len(self)
+                except TooCostly:
+                    pass
             return retval
 
 
@@ -3786,7 +4114,7 @@ class DataView(HistoryBase):
         self.tn = hist.cur_tidx
 
     def __getitem__(self, key):
-        return self.hist[shim.eval(key)]
+        return self.hist[shim.eval(key, max_cost=None)]
 
     def __getattr__(self, name):
         return getattr(self.hist, name)

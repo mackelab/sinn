@@ -90,12 +90,14 @@ def _test_history_series_indexing(cgshim):
     assert np.all(first10[5:] == x1.data[:5])
     # negative indexing in axis space works
     assert np.all(shim.eval(x1[-1]) == first10[4])       # With single index
-    assert np.all(shim.eval(x1[-1:2]) == first10[4:7])   # With slice index
+    assert np.all(shim.eval(x1[-1:2], max_cost=40) == first10[4:7])   # With slice index
 
     # Pydantic methods
     x1copy = x1.copy()
-    assert x1copy._sym_data is x1copy._num_data
-    assert x1copy._sym_tidx is x1copy._num_tidx
+    assert x1copy._taps == {}
+    assert x1copy._taps is not x1._taps
+    # assert x1copy._sym_data is x1copy._num_data
+    # assert x1copy._sym_tidx is x1copy._num_tidx
 
 def _test_history_spiketrain_indexing(cgshim):
     shim.load(cgshim)
@@ -164,8 +166,10 @@ def _test_history_spiketrain_indexing(cgshim):
 
     # Pydantic methods
     x1copy = x1.copy()
-    assert x1copy._sym_data is x1copy._num_data
-    assert x1copy._sym_tidx is x1copy._num_tidx
+    assert x1copy._taps == {}
+    assert x1copy._taps is not x1._taps
+    # assert x1copy._sym_data is x1copy._num_data
+    # assert x1copy._sym_tidx is x1copy._num_tidx
 
 # test_history_spiketrain_indexing()
 
@@ -233,13 +237,17 @@ def _test_history_series_updates(cgshim):
 
     # Apply symbolic updates, if present
     updates = shim.get_updates()
-    if x1._sym_tidx is not x1._num_tidx:
+    # if x1._sym_tidx is not x1._num_tidx:
+    if x1._taps:
         # Symbolic history
         assert cgshim != 'numpy'
         assert x1.symbolic
-        assert x2._sym_tidx is not x2._num_tidx
+        assert x2._taps
+        # assert x2._sym_tidx is not x2._num_tidx
         x1.eval()
         x2.eval()
+        assert not x1._taps  # Taps are cleared by `eval`
+        assert not x2._taps
         # assert x1._sym_data is not x1._num_data
         # assert x1._num_tidx in updates.keys()
         # assert x1._num_data in updates.keys()
@@ -256,12 +264,13 @@ def _test_history_series_updates(cgshim):
         assert cgshim == 'numpy'
         assert not x1.symbolic
         assert not x2.symbolic
-        assert x1._sym_data is x1._num_data
-        assert x2._sym_data is x2._num_data
+        # assert x1._sym_data is x1._num_data
+        # assert x2._sym_data is x2._num_data
             # Numeric histories never detach _sym from _num
         assert len(updates) == 0
 
-    assert np.all(x2.get_data_trace() == shim.eval(x2[x2.t0idx:x2.cur_tidx+1]))
+    assert np.all(x2.get_data_trace()
+                  == shim.eval(x2[x2.t0idx:x2.cur_tidx+1], max_cost=None))
     # TODO: solve ODE and compare with analytical soln
     assert np.all(x2.get_data_trace() == x2._num_data.get_value()[1:Ti+1+1])
 
@@ -270,8 +279,7 @@ def _test_history_series_updates(cgshim):
     assert x2copy.cur_tidx.plain == x2.cur_tidx.plain == Ti
     assert x2copy.update_function is None  # Update functions not copied
     x2copy[Ti]  # Can retrieve already computed data
-    with pytest.raises(RuntimeError):
-        x2copy(Ti)  # But using calling syntax fails b/c update function is not set
+    x2copy(Ti)  # Using calling syntax also works, as long as Ti is an already computed point
     assert x2copy[Ti+1] is NotComputed.NotYetComputed  # TODO: A different return value if not computable ?
     with pytest.raises(RuntimeError):
         x2copy(Ti+1)  # Trying to compute new values raises RuntimeError,
@@ -326,7 +334,7 @@ def _test_history_spiketrain_updates(cgshim):
     assert x1[Ti] == NotComputed.NotYetComputed
     t = Ti*TimeAxis.time_step
 
-    rng.seed(1)  # Not enough to be 100% predictable
+    rng.seed(1)  # FIXME: Still not enough to be 100% predictable
     # assert np.all(x1(8) == np.array([0,0,1,0,0,0]))  # Test evaluation
     x12 = x1(Ti-2)
     assert np.all( shim.eval(x12.shape, max_cost=None) == x1.shape )
@@ -353,7 +361,8 @@ def _test_history_spiketrain_updates(cgshim):
     assert x2.get_data_trace().sum() > 0
         # This has essentially probability 1, and ensures that the tests below
         # don't succeed due to the updates not happening at all.
-    assert np.all(x2.get_data_trace() == shim.eval(x2[x2.t0idx:x2.cur_tidx+1]))
+    assert np.all(x2.get_data_trace() == shim.eval(x2[x2.t0idx:x2.cur_tidx+1],
+                                                   max_cost=50))
     assert not (x2.get_data_trace() != x2._get_num_csr()[10:10+Ti+1]).data.any()
 
     # Copies
@@ -361,8 +370,7 @@ def _test_history_spiketrain_updates(cgshim):
     assert x2copy.cur_tidx.plain == x2.cur_tidx.plain == Ti
     assert x2copy.update_function is None  # Update functions not copied
     x2copy[Ti]  # Can retrieve already computed data
-    with pytest.raises(RuntimeError):
-        x2copy(Ti)  # But using calling syntax fails b/c update function is not set
+    x2copy(Ti)  # Using calling syntax also works, as long as Ti is an already computed point
     assert x2copy[Ti+1] is NotComputed.NotYetComputed  # TODO: A different return value if not computable ?
     with pytest.raises(RuntimeError):
         x2copy(Ti+1)  # Trying to compute new values raises RuntimeError,
@@ -524,10 +532,12 @@ def hist_compare(hist1, hist2):
     assert hist1.locked == hist2.locked
     assert hist1.cur_tidx != hist2.cur_tidx
     assert hist1.cur_tidx.plain == hist2.cur_tidx.plain
-    assert hist1._num_data is hist1._sym_data
-    assert hist2._num_data is hist2._sym_data
-    assert hist1._num_tidx is hist1._sym_tidx
-    assert hist2._num_tidx is hist2._sym_tidx
+    assert hist1._latest_tap <= 0 # No pending symbolic updates
+    assert hist2._latest_tap <= 0
+    # assert hist1._num_data is hist1._sym_data
+    # assert hist2._num_data is hist2._sym_data
+    # assert hist1._num_tidx is hist1._sym_tidx
+    # assert hist2._num_tidx is hist2._sym_tidx
     assert hist1._num_tidx.get_value() is not hist2._num_tidx.get_value()
     if shim.issparse(hist1.data):
         assert shim.issparse(hist2.data)

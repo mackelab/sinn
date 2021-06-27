@@ -116,8 +116,11 @@ class ConvolveMixin(CachedOperation):
         self._conv_cache.theano_reset()
         try:
             super().theano_reset()
-        except AttributeError:
-            pass
+        except AttributeError as e:
+            if "'theano_reset'" in str(e):
+                pass
+            else:
+                raise e
 
     def convolve_single_t_wrapper(other, t, output_tidx, slc):
         if ((slc.stop is not None and slc.start == slc.stop)
