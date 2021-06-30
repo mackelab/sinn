@@ -701,7 +701,7 @@ class AxisIndexMeta(abc.ABCMeta):
         if not shim.istype(index, 'int'):
             raise TypeError("`index` must be in integer.")
         if shim.graph.is_computable(index):
-            evalidx = shim.eval(index, max_cost=max_cost)
+            evalidx = shim.eval(getattr(index, 'plain', index), max_cost=max_cost)
             if np.any(evalidx < imin) or np.any(evalidx > imax):
                 raise IndexError("Provided index `{}` exceeds the mapping's "
                                  "range.".format(index))
@@ -956,8 +956,7 @@ class SpecAxisIndexMeta(type):
             imin = index_range[0]
             imax = index_range[-1]
             try:
-                self._check_in_bounds(shim.eval(x, max_cost=20),
-                                      imin-1, imax+1)
+                self._check_in_bounds(x, imin-1, imax+1, max_cost=20)
             except shim.graph.TooCostly:
                 pass
         # HACK: Neither `int` nor `np.integer` implement __init__
@@ -1318,6 +1317,8 @@ class SymbolicAxisIndexMeta(SpecAxisIndexMeta, shim.graph.GraphExpressionMeta):
             # arguments
             SpecAxisIndexMeta.__clsinit__(self, expr_or_type, owner, index, name)
                 # super() seems to get confused within metaclasses
+            if shim.config.compute_test_value != 'off':
+                self.tag.test_value = shim.cast(1, self.dtype)
         else:
             x = expr_or_type
             assert all(a is None for a in (owner, index))
@@ -1383,7 +1384,12 @@ class SymbolicAxisIndexMeta(SpecAxisIndexMeta, shim.graph.GraphExpressionMeta):
         # Since a SymbolicAxisIndex is just an identity op on a value, all we
         # we need to do is go one up the computational graph one step
         assert len(self.owner.inputs) == 1
-        return self.owner.inputs[0]
+        res = self.owner.inputs[0]
+        if isinstance(res, SymbolicAbstractAxisIndex):
+            # Due to the suboptimal implementation of TheanoGraphExpression, we
+            # can get nested Symbolic Indexes
+            res = res.plain
+        return res
 
 # TODO: Replace this function by the metaclass for AxisIndex
 def get_AxisIndex(axis, dtype=None):

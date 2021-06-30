@@ -2451,7 +2451,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
         logger.info("Constructing the update graph.")
         # Stash current symbolic updates
-        for h in self.statehists:
+        # for h in self.statehists:
+        for h in self.history_set:
             h._stash()  # Stash unfinished symbolic updates
         updates_stash = shim.get_updates()
         assert len(self._rng_updates[cache_key]) == 0, "`sinn.Model._rng_updates should only be modified by `get_advance_updates`"
@@ -2467,7 +2468,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         self.theano_reset(warn_rng=False)
             # theano_reset() is half redundant with reset_updates(), but we
             # still need to reset the RNG updates
-        for h in self.statehists:
+        # for h in self.statehists:
+        for h in self.history_set:
             h._stash.pop()
         shim.config.symbolic_updates = updates_stash
         logger.info("Done constructing the update graph.")
@@ -2692,13 +2694,14 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 "have at least one uncomputed time point.")
         # Build the substitution dictionary to convert all history time indices
         # to that of the model. This requires that histories be synchronized.
-        anchor_tidx_typed = self.time.Index(anchor_tidx)  # Do only once to keep graph as clean as possible
+        anchor_tidx_typed = self.time.Index(anchor_tidx)
         tidxsubs = {h._num_tidx: anchor_tidx_typed.convert(h.time).plain
                     for h in self.unlocked_histories}
 
         # Now we recover the global updates, and replace the multiple history
         # time indices by the time index of the model.
-        output_hists = [h for h in self.history_set if h._latest_tap > 0]
+        output_hists = [h for h in self.history_set
+                        if h._latest_tap > 0 and not h.locked]
         if len(output_hists) + len(updates) == 0:
             raise RuntimeError("No history has been updated symbolically and "
                                "the list of updates is empty. "
@@ -2723,8 +2726,6 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # Negative tap variables (which appear within the graph of positive 
         # tap variables) are substituted in by the `onestep` function below
         # `clone` replaces time index vars by expressions depending on the anchor
-        # NB: Don't use the tap vals directly: they may not be stored as time
-        #     slices (e.g. Spiketrain stores only neuron idcs).
         # outputs = [shim.graph.clone(h[h._num_tidx+1], replace=tidxsubs)
         outputs = [shim.graph.clone(h._taps[h.time.Index.Delta(1)], replace=tidxsubs)
                    for h in output_hists]
@@ -2771,6 +2772,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 #     are the same ones as in init_vals
                 # init_vals = [shim.graph.clone(h[h._num_tidx+Δk], replace=tidxsubs)
                 init_vals = [shim.graph.clone(h._taps[h.time.Index.Delta(Δk)], replace=tidxsubs)
+                    # NB: The use of _taps[…] is temporary, to help detect bugs (almost always, all previous taps should already have been calculated)
                              for Δk in range(-init_length+1, 1)]
                 if scantaps == [-1]:
                     # To avoid requiring extra dimensions when no taps are used,
@@ -2858,12 +2860,13 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # NB: tidx will be replaced by anchor_tidx (i.e. num_tidx), so it should be k-1
         #     if we want to compute k. Ergo, tidx range must go from curtidx to stoptidx-1.
         outs, upds = shim.scan(onestep,
-                            sequences = [shim.arange(curtidx, stoptidx,
-                                                     dtype=self.tidx_dtype)],
-                            outputs_info = outputs_info,
-                            non_sequences=shared_vars_in_graph,
-                            name = f"scan ({self.name})",
-                            )
+                               sequences = [shim.arange(curtidx, stoptidx,
+                                                        dtype=self.tidx_dtype)],
+                               outputs_info = outputs_info,
+                               non_sequences=shared_vars_in_graph,
+                               name = f"scan ({self.name})",
+                               return_list=True
+                               )
 
         # At least for now, we return everything as a update dictionary; this
         # matches the old logic, so doesn't require changes outside this method.
@@ -2871,6 +2874,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # underlying updated histories, applying the values in `outs`,
         # and combine it with `upds`.
         
+        if outs is None: outs = []
         assert len(output_hists) == len(outs)
         outslc = slice(curtidx, stoptidx)
         for h, out in zip(output_hists, outs):
