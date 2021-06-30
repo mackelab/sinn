@@ -45,19 +45,17 @@ class TestModelNoState(Model):
             tidx = [tidx]
         # if not shim.isscalar(tidx):
         #     size = (len(tidx),) + size
-        retval = [shim.nonzero(
-                      self.rng.binomial( size = self.λ.shape,
-                                         n = 1,
-                                         p = self.clip_probabilities(self.λ(ti)*dt)
-                                         )
-                      )[0]
+        retval = [self.rng.binomial( size = self.spikes.shape,
+                                     n = 1,
+                                     p = self.clip_probabilities(self.λ(ti)*dt)
+                                     )
                   for ti in tidx]
         return retval
 
     @updatefunction('λ', inputs=['λ'])
     def upd_λ(self, tidx):
         dt = self.time.dt.magnitude
-        return (self.λ0 + (self.λ(tidx-1)-self.λ0) * np.exp(-dt/self.τ)
+        return (self.λ0 * np.exp( -(self.λ(tidx-1)-self.λ0)/self.τ * dt)
                 + self.σ * np.sqrt(dt) * self.rng.normal(size=()))
 
     def initialize(self, initializer=None):

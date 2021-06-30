@@ -1372,24 +1372,18 @@ class SymbolicAxisIndexMeta(SpecAxisIndexMeta, shim.graph.GraphExpressionMeta):
     @staticmethod
     def _instance_plain(self):
         """
-        Remove the 'index' identity by casting `self` to `nptype`.
+        Remove the 'index' identity by returning the underlying standard
+        Theano variable.
         """
-        if not hasattr(self, '_plain'):
-            # Theano's copy() doesn't copy tags, and therefore fails
-            # immediately if compute_test_value == 'raise'
-            # So we turn it off during the copy and add the test value ourselves
-            compute_test_value = shim.config.compute_test_value
-            shim.config.compute_test_value = 'off'
-            self._plain = self.copy()
-            if compute_test_value != 'off':
-                self._plain.tag.test_value = shim.get_test_value(self)
-            shim.config.compute_test_value = compute_test_value
-            self._plain.name = self.name
-        return self._plain
-            # We can't use `astype`, because that still returns an AxisIndex
-            # Here `copy` adds an identity operation which has `self` as input
-            # There may be ways to remove the `self` node from the graph
-            # instead, but that seems much more fragile.
+        # NB: It's important that the `self` node not be included in the
+        #     returned graph: our custom SymbolicAxisIndex subclass of Theano
+        #     expressions isn't 100% compatible with all graph manipulations.
+        #     In particular, it doesn't work well with `clone`, which leads to
+        #     failures when constructiong `scan` functions.
+        # Since a SymbolicAxisIndex is just an identity op on a value, all we
+        # we need to do is go one up the computational graph one step
+        assert len(self.owner.inputs) == 1
+        return self.owner.inputs[0]
 
 # TODO: Replace this function by the metaclass for AxisIndex
 def get_AxisIndex(axis, dtype=None):

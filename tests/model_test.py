@@ -64,9 +64,9 @@ def _test_model(cgshim):
     TimeAxis.time_unit = ureg.s
     TimeAxis.time_step = np.float64(2**-6)
 
-    model = TestModel(params = TestModel.Parameters(λ0=10, τ=1, σ=100, N=7),
+    model = TestModel(params = TestModel.Parameters(λ0=10, τ=1, σ=25, N=7),
                       time = TimeAxis(min=0, max=10),
-                      rng = shim.config.RandomStream())
+                      rng = shim.config.RandomStream(505))
 
     # Ensure that the automatic excludes added in `model.dict` aren't too aggressive
     assert {"λ", "spikes"} <= set(model.dict())
@@ -95,7 +95,19 @@ def _test_model(cgshim):
     end = model.time.Index(64)
     # end = model.time.tnidx
     model.integrate(end, histories=(model.spikes,))
-
+    
+    # Sanity check on the time bin assignments:
+    # No time bin should have a disproportionate number of spikes
+    # (detects errors `update` or `_get_symbolic_update` which incorrectly
+    # update indptr and put all spikes in the latest bin)
+    n_spikes = len(model.spikes._num_data[0].get_value())
+    indptr = model.spikes._num_data[2].get_value()
+    # Increase in index pointers should be monotone
+    assert np.all(np.diff(indptr) >= 0)
+    # indptr <=> spike times, and therefore indptr distribution should be roughly uniform
+    # Here we detect if at any point, indptr jumps by more than 10% of the total number of spikes
+    assert np.all(np.diff(indptr) < 0.1*n_spikes)
+    
     ## Serialization ##
 
     # FIXME: Support & test serialization of the CSMProperties attribute of Theano sparse array
@@ -151,4 +163,4 @@ def test_model_numpy():
 
 if __name__ == "__main__":
     # test_model_numpy()
-    test_model_theano()
+    test_model_theano(None)

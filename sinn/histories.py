@@ -13,7 +13,7 @@ import warnings
 import abc
 from abc import abstractmethod
 import collections
-from collections import deque
+from collections import deque, OrderedDict
 from collections.abc import Iterable, Sized, Callable
 import numbers
 from odictliteral import odict
@@ -623,6 +623,15 @@ class History(HistoryBase, abc.ABC):
         # This is in axis space (not data space)
     _stash: Stash=PrivateAttr()
     _taps : dict =PrivateAttr({})
+        # Taps are used to accumulate both symbolic updates for future time points
+        # (Δk > 0) and symbolic lookups for past time points (Δk ≤ 0). Each
+        # History determines how it stores its taps; however, this format must
+        # a) be compatible with `update()`, since that is how taps are
+        #    applied after evaluation, and
+        # b) be a usable object for a Theano scan. Practically, this means a
+        #    *fixed sized* tensor. Multiple tensors stored as a tuple could be
+        #    supported with minimal changes to Models.convert_point_updates_to_scan,
+        #    but the fixed sized requirement would remain.
     _update_pos     : Optional[int]=PrivateAttr(None)
     # _update_pos_stop: Optional[int]=PrivateAttr(None)
         # When computing a symbolic update, store the absolute start and end time indices
@@ -2613,9 +2622,9 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
             # This may throw an efficiency warning, but we can ignore it since
             # init_csr is empty
             init_csr.eliminate_zeros()
-        data = (shim.shared(init_csr.data, name=f'{self.name} - data'),
-                shim.shared(init_csr.indices, name=f'{self.name} - indices'),
-                shim.shared(init_csr.indptr, name=f'{self.name} - indptr')
+        data = (shim.shared(init_csr.data, name=f'{self.name} (data)'),
+                shim.shared(init_csr.indices, name=f'{self.name} (indices)'),
+                shim.shared(init_csr.indptr, name=f'{self.name} (indptr)')
                 )
         cur_tidx = shim.shared(np.array(cur_datatidx-self.time.t0idx,
                                         dtype=self.time.index_nptype),
@@ -2648,9 +2657,12 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
                 assert self.time.Index(shim.eval(tidx)) == self.t0idx - 1
             except TooCostly:
                 pass
-        object.__setattr__(self, '_sym_data', data)
-        assert shim.graph.is_computable(self._sym_data)
-        object.__setattr__(self, '_num_data', self._sym_data)
+        # Update _num_data; _num_tidx is updated by super().clear()
+        for dold, dnew in zip(self._num_data, data):
+            dold.set_value(dnew.get_value())
+        # object.__setattr__(self, '_sym_data', data)
+        # assert shim.graph.is_computable(self._sym_data)
+        # object.__setattr__(self, '_num_data', self._sym_data)
         super().clear(after=after)
 
     def get_data_trace(self, pop=None, neuron=None,
@@ -2753,8 +2765,9 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
         if list(taps) != list(range(1, len(taps)+1)):
             raise NotImplementedError("Symbolic (forward) taps must start from "
                                       "1 and not skip any time steps.")
-        for Δk, idcs in taps.items():
-            onevect = shim.ones(idcs.shape, dtype='int8')
+        for Δk, spikes in taps.items():
+            idcs = shim.nonzero(spikes)[0].astype(indices.dtype)
+            onevect = shim.ones(idcs.shape, dtype=self.dtype)
                 # vector of ones of the same length as the number of units which fired
             data = shim.concatenate((data, onevect))
                # Add as many 1 entries as
@@ -2766,6 +2779,101 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
         # Construct the CSR matrix
         shape = (self.time.padded_length, self.shape[0])
         return shim.sparse.CSR(data, indices, indptr, shape=shape)
+        
+    def _get_symbolic_update(self, tidx, spikes):
+        """
+        Return an update dictionary for the time index (`_num_tidx`) and the
+        data (`_num_data`), which inserts `data` at the time position(s) `tidx`.
+        Performs no validation: it is assumed that that has already been done.
+        In particular, data after `tidx` are _not_ cleared, so one should
+        ensure that `tidx` appends to the Spiketrain.
+        
+        Differences with _get_sym_csr:
+        - Does not use or modify taps. (tidx and spikes are passed as args instead)
+        - Returns an update dictionary for the underlying _num_data data structure,
+          rather than a sparse array
+          
+        TODO: Remove duplicated code with _get_sym_csr.
+        """
+        # TODO!: Only the slice branch has been tested, and only lightly
+        # TODO?: Do we want to mechanism to optionally include these updates
+        #        when we compile a model's scan ?
+        #        (Update: probably not possible, because of variable length data vectors)
+        
+        idx_dtype = self._num_tidx.dtype
+        
+        if shim.isscalar(tidx):
+            assert spikes.ndim == 1, "Scalar tidx requires 1D 'spikes'"
+            curtidx = self._num_tidx
+            data, indices, indptr = self._num_data
+            
+            idcs = shim.nonzero(spikes_at_k)[0].astype(indices.dtype)
+            idcs.name = f"spike idcs ({self.name}, update data)"
+            onevect = shim.ones(idcs.shape, dtype=self.dtype)
+            onevect.name = f"𝟙 ({self.name}, update data)"
+            
+            upds = {
+                curtidx: tidx,
+                data   : shim.concatenate((data, onevect)),
+                indices: shim.concatenate((indices, neuron_idcs)),
+                indptr : shim.inc_subtensor(indptr[tidx+1:], idcs.shape[0])
+            }
+            
+        elif isinstance(tidx, slice):
+            symb_inputs = shim.graph.pure_symbolic_inputs(spikes)
+            assert set(symb_inputs) <= set(shim.graph.pure_symbolic_inputs(tidx)), \
+                "To my understanding, the only possible symbolic dependencies should be 'curtidx_var' and 'stoptidx_var' from a Model."
+            curtidx = self._num_tidx
+            data, indices, indptr = self._num_data
+            
+            time_idcs, neuron_idcs = shim.nonzero(spikes)  # Returns a tuple (size 2) of 1D index arrays (if spikes is symbolic, the arrays are symbolic, but still wrapped in a plain tuple)
+            neuron_idcs = neuron_idcs.astype(idx_dtype)
+            time_idcs.name = f"spike times ({self.name}, update data)"
+            neuron_idcs.name = f"spike idcs ({self.name}, update data)"
+            # Both time_idcs and neuron_idcs have the same length; either can be used to get the number of spikes to add
+            onevect = shim.ones(time_idcs.shape, dtype=self.dtype)
+            onevect.name = f"𝟙 ({self.name}, update data)"
+            counts_per_time_point = shim.ifelse(
+                time_idcs.size > 0,
+                shim.bincount(time_idcs), # Invalid if time_idcs is empty
+                shim.zeros((tidx.stop-tidx.start,), dtype='int64')  # bincount returns int64
+            )
+            counts_per_time_point.name = f"spike counts per k ({self.name}, update data)"
+                # counts_per_time_point is a vector [#{k=0}, #{k=1}, …]                
+            if not shim.is_graph_object(counts_per_time_point):
+                assert len(counts_per_time_point) == tidx.stop - tidx.start
+            # We need to increment each row pointer by the number of new elements
+            # in the rows above them => cumsum the counts
+            ptr_incr = shim.cumsum(counts_per_time_point)
+            ptr_incr.name = f"sparse indptr incr ({self.name}, update data)"
+                # This returns a vector one shorter than `counts_per_time_point`
+                # This is perfect, since we don't need to increment the pointer
+                # for time point tidx.start (there are no new spikes above/before it)
+                
+            new_indptr = shim.inc_subtensor(indptr[tidx.start+1:tidx.stop], ptr_incr)
+            new_indptr = shim.inc_subtensor(new_indptr[tidx.stop:], ptr_incr[-1])
+            upds = {
+                curtidx: tidx.stop-1,
+                data   : shim.concatenate((data, onevect)),
+                indices: shim.concatenate((indices, neuron_idcs)),
+                indptr : new_indptr
+            }
+            # _, upds = shim.scan(
+            #     update_data,
+            #     sequences=[shim.arange(tidx.start, tidx.stop, dtype=idx_dtype),
+            #                spikes],
+            #     non_sequences=[self._num_tidx, *self._num_data, *symb_inputs]
+            #     )
+                
+        else:
+            if not shim.isarray(tidx):
+                raise TypeError("`tidx` must be either a scalar, a slice, or an array.")
+            if not shim.is_graph_object(tidx):
+                if not np.all(np.diff(tidx) == 1):
+                    raise NotImplementedError("Time indices must be sequential")
+            raise NotImplementedError("TODO: Adapt implementation for slice.")
+            
+        return upds
 
     def _getitem_internal(self, axis_index):
         """
@@ -2830,12 +2938,18 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
             # - That we create new symbolic vars for new taps and record them.
             # - That the returned object is the same whether we used recorded taps or
             #   new ones. (This is why we use `stack` instead of just returning `out`.)
+            #   This is important to ensure that values can be replaced by symbolic
+            #   variables to create a scan (see models.convert_point_updates_to_scan)
             if self.symbolic:
                 for i, Δk in enumerate(Δks_neg):
+                    # NB: If a Δk is already in _taps, we use that value instead
+                    #     of the corresponding slice of `out`
                     if Δk not in self._taps:
                         self._taps[Δk] = out[i]
                     outs.append(self._taps[Δk])
                 # _taps are stacked together below
+            if index_is_scalar:
+                out = out[0]
         
         #  Make output 1D if user indexed with a scalar
         if Δks_pos:
@@ -2844,27 +2958,27 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
                 # _compute_up_to should already have been called
             if index_is_scalar:
                 assert len(Δks) == len(Δks_pos) == 1
-                out = shim.zeros(self.shape, symbolic=True)
-                idcs = self._taps[self.time.Index.Delta(Δks[0])]
-                out = shim.set_subtensor(out[idcs], 1)
+                out = self._taps[self.time.Index.Delta(Δks[0])]
+                # out = shim.zeros(self.shape, dtype=self.dtype, symbolic=True)
+                # idcs = self._taps[self.time.Index.Delta(Δks[0])]
+                # out = shim.set_subtensor(out[idcs], 1)
             else:
                 # By using stack, we try to make the returned expressions as similar
                 # as possible between indexing with slices, scalars and eventually arrays
                 for Δk in Δks_pos:
-                    outi = shim.zeros(self.shape, symbolic=True)
-                    idcs = self._taps[self.time.Index.Delta(Δk)]
-                    outi = shim.set_subtensor(outi[idcs], 1)
+                    outi = self._taps[self.time.Index.Delta(Δk)]
+                    # outi = shim.zeros(self.shape, dtype=self.dtype, symbolic=True)
+                    # idcs = self._taps[self.time.Index.Delta(Δk)]
+                    # outi = shim.set_subtensor(outi[idcs], 1)
                     outs.append(outi)
-                out = shim.stack(outs)
+                # _taps are stacked together below
                 
         if self.symbolic and not index_is_scalar:
             out = shim.stack(outs)
-        elif not self.symbolic and index_is_scalar:
-            out = out[0]
             
         return out
 
-    def update(self, tidx, neuron_idcs):
+    def update(self, tidx, neuron_spikes):
         """
         Add to each neuron specified in `value` the spiketime `tidx`.
 
@@ -2876,7 +2990,8 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
             of cur_tidx + latest_tap.
             The indices themselves may be symbolic, but the _number_ of indices
             must not be.
-        neuron_idcs: iterable
+        neuron_spikes: iterable
+            TODO: Update with change from neuron indices to time slices.
             List of neuron indices that fired in this bin. May be a
             2D numeric array, a list of 1D numeric arrays, or a list of 1D
             symbolic arrays, but not a 2D symbolic array: the outer dimension
@@ -2886,57 +3001,77 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
             time dimension.
 
         **Side-effects**
-            If either `tidx` or `neuron_idcs` is symbolic, adds symbolic updates
+            If either `tidx` or `neuron_spikes` is symbolic, adds symbolic updates
             in :py:mod:`shim`'s :py:attr:`symbolic_updates` dictionary  for
             `_num_tidx` and `_num_data`.
         """
+        # NB: This function used to expect a list of neuron indices, to avoid
+        #     passing large vectors of mostly zeros. However having different
+        #     sized vectors for each time step is incompatible with Theano.
+        #     In practice, these were produced in the update function with
+        #     `shim.nonzero(…)`.
+        #     This new version now expects dense time slices and applies
+        #     `shim.nonzero(…)` itself to recover the indices to store in the
+        #     sparse array; thus at least for updating one time point at a time
+        #     it should make little difference. Nevertheless, this method is
+        #     more of a proof of concept, and there are likely optimization
+        #     opportunities here, especially wrt batch updates.
+        # TODO: Allow setting with `neuron_spikes` a sparse as well as dense array.
 
-        # TODO: Fix batch update to something less hacky
+        # TODO: Fix batch update to something less hacky; c.f. _get_symbolic_update
         if self.locked:
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))
 
         time = self.time
 
-        # neuron_idcs = shim.asarray(neuron_idcs)
-        if shim.isscalar(neuron_idcs):
+        if shim.isscalar(neuron_spikes):
             raise ValueError(
                 "Indices of neurons to update must be given as a "
-                f"list of 1D arrays.\nIndices: {repr(neuron_idcs)}.")
+                f"list of 1D arrays.\nIndices: {repr(neuron_spikes)}.")
         else:
-            if shim.isarray(neuron_idcs):
-                if neuron_idcs.ndim == 1:
+            if shim.isarray(neuron_spikes):
+                if neuron_spikes.ndim == 1:
                     # Single array of indices passed without the time dimension
                     # => add time dimension
-                    neuron_idcs = [neuron_idcs]
-                elif neuron_idcs.ndim != 2:
+                    neuron_spikes = [neuron_spikes]
+                elif neuron_spikes.ndim != 2:
                     raise ValueError(
-                        "Indices of neurons to update must be given as a "
-                        f"list of 1D arrays.\nIndices: {repr(neuron_idcs)}.")
-            neuron_idcs = [shim.atleast_1d(ni) for ni in neuron_idcs]
-            if not all(getattr(ni, 'ndim', None) == 1 for ni in neuron_idcs):
+                        "Neurons to update must be given as a "
+                        f"list of 1D arrays.\nIndices: {repr(neuron_spikes)}.")
+            neuron_spikes = [shim.atleast_1d(ni) for ni in neuron_spikes]
+            if not all(getattr(ni, 'ndim', None) == 1 for ni in neuron_spikes):
                 raise ValueError(
-                    "Indices of neurons to update must be given as a "
-                    f"list of 1D arrays.\nIndices: {repr(neuron_idcs)}.")
-        # From this point on we can assume that neuron_idcs can be treated as
+                    "Neurons to update must be given as a "
+                    f"list of 1D arrays.\nIndices: {repr(neuron_spikes)}.")
+        for i, spikes in enumerate(neuron_spikes):
+            try:
+                if shim.eval(spikes.shape) != self.shape:
+                    raise ValueError(
+                        "Neurons to update must be given as a list of 1D "
+                        "arrays of 0s and 1s, one entry per neuron.\n"
+                        f"Number of neurons: {self.shape[0]}\n"
+                        f"Shape of the provided value at index {i}: {spikes.shape}")
+            except TooCostly:
+                pass
+        # From this point on we can assume that neuron_spikes can be treated as
         # a list of 1D arrays.
-        # In particular, `len(neuron_idcs)` is valid and should correspond
+        # In particular, `len(neuron_spikes)` is valid and should correspond
         # to the number of time indices.
 
         # _orig_tidx = tidx
         if shim.isscalar(tidx):
             assert isinstance(tidx, time.Index)
             earliestidx = latestidx = tidx
-            assert len(neuron_idcs) == 1
+            assert len(neuron_spikes) == 1
             tidx = shim.add_axes(tidx, 1)
-            # neuron_idcs = [neuron_idcs]
         elif isinstance(tidx, slice):
             assert (isinstance(tidx.start, time.Index)
                     and isinstance(tidx.stop, time.Index))
             earliestidx = tidx.start
             latestidx = tidx.stop-1
             try:
-                assert (len(neuron_idcs)
+                assert (len(neuron_spikes)
                         == shim.eval(tidx.stop) - shim.eval(tidx.start))
             except TooCostly:
                 pass
@@ -2948,7 +3083,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
             earliestidx = shim.min(tidx)
             latestidx = shim.max(tidx)
             try:
-                assert len(neuron_idcs) == shim.eval(tidx.shape[0])
+                assert len(neuron_spikes) == shim.eval(tidx.shape[0])
             except TooCostly:
                 pass
         try:
@@ -2973,7 +3108,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
                 # _orig_tidx is not artifically converted to index array
             shape = (self.time.padded_length, self.shape[0])
             csr = scipy.sparse.csr_matrix(
-                shim.eval(self._num_data, max_cost=None), shape=shape)
+                tuple(shim.eval(self._num_data, max_cost=None)), shape=shape)
             csr[earliestidx.data_index+1:, :] = 0
             csr.eliminate_zeros()
             self._num_data[0].set_value(csr.data)
@@ -2984,8 +3119,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
             # object.__setattr__(self, '_sym_data', self._num_data)
 
         datatidx = self.time.data_index(tidx)
-        # assert len(datatidx) == len(neuron_idcs)
-        data_is_symb = shim.is_symbolic(neuron_idcs)
+        data_is_symb = shim.is_symbolic(neuron_spikes)
         tidx_is_symb = shim.is_symbolic(tidx)
         
         if tidx_is_symb:
@@ -3001,21 +3135,26 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
             # C.f. History.eval(), which expects `taps` values to be valid args to `update()`
             Δks = shim.eval(tidx, max_cost=None) - self.cur_tidx  # NB: tidx is an arangearray
             assert min(Δks) > 0  # This must be true otherwise an error would have be raised by the data invalidation block above
-            for Δk, idcs in zip(Δks, neuron_idcs):
+            for Δk, spikes in zip(Δks, neuron_spikes):
+                assert spikes.ndim == 1
                 Δk = self.time.Index.Delta(Δk)
                 if Δk in self._taps:
                     raise RuntimeError("Attempted to update Spiketrain History "
                                        f"twice at tap {Δk}.")
-                self._taps[Δk] = idcs
+                self._taps[Δk] = spikes
         else:
             # Now that we know that both tidx and data are numeric, update _num_tidx and _num_data
             data, indices, indptr = self._num_data
             data_d    = data.get_value(borrow=True)
             indices_d = indices.get_value(borrow=True)
             indptr_d  = indptr.get_value(borrow=True)
-            for ti, idcs in zip(datatidx, neuron_idcs):
+            for ti, spikes in zip(datatidx, neuron_spikes):
+                assert spikes.ndim == 1
+                if not shim.issymbolic(spikes):
+                    assert spikes.max() <= 1 and spikes.min() >= 0
+                idcs = shim.nonzero(spikes)[0].astype(indices.dtype)
                 # TODO: Assign in one block
-                onevect = shim.ones(idcs.shape, dtype='int8')
+                onevect = shim.ones(idcs.shape, dtype=self.dtype)
                     # vector of ones of the same length as the number of units which fired
                 data_d    = np.concatenate((data_d, onevect))
                 indices_d = np.concatenate((indices_d, idcs))
@@ -3112,15 +3251,17 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
             data, indices, indptr = self._num_data
         else:
             data, indices, indptr = self._num_data
-            indptr = np.concatenate((np.zeros(before_len, dtype=indptr.dtype),
+            # move index pointers forward by the number that were added
+            # index pointers themselves don't change, since data didn't change
+            new_indptr = np.concatenate((np.zeros(before_len, dtype=indptr.dtype),
                                      indptr.get_value(borrow=True)))
-                # move index pointers forward by the number that were added
-                # index pointers themselves don't change, since data didn't change
+            indptr.set_value(new_indptr, borrow=True)
+                 
         try:
             assert shim.eval(indptr).shape[0] == self.time.padded_length + 1
         except TooCostly:
             pass
-        self._num_data[2].set_value(indptr, borrow=True)
+        # self._num_data[2].set_value(indptr, borrow=True)
         # assert self._sym_data is self._num_data
         # object.__setattr__(self, '_num_data', (data, indices, indptr))
         # object.__setattr__(self, '_sym_data', self._num_data)
@@ -3376,6 +3517,34 @@ class Series(ConvolveMixin, History):
                                name = 't idx (' + self.name + ')',
                                symbolic = self.symbolic)
         return data, cur_tidx
+
+    def _get_symbolic_update(self, tidx, values):
+        """
+        Return an update dictionary for the time index (`_num_tidx`) and the
+        data (`_num_data`), which inserts `data` at the time position(s) `tidx`.
+        Performs no validation: it is assumed that that has already been done.
+        In particular, data after `tidx` are _not_ cleared, so one should
+        ensure that `tidx` appends to the Spiketrain.
+        """
+        # TODO!: Only the slice branch has been tested, and only lightly
+        # TODO?: Do we want to mechanism to optionally include these updates
+        #        when we compile a model's scan ?
+        upds = {}
+        # Update tidx
+        idx_dtype = self._num_tidx.dtype
+        if shim.isscalar(tidx):
+            upds[self._num_tidx] = shim.cast(tidx, dtype=idx_dtype)
+        elif isinstance(tidx, slice):
+            upds[self._num_tidx] = shim.cast(tidx.stop, self._num_tidx.dtype) - 1
+        else:
+            if not shim.isarray(tidx):
+                raise TypeError("`tidx` must be either a scalar, a slice, or an array.")
+            assert tidx.ndim == 1, "`tidx must be 1D"
+            upds[self._num_tidx] = shim.cast(tidx.max(), idx_dtype)
+        # Update data    
+        upds[self._num_data] = shim.set_subtensor(self._num_data[tidx], values)
+        # Return
+        return upds
 
     def _getitem_internal(self, axis_index):
         """

@@ -115,16 +115,18 @@ def _test_history_spiketrain_indexing(cgshim):
     assert x1.cur_tidx == -1
     assert x1.tnidx == len(taxis)-1 == len(x1)-1
     # sizes of data, indices and indptr are 0, 0, (no. time bins)
-    assert x1._num_data[0].shape == (0,)
-    assert x1._num_data[1].shape == (0,)
-    assert x1._num_data[2].shape == (x1.time.padded_length + 1,)
+    assert shim.eval(x1._num_data[0].shape, max_cost=None) == (0,)
+    assert shim.eval(x1._num_data[1].shape, max_cost=None) == (0,)
+    assert shim.eval(x1._num_data[2].shape, max_cost=None) == (x1.time.padded_length + 1,)
 
     def gen_spike_data(num_timepoints, shape, p=0.03):
-        return [np.where(np.random.binomial(n=1, p=p, size=shape))[0]
+        return [np.random.binomial(n=1, p=p, size=shape)
                 for i in range(num_timepoints)]
+        # return [np.where(np.random.binomial(n=1, p=p, size=shape))[0]
+        #         for i in range(num_timepoints)]
     x1[:] = gen_spike_data(x1.time.padded_length, 9)
     assert x1.tnidx == x1.cur_tidx
-    assert np.all(shim.eval(x1[x1.tnidx]) == x1.data[x1.tnidx])
+    assert np.all(shim.eval(x1[x1.tnidx], max_cost=None) == x1.data[x1.tnidx])
 
     assert x1.cur_tidx == taxis.unpadded_length - 1
 
@@ -161,8 +163,8 @@ def _test_history_spiketrain_indexing(cgshim):
     # `.data` omits padding
     assert not (first10[5:] != x1.data[:5]).data.any()
     # negative indexing in axis space works
-    assert np.all(x1[-1] == first10[4])       # With single index
-    assert np.all(x1[-1:2] == first10[4:7])   # With slice index
+    assert np.all(shim.eval(x1[-1], max_cost=None) == first10[4])       # With single index
+    assert np.all(shim.eval(x1[-1:2], max_cost=None) == first10[4:7])   # With slice index
 
     # Pydantic methods
     x1copy = x1.copy()
@@ -312,16 +314,16 @@ def _test_history_spiketrain_updates(cgshim):
 
     x1_upd = HistoryUpdateFunction(
         func = lambda tidx:
-            [shim.nonzero(rng.binomial(n=1, p=0.9, size=x1.shape))[0]
+            [rng.binomial(n=1, p=0.9, size=x1.shape)
              for ti in shim.atleast_1d(tidx)],
         # func = x1_fn,
         inputs = [],
         namespace = hists
         )
     x2_upd = HistoryUpdateFunction(
-        func = Transform("tidx -> [shim.nonzero(rng.binomial("
+        func = Transform("tidx -> [rng.binomial("
                          "     n=1, p=0.2*shim.exp( (10*x1(ti) + x2[ti-10:ti].sum(axis=0))/15 ),"
-                         f"    size={x2.shape}))[0]"
+                         f"    size={x2.shape})"
                          "   for ti in shim.atleast_1d(tidx)]"),
         inputs = ['x1', 'x2'],
         namespace = hists
@@ -353,7 +355,7 @@ def _test_history_spiketrain_updates(cgshim):
     with pytest.raises(IndexError):
         x2(Ti)
     x2.pad(10)
-    x2[:0] = [np.array([], dtype=x2.dtype) for i in range(10)]
+    x2[:0] = [np.zeros(x2.shape, dtype=x2.dtype) for i in range(10)]
     x2(Ti)
 
     x2.eval()
@@ -493,7 +495,7 @@ def _test_history_serialization(cgshim):
     @do_nothing
     def sin_spikes(self, tidx):  # Some pseudo-chaotic function
         t = self.s1.get_time(tidx).magnitude
-        return np.where((np.sin(self.ω*t)>0))[0].astype('uint8')
+        return (np.sin(self.ω*t)>0).astype('uint8')
 
     spikes1.update_function = HistoryUpdateFunction(
         func=sin_spikes, inputs=['s1'], namespace=spikehists)
@@ -575,7 +577,7 @@ def test_symhistory_series_indexing(clean_theano_dir):
     return _test_history_series_indexing('theano')
 def test_numhistory_spiketrain_indexing():
     return _test_history_spiketrain_indexing('numpy')
-def test_symhistory_series_updates(clean_theano_dir):
+def test_symhistory_spiketrain_indexing(clean_theano_dir):
     return _test_history_spiketrain_indexing('theano')
 def test_numhistory_series_updates():
     return _test_history_series_updates('numpy')
