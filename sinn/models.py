@@ -2876,11 +2876,16 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         
         if outs is None: outs = []
         assert len(output_hists) == len(outs)
-        outslc = slice(curtidx, stoptidx)
         for h, out in zip(output_hists, outs):
             outslc = slice(h._num_tidx + 1, h._num_tidx + 1 + (stoptidx-curtidx))
             outslc = slice(shim.graph.clone(outslc.start, replace=tidxsubs),
                            shim.graph.clone(outslc.stop,  replace=tidxsubs))
+            # Sanity check: outslc resolves to a non-empty slice
+            inp = {k:v for k,v in zip(shim.graph.pure_symbolic_inputs(outslc.stop), [0, 10])}
+            evalslc = shim.eval(outslc, givens=inp, if_too_costly='ignore')
+            if evalslc:
+                assert evalslc.stop > evalslc.start
+            # Add updates for this history
             upds = {**upds, **h._get_symbolic_update(outslc, out)}
                 
         # out_upds = {h._num_data: shim.set_subtensor(h._num_data[curtidx:stoptidx], out)
