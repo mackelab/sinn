@@ -2486,57 +2486,6 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
            With additional development and testing, it should be possible to
            support other arguments.
         """
-        # if not isinstance(inputs, (list, tuple)):
-        #     raise TypeError("`inputs` should be specified as a list.")
-        # if not isinstance(outputs, (list, tuple)):
-        #     outputs = [outputs]
-        # # Theano compilation isn't entirely robust to our custom AxisIndex types
-        # # (they are fine for graph construction, but not always for compilation)
-        # # Replace all AxisIndex variables by their underlying pure Theano var
-        from theano.graph.basic import ancestors  # TODO: Add ancestors to theano_shim.graph
-        # from theano.scan.op import Scan
-        # axisindex_deps = {}
-        # scan_ops = {}
-        # for v in ancestors(chain(inputs, outputs, updates.values())):
-        #     try:
-        #         op = v.owner.op
-        #     except AttributeError:
-        #         pass
-        #     else:
-        #         if isinstance(op, Scan):
-        #             breakpoint()
-        #             scan_ops[hash(op)] = op
-        #             continue
-        #     try:
-        #         inp = v.owner.inputs
-        #     except AttributeError:
-        #         continue
-        #     else:
-        #         if any(isinstance(vi, AbstractAxisIndex) for vi in inp):
-        #             axisindex_deps[hash(v)] = v
-        # 
-        # #   --------->         inputs[i]          --------->         inputs[k]
-        # # v <---------  owner ---------> Symb Idx <---------  owner ---------> Idx
-        # #   outputs[j]                            outputs[l]
-        # for v in axisindex_deps.values():
-        #     inp = v.owner.inputs
-        #     for i, symidx in enumerate(inp):
-        #         if isinstance(symidx, AbstractAxisIndex):
-        #             breakpoint()
-        #             new_owner = symidx.owner
-        #             new_owner.outputs.remove(symidx)
-        #             new_owner.outputs.extend(v.owner.outputs)
-        #             v.owner = new_owner
-        axisindex_vars = [v for v in ancestors(chain(inputs, outputs, updates.values()))
-                          if isinstance(v, AbstractAxisIndex)]
-        assert not axisindex_vars, "Theano compilation isn't entirely robust to sinn.SymbolicAxisIndex types. Replace them by using their `.plain` attribute before adding them to the graph. (Note that `shim.clone(…,replace=…)` *won't* work – this is the operation that causes compilation to fail in the first place.)"
-        # # (they are fine for graph construction, but not always for compilation)
-        # axisindex_replace = {v: v.plain for v in axisindex_vars}
-        # inputs = [shim.graph.clone(g, replace=axisindex_replace) for g in inputs]
-        # outputs = [shim.graph.clone(g, replace=axisindex_replace) for g in outputs]
-        # updates = {k: shim.graph.clone(g, replace=axisindex_replace)
-        #            for k, g in updates.items()}
-
         if kwargs:
             warn("Compilation caching is disabled when keyword arguments other "
                  "than `inputs`, `outputs` and `updates` are specified.")
@@ -2876,15 +2825,40 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         
         if outs is None: outs = []
         assert len(output_hists) == len(outs)
+        # curtidx, stoptidx may be involved in arithmetic ops, but they should have one symbolic input each
+        inp_curtidx = shim.graph.pure_symbolic_inputs(curtidx)
+        if len(inp_curtidx) != 1:
+            warn("When creating the `scan`, we expect the symbolic curtidx (start index of the scan) "
+                 f"to depend on one purely symbolic input, but in fact it depends on {len(inp_curtidx)}.")
+        inp_stoptidx = shim.graph.pure_symbolic_inputs(stoptidx)
+        inp_stoptidx = [i for i in inp_stoptidx if not any(i is ic for ic in inp_curtidx)]
+        if len(inp_curtidx) != 1:
+            warn("When creating the `scan`, we expect the symbolic stoptidx (stop index of the scan) "
+                 f"to depend on one purely symbolic input, but in fact it depends on {len(inp_stoptidx)}.")
+        if len(inp_curtidx) == 1 and len(inp_stoptidx) == 1:
+            # Test values for the assertions
+            # TODO?: Use actual test values ?
+            inp = {inp_curtidx[0]: 0, inp_stoptidx[0]: 10}
+        else:
+            inp = None
         for h, out in zip(output_hists, outs):
             outslc = slice(h._num_tidx + 1, h._num_tidx + 1 + (stoptidx-curtidx))
             outslc = slice(shim.graph.clone(outslc.start, replace=tidxsubs),
                            shim.graph.clone(outslc.stop,  replace=tidxsubs))
-            # Sanity check: outslc resolves to a non-empty slice
-            inp = {k:v for k,v in zip(shim.graph.pure_symbolic_inputs(outslc.stop), [0, 10])}
-            evalslc = shim.eval(outslc, givens=inp, if_too_costly='ignore')
+            # Sanity check: outslc resolves to a non-empty slice of same shape as out
+            evalslc = None if not inp else shim.eval(outslc, givens=inp, if_too_costly='ignore')
             if evalslc:
-                assert evalslc.stop > evalslc.start
+                assert evalslc.stop > evalslc.start, f"Model.convert_point_updates_to_scan: negative or zero length output slice for history {h.name}. " \
+                    f"After the scan op, the generated data for this history would be of shape {out.shape.eval(inp)}, but the time slice (first time dimension) has end points\nStart: {evalslc.start}\nStop:  {evalslc.stop}"
+                try:
+                    outlen = shim.eval(out.shape[0], givens=inp)
+                except shim.graph.TooCostly:
+                    pass
+                else:
+                    if outlen and evalslc.stop - evalslc.start != outlen:
+                        raise AssertionError(
+                            f"After the scan op, the generated data for the history '{h.name}' would be of shape {out.shape.eval(inp)}, "
+                            f"but the time slice (first time dimension) has end points\nStart: {evalslc.start}\nStop:  {evalslc.stop}")
             # Add updates for this history
             upds = {**upds, **h._get_symbolic_update(outslc, out)}
                 

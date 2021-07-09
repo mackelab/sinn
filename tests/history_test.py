@@ -42,6 +42,8 @@ from conftest import clean_theano_dir
 def _test_history_series_indexing(cgshim):
 
     shim.load(cgshim)
+    mtb.typing.PintUnit.ureg = ureg
+    
     mtb.typing.freeze_types()
     from sinn.histories import (
         TimeAxis, HistoryUpdateFunction, Series, Spiketrain, NotComputed)
@@ -101,6 +103,8 @@ def _test_history_series_indexing(cgshim):
 
 def _test_history_spiketrain_indexing(cgshim):
     shim.load(cgshim)
+    mtb.typing.PintUnit.ureg = ureg
+
     mtb.typing.freeze_types()
     from sinn.histories import (
         TimeAxis, HistoryUpdateFunction, Series, Spiketrain, NotComputed)
@@ -181,6 +185,8 @@ def _test_history_spiketrain_indexing(cgshim):
 
 def _test_history_series_updates(cgshim):
     shim.load(cgshim)
+    mtb.typing.PintUnit.ureg = ureg
+    
     mtb.typing.freeze_types()
     from sinn.histories import (
         TimeAxis, HistoryUpdateFunction, Series, Spiketrain, NotComputed)
@@ -289,6 +295,8 @@ def _test_history_series_updates(cgshim):
 
 def _test_history_spiketrain_updates(cgshim):
     shim.load(cgshim)
+    mtb.typing.PintUnit.ureg = ureg
+    
     mtb.typing.freeze_types()
     from sinn.histories import (
         TimeAxis, HistoryUpdateFunction, Series, Spiketrain, NotComputed)
@@ -591,3 +599,6 @@ def test_numhistory_serialization():
     return _test_history_serialization('numpy')
 def test_symhistory_serialization(clean_theano_dir):
     return _test_history_serialization('theano')
+
+if __name__ == "__main__":
+    test_symhistory_spiketrain_updates(None)

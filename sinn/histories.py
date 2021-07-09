@@ -1310,7 +1310,7 @@ class History(HistoryBase, abc.ABC):
             raise IndexError(f"Index {axis_index} is out of bounds for "
                              f"history {self.name}.")
         # if shim.eval(latest, max_cost=None) > shim.eval(self._sym_tidx, max_cost=None):
-        if shim.eval(getattr(latest, 'plain', latest), max_cost=None) - self.cur_tidx > self._latest_tap:
+        if shim.eval(latest, max_cost=None) - self.cur_tidx > self._latest_tap:
             return NotComputed.NotYetComputed
         # Within bounds => retrieve the cached value
         else:
@@ -1720,8 +1720,8 @@ class History(HistoryBase, abc.ABC):
         # Since it is useful to have non-moving points when dealing with
         # recursion, we calculate absolute positions and subtract the concrete
         # integers to get Δidx
-        absstart = self.time.Index(shim.eval(getattr(start, 'plain', start), max_cost=None))  # _num_tidx is shared var,
-        absstop  = self.time.Index(shim.eval(getattr(stop, 'plain', stop), max_cost=None))   # so eval() works fine
+        absstart = self.time.Index(shim.eval(start, max_cost=None))  # _num_tidx is shared var,
+        absstop  = self.time.Index(shim.eval(stop, max_cost=None))   # so eval() works fine
         Δidx = absstop - absstart  # No dependence on _num_tidx if case 1)
         symbolic_times = shim.is_graph_object(start, end)
             # True if either `start` or `end` is symbolic
@@ -3088,12 +3088,12 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
                 pass
         try:
             # assert shim.eval(earliestidx) <= shim.eval(self._sym_tidx) + 1
-            assert shim.eval(earliestidx) <= self.cur_tidx + self._latest_tap + 1
+            assert shim.eval(earliestidx.plain) <= self.cur_tidx + self._latest_tap + 1
         except TooCostly:
             pass
 
         # Clear any invalidated data before applying the updates
-        if shim.eval(earliestidx, max_cost=None) <= self.cur_tidx:
+        if shim.eval(earliestidx.plain, max_cost=None) <= self.cur_tidx:
             # <= shim.eval(self._sym_tidx, max_cost=None)):
             if shim.is_symbolic(tidx):
                 raise TypeError("Overwriting data (i.e. updating in the past) "
@@ -3570,14 +3570,13 @@ class Series(ConvolveMixin, History):
         if self.symbolic:
             if isinstance(axis_index, slice):
                 # slc = shim.eval(axis_index, max_cost=None)
-                slc = shim.eval(slice(getattr(axis_index.start, 'plain', axis_index),
-                                      getattr(axis_index.stop, 'plain', axis_index)),
+                slc = shim.eval(slice(axis_index.start, axis_index.stop),
                                 max_cost=None)
                 # NB: Casting to Index isn't all that useful: looping over range still returns plain ints
                 Δks = range(self.time.Index(slc.start) - self.cur_tidx,
                             self.time.Index(slc.stop) - self.cur_tidx)
             elif shim.isscalar(axis_index):
-                Δks = [self.time.Index(shim.eval(getattr(axis_index, 'plain', axis_index), max_cost=None)) - self.cur_tidx]
+                Δks = [self.time.Index(shim.eval(axis_index, max_cost=None)) - self.cur_tidx]
             else:
                 assert shim.isarray(axis_index)
                 Δks = self.time.Index(shim.eval(axis_index, max_cost=None)) - self.cur_tidx
@@ -3676,7 +3675,7 @@ class Series(ConvolveMixin, History):
             if shim.graph.is_computable(value.shape):
                 try:
                     assert (shim.eval(value.shape[0], max_cost=50)
-                            == shim.eval(getattr(tidx.stop, 'plain', tidx.stop)) - shim.eval(getattr(tidx.start, 'plain', tidx.start)))
+                            == shim.eval(tidx.stop) - shim.eval(tidx.start))
                     # Calling `eval` on just start or stop makes better use of
                     # its compilation cache.
                 except TooCostly:
@@ -3693,7 +3692,7 @@ class Series(ConvolveMixin, History):
         # Ensure that we don't break causal assumption by updating more than
         # one step into the future.
         try:
-            assert (shim.eval(getattr(earliestidx, 'plain', earliestidx), max_cost=30)
+            assert (shim.eval(earliestidx, max_cost=30)
                     <= self.cur_tidx + self._latest_tap + 1)
                     # <= shim.eval(self._sym_tidx, max_cost=30) + 1)
         except TooCostly:
@@ -3737,7 +3736,7 @@ class Series(ConvolveMixin, History):
                 # 2 : There are symbolic dependencies => update just the
                 # _taps dictionary
                 if shim.isscalar(tidx):
-                    Δk = self.time.Index(shim.eval(getattr(tidx, 'plain', tidx), max_cost=None)) - self.cur_tidx
+                    Δk = self.time.Index(shim.eval(tidx, max_cost=None)) - self.cur_tidx
                     if Δk in self._taps:
                         raise RuntimeError("Attempted to update Series History "
                                            f"twice at tap {Δk}.")

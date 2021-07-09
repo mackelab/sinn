@@ -76,6 +76,7 @@ import abc
 from abc import abstractmethod
 from enum import Enum, auto
 from collections import namedtuple
+from copy import copy
 import inspect
 import numbers
 import numpy as np
@@ -87,9 +88,10 @@ from typing import Callable, Optional, Any, Union, Type, ClassVar
 from mackelab_toolbox.typing import (
     Range, Sequence, Number, Integral, Real, NPValue, Array, FloatX, AnyUnitType)
 from pydantic import (
-    validator, root_validator, BaseModel, ValidationError, Field)
+    validator, root_validator, BaseModel, ValidationError, Field, PrivateAttr)
 
 import theano_shim as shim
+import theano_shim.graph_theano
 
 from mackelab_toolbox.utils import (
     comparedicts, int_if_close, rgetattr, Singleton, flatten)
@@ -107,6 +109,13 @@ import sinn
 # because a lot of things can be equal to 1.
 UnitlessT = mtb.units.UnitlessT
 unitless = mtb.units.unitless
+
+_instance_registry = {}
+    # Used to avoid creating duplicate Axis instances when unpickling
+    # FIXME: Currently this works best within the same process. If a new process
+    #   is started, we may get one duplicate (the Axis created on script
+    #   execution and the unpickled Axis)
+    #   (If this is changed, change also the comment under Axis' _pickle_key annotation)
 
 # Unit conversion methods; one `check` and one `convert` method are attached
 # to the the Axis object by `set_unit_methods`
@@ -221,6 +230,11 @@ class Axis(BaseModel, abc.ABC):
     # class Parameters(ParameterSpec):
     #     schema = {'label', 'unit', 'unit_label', 'transformed', 'transform',
     #               '_min', '_max'}
+    _pickle_key: Optional[int]=PrivateAttr(None)
+        # FIXME: Pickle key works best within the same process. If a new process
+        #   is started, we may get one duplicate (the Axis created on
+        #   script execution and the unpickled Axis)
+    _skip_init: bool=PrivateAttr(False)
 
     @property
     @abstractmethod          # Derived class would set this as a normal
@@ -240,7 +254,7 @@ class Axis(BaseModel, abc.ABC):
     max_      : Optional[Number] = Field(None, alias='max')
     unit      : Union[AnyUnitType] = unitless
     unit_label: Optional[str]
-
+    
     class Config:
         allow_population_by_field_name = True  # More reliable deserialization
         json_encoders = {**mtb.typing.json_encoders,
@@ -248,8 +262,28 @@ class Axis(BaseModel, abc.ABC):
 
     # ----------------
     # Validators and initializer
+    
+    def __new__(cls, *, pickle_key=None, **kwargs):
+        # Don't unpickle duplicate instances
+        global _instance_registry
+        if pickle_key in _instance_registry:
+            obj = _instance_registry[pickle_key]
+            obj._skip_init = True
+        else:
+            new = super().__new__
+            if new is object.__new__:
+                obj = new(cls)
+            else:
+                obj = new(**kwargs)
+            if pickle_key is None:
+                pickle_key = id(obj)
+            _instance_registry[pickle_key] = obj
+        return obj
 
-    def __init__(self, *, _transformed_axis=None, **kwargs):
+    def __init__(self, *, _transformed_axis=None, pickle_key=None, **kwargs):
+        if getattr(self, '_skip_init', False):
+            del self._skip_init
+            return
         if _transformed_axis is not None:
             if 'transform' in kwargs:
                 raise ValueError(
@@ -259,7 +293,11 @@ class Axis(BaseModel, abc.ABC):
                     "internal use by the `Axis` class.")
             object.__setattr__(self, '_transformed', _transformed_axis)
             kwargs['transform'] = _transformed_axis.transform.inverse
-        super().__init__(**kwargs)
+        super().__init__(**kwargs, _pickle_key=pickle_key)
+        # PrivateAttr must be set after __init__
+        if pickle_key is None:
+            pickle_key = id(self)
+        self._pickle_key = pickle_key
         self.set_unit_methods(self.unit)
 
     def copy(self, *args, **kwargs):
@@ -324,6 +362,35 @@ class Axis(BaseModel, abc.ABC):
                 assert unit == 1
             unit = unitless
         return unit
+
+    # ------------
+    # Pickling
+    # BaseModel already supports pickling. We just add the query to the global
+    # _instance_registry, to ensure the same Axis is not created multiple times
+    # (e.g. when unpickling multiple indices from the same Axis).
+    
+    def __getnewargs_ex__(self):
+        return (), {'pickle_key':self._pickle_key}
+    
+    # Adapted from Pydantic's __getstate__/__setstate__ to add _skip_init
+    # https://github.com/samuelcolvin/pydantic/issues/1116
+    def __getstate__(self) -> 'DictAny':
+        return {'__dict__': self.__dict__, '__fields_set__': self.__fields_set__}
+
+    def __setstate__(self, state: 'DictAny') -> None:
+        if getattr(self, '_skip_init', False):
+            del self._skip_init
+            return
+        object.__setattr__(self, '__dict__', state['__dict__'])
+        object.__setattr__(self, '__fields_set__', state['__fields_set__'])
+        # Recreate a new Index and attach it to the Axis
+        if "stops" in self.__dict__:
+            Index = get_AxisIndex(self, dtype=self.index_nptype)
+            Index.attach_axis(self)
+            self.stops.Index = Index
+            # Recast padding to index delta type (c.f. SequenceMapping.copy)
+            self.stops.pad_left = self.stops.cast_padding(self.stops.pad_left, {'Index': Index})
+            self.stops.pad_right = self.stops.cast_padding(self.stops.pad_right, {'Index': Index})
 
     # ------------
     # __str__ and __repr__ methods
@@ -428,7 +495,7 @@ class Axis(BaseModel, abc.ABC):
     def is_compatible_index(self, value):
         """
         Return True if `value` is an integral type, not an AxisIndex attached
-        to another axis, and safely castable to this axis' idx_dtype.
+        to another axis, and safely castable to this axis' idx_nptype.
 
         .. Note:: There is currently an asymmetry with `is_compatible_value`,
            because indexing with lists of indices is supported, but not
@@ -550,8 +617,8 @@ class Axes(tuple):
 # Each axis instance defines its own Index type, constructed with
 # `get_AxisIndex` which ensures that arithmetic operations are only performed
 # between indices of the same axis.
-# Specialized conversions allow operations between indices of two RegularAxes,
-# as long as those indexes are commensurate.
+# Specialized conversions allow operations between indices of two RangeAxes,
+# as long as their indexes are commensurate.
 ##########################
 
 class IndexTypeOperationError(TypeError):
@@ -701,7 +768,7 @@ class AxisIndexMeta(abc.ABCMeta):
         if not shim.istype(index, 'int'):
             raise TypeError("`index` must be in integer.")
         if shim.graph.is_computable(index):
-            evalidx = shim.eval(getattr(index, 'plain', index), max_cost=max_cost)
+            evalidx = shim.eval(index, max_cost=max_cost)
             if np.any(evalidx < imin) or np.any(evalidx > imax):
                 raise IndexError("Provided index `{}` exceeds the mapping's "
                                  "range.".format(index))
@@ -803,7 +870,34 @@ class AxisIndexMeta(abc.ABCMeta):
                        and np.can_cast(T, cls.dtype)) # plain ints
                    for T in idx_types)
 
+# Patch the Elemwise Op to make Theano expressions with SymbolicAxisIndex pickleable
+# Since AxisIndex types are created dynamically (one type per Axis instance), they
+# can't be pickled via their name. Instead we pickle the axis (Axis' own
+# pickling function use _instance_registry to ensure no duplicate instances)
+# and when unpickling, we retrieve the correct AxisIndex type from the Axis.
+class ElemwiseWrapper(shim.graph_theano.ElemwiseWrapper):
+    def __getstate__(self):
+        d = super().__getstate__()
+        # Dynamic variable types are not pickleable
+        vt = d['VarType']
+        if 'AxisIndex' in vt.__name__:
+            d = copy(d)
+            symbolic = "symbolic" in vt.__name__.lower()
+            delta = "delta" in vt.__name__.lower()
+            d['VarType'] = ("AxisIndex", vt.axis, symbolic, delta)
+        return d
+        
+    def __setstate__(self, state):
+        vt = state['VarType']
+        if isinstance(vt, tuple) and len(vt) and vt[0] == "AxisIndex":
+            vt = vt[1].get_SpecAxisIndex(vt[2], vt[3])
+            state['VarType'] = vt
+        super().__setstate__(state)
+# Replace the Elemwise Op by the patched version
+shim.graph_theano.ElemwiseWrapper = ElemwiseWrapper
+
 class SpecAxisIndexMeta(type):
+    # "Spec" for "Specific": Either Numeric or Symbolic
     """
     Axis index type. Will only accept to instantiate values within
     the index bounds (plus the special values ``imin-1``, ``imax+1``,
@@ -855,8 +949,9 @@ class SpecAxisIndexMeta(type):
             'get_abs_rel_args': metacls._instance_get_abs_rel_args,
             '__new__'         : metacls.__clsnew__,
             '__init__'        : metacls.__clsinit__,
+            '__reduce__'      : metacls._instance___reduce__,
             '__eq__'          : metacls._instance___eq__,
-            '__ne__'         : metacls._instance___ne__,
+            '__ne__'          : metacls._instance___ne__,
             '__add__'         : metacls._instance___add__,
             '__sub__'         : metacls._instance___sub__,
             '__mul__'         : metacls._instance___mul__,
@@ -972,7 +1067,42 @@ class SpecAxisIndexMeta(type):
         else:
             base.__init__(self, x, *args, **kwargs)
 
-    #Instance: @property
+    # ----------------
+    # Pickling of the SpecAxisIndex types
+    # NB: Need to use __reduce__ because SpecAxisIndex types are dynamically created,
+    #     four for each axis (Numeric/Symbolic x Absolute/Delta). Pickle needs
+    #     to be able to find the type's name in a global variable, which is not
+    #     possible for dynamically created types.
+            
+    # In order to work as Theano variables, AxisIndex types must be picklable
+    # (otherwise Theano can't cache the compiled functions)
+    # Since an AxisIndex must be tied to an Axis, it can't be pickled on its own.
+    # So instead we pickle the axis, and when unpickling we recover its Index.
+    # We keep a global registry of depickled Axes, to ensure the same Axis is
+    # not created multiple times (e.g. when unpickling multiple indices from
+    # the same Axis).
+    # NB: This works in tandem with the patched ElemwiseWrapper class above
+    
+    @staticmethod
+    def unpickle_axisindex(axis: Axis, symbolic: bool, delta: bool):
+        Index = axis.get_SpecAxisIndex(symbolic, delta)
+        return object.__new__(Index)
+        
+    # Instance method
+    def _instance___reduce__(self):
+        # HACK: Parsing the class name is fragile
+        symbolic = "symbolic" in type(self).__name__.lower()
+        delta = "delta" in type(self).__name__.lower()
+        return (SpecAxisIndexMeta.unpickle_axisindex,
+                (self.axis, symbolic, delta),
+                self.__getstate__())
+    
+    # ------------------
+    # Instance methods & attributes
+    # Whether these become properties, classmethods, etc. is set by __new__
+    # and marked as a comment
+    
+    # Property
     @staticmethod
     def _instance_plain(self):
         """
@@ -990,7 +1120,7 @@ class SpecAxisIndexMeta(type):
                 pass
         return self._plain
 
-    #Instance: @property
+    # Property
     @staticmethod
     def _instance_data_index(self):
         """
@@ -1019,7 +1149,7 @@ class SpecAxisIndexMeta(type):
                 pass
         return self._data_index
 
-    #Instance: @property
+    # Property
     @staticmethod
     def _instance_in_bounds(self):
         """Return True iff the index value is within the axis bounds."""
@@ -1171,16 +1301,31 @@ class SpecAxisIndexMeta(type):
     # Instance method
     @staticmethod
     def _instance___eq__(self, other):
-        if shim.graph.pure_symbolic_inputs([other]):
-            # We know that pure symbolics can't be made into indices, so this
-            # must return False. The eval checks in `make_index` would throw
-            # MissingInputError
+        if self is other:
+            # Short circuit unnecessary casts to index or plain
+            return True
+        elif shim.issymbolic(self):
+            # No point in casting to index type if `self` is symbolic: that
+            # would just create a new variable which can never be equal to self.
+            return shim.graph.GraphExpression.__eq__(self, other)
+                # super() struggles to resolve parent in these dynamically created classes
+        elif shim.issymbolic(other):
+            # Since `self` is not symbolic, the equality can't be true.
             return False
         try:
             other = self.make_index(other)
         except (IndexTypeOperationError, ValueError, TypeError):
             return False
         else:
+            # NB: It's important to avoid calling '.plain' on symbolic values,
+            #     because the Theano optimizer has logic that roughly looks like:
+            #     while True:
+            #         transformed = transform(expr)  # Nothing to optimize => return expr
+            #         if transformed == expr:
+            #             break
+            #     If __eq__ creates a new node within itself, the equality can never be satisfied
+            #     This is half of the reason we don't use this branch for
+            #     symbolic indices
             return self.plain == other.plain
     # Instance method
     @staticmethod
@@ -1237,10 +1382,15 @@ class SpecAxisIndexMeta(type):
             return self.plain / other
         else:
             div = self.plain / other
-            if not div.is_integer():
-                raise ValueError(
-                    "Index division must return an integer.")
-            return self.nptype(div)
+            if hasattr(div, 'is_integer'):
+                if not div.is_integer():
+                    raise ValueError(
+                        "Index division must return an integer.")
+            elif shim.istype(div, 'float') and shim.issymbolic(div):
+                warn("Division of an AxisIndex returned a symbolic float "
+                     "expression; we assume the result is an integer but cannot "
+                     "check this. Performing an unsafe cast to an integer.")
+            return shim.cast(div, self.nptype, same_kind=False)
 
 class NumericAxisIndexMeta(SpecAxisIndexMeta):
     def __new__(metacls, name, bases, namespace, axis, nptype=None):
@@ -1305,6 +1455,7 @@ class SymbolicAxisIndexMeta(SpecAxisIndexMeta, shim.graph.GraphExpressionMeta):
 
         return T
 
+    # Created cls will inherit from symbtype, i.e. shim.graph.GraphExpression
     @staticmethod
     def __clsinit__(self, expr_or_type, owner=None, index=None, name=None):
         """
@@ -1312,6 +1463,11 @@ class SymbolicAxisIndexMeta(SpecAxisIndexMeta, shim.graph.GraphExpressionMeta):
         expression. We check that `expr_or_type` is actually symbolic, and that
         its dtype is consistent with the axis' index type.
         """
+        if getattr(self, '_skip_init', False):
+            # '_skip_init' is a flag added by shim.graph.GraphExpression to
+            # indicate that `expr_or_type` is already an expr of the desired type
+            # SpecAxisIndexMeta.__clsinit__(self, expr_or_type, owner, index, name)
+            return
         if not isinstance(expr_or_type, shim.config.SymbolicExpressionType):
             # Assume this is the usual symbolic initializer, and just forward
             # arguments
@@ -1320,6 +1476,8 @@ class SymbolicAxisIndexMeta(SpecAxisIndexMeta, shim.graph.GraphExpressionMeta):
             if shim.config.compute_test_value != 'off':
                 self.tag.test_value = shim.cast(1, self.dtype)
         else:
+            # `expr_or_type` is a variable
+            # Ensure it matches nptype, add suffix to its name and propagate the test value
             x = expr_or_type
             assert all(a is None for a in (owner, index))
             if not shim.graph.is_computable(x):
@@ -1375,21 +1533,20 @@ class SymbolicAxisIndexMeta(SpecAxisIndexMeta, shim.graph.GraphExpressionMeta):
         """
         Remove the 'index' identity by returning the underlying standard
         Theano variable.
+        Note that this *adds* a node to the computational graph.
         """
-        # NB: It's important that the `self` node not be included in the
-        #     returned graph: our custom SymbolicAxisIndex subclass of Theano
-        #     expressions isn't 100% compatible with all graph manipulations.
-        #     In particular, it doesn't work well with `clone`, which leads to
-        #     failures when constructiong `scan` functions.
-        # Since a SymbolicAxisIndex is just an identity op on a value, all we
-        # we need to do is go one up the computational graph one step
-        assert len(self.owner.inputs) == 1
-        res = self.owner.inputs[0]
-        if isinstance(res, SymbolicAbstractAxisIndex):
-            # Due to the suboptimal implementation of TheanoGraphExpression, we
-            # can get nested Symbolic Indexes
-            res = res.plain
-        return res
+        # Essentially the inverse of what shim.graph.GraphExpression does
+        # We cache the return value so that symbolic values are always the same
+        # See also SpecAxisIndexMeta._instance_plain
+        if not hasattr(self, '_plain'):
+            theano = shim.gettheano()
+            self._plain = theano.tensor.Elemwise(theano.scalar.basic.identity)(self)
+        else:
+            try:
+                assert shim.eval(self._plain) == shim.eval(self.astype(self.dtype))
+            except shim.graph.TooCostly:
+                pass
+        return self._plain
 
 # TODO: Replace this function by the metaclass for AxisIndex
 def get_AxisIndex(axis, dtype=None):
@@ -1587,11 +1744,29 @@ class SequenceMapping(BaseModel):
         for pad_side in ('pad_left', 'pad_right'):
             pad = d[pad_side]
             if isinstance(pad, AbstractAxisIndexDelta):
-                d[pad_side] = pad.astype(pad.nptype)
+                d[pad_side] = pad.plain
         return d
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+
+    # ------------
+    # Pickling
+    # BaseModel already supports pickling. We customize the functions to
+    # exclude the non-pickleable AxisIndex, and to check use the global
+    # _instance_registry, to ensure the same SequnceMapping is not created multiple times
+    # (e.g. when unpickling multiple indices from the same Axis).
+    
+    # Adapted from Pydantic's __getstate__/__setstate__ to exclude Index and add _skip_init
+    # https://github.com/samuelcolvin/pydantic/issues/1116
+    def __getstate__(self) -> 'DictAny':
+        return {'__dict__': self.dict(), '__fields_set__': self.__fields_set__}
+
+    def __setstate__(self, state: 'DictAny') -> None:
+        object.__setattr__(self, '__dict__', state['__dict__'])
+        object.__setattr__(self, '__fields_set__', state['__fields_set__'])
+        
+    # -------------
 
     def copy(self, *args, **kwargs):
         """
@@ -1662,14 +1837,8 @@ class SequenceMapping(BaseModel):
             raise ValueError("`index_map` is not monotone increasing.")
         return m
 
-    @validator('pad_left', always=True)
-    def cast_pad_left(cls, v, values):
-        Index = values.get('Index', None)
-        if Index is not None:
-            v = Index.Delta(v)
-        return v
-    @validator('pad_right', always=True)
-    def cast_pad_right(cls, v, values):
+    @validator('pad_left', 'pad_right', always=True)
+    def cast_padding(cls, v, values):
         Index = values.get('Index', None)
         if Index is not None:
             v = Index.Delta(v)
@@ -1832,7 +2001,7 @@ class SequenceMapping(BaseModel):
         efficient.
 
         .. Note:: This corresponds to the index in the padded array. Also,
-           If the `index_range` starts at something else than 0, this will not
+           if the `index_range` starts at something else than 0, this will not
            be the corresponding padding-shifted 'index' in `index_range`.
            (One reason why starting `index_range` at 0 is recommended.)
 
@@ -2491,8 +2660,12 @@ class RangeMapping(SequenceMapping):
         res = self.index(value, allow_rounding=False)
         if isinstance(res, slice):
             return slice(res.start.data_index, res.stop.data_index, res.step)
+        elif shim.isscalar(res):
+            return res.data_index
         elif shim.isarray(res):
             # Copied from AxisIndexDelta.data_index
+            # NB: At least currently arrays of AxisIndexes are not possible, so
+            #     if `res` is an array, it is necessarily of 'plain' type.
             imin = self.index_range[0]
             restype = str(self.Index.dtype)
             return (res if imin == 0 else res - imin).astype(restype)
@@ -2500,8 +2673,6 @@ class RangeMapping(SequenceMapping):
             return [r.data_index for r in res]
         elif isinstance(res, tuple):
             return tuple(r.data_index for r in res)
-        else:
-            return res.data_index
 
     def index(self, value, allow_rounding=False):
         """
@@ -2927,6 +3098,26 @@ class DiscretizedAxis(Axis):
             else:
                 rbracket = ""
             return f"{s}, len: {nstops}{rbracket}"
+            
+    # TODO: Once `get_AxisIndex` is moved/renamed, rename to `get_AxisIndex`.
+    def get_SpecAxisIndex(self, symbolic: bool, delta: bool):
+        """
+        Return one of the four specific AxisIndex types attached to this Axis:
+        - `NumericAxisIndex`
+        - `NumericAxisIndexDelta`
+        - `SymbolicAxisIndex`
+        - `SymbolicAxisIndexDelta`
+        """
+        try:
+            Index = self.Index
+        except AttributeError:
+            # Instead of raising, should we just call get_AxisIndex ?
+            raise AttributeError(f"The axis {self} does not yet define an AxisIndex. "
+                                 "It might not yet be fully initialized.")
+        Index = Index.Symbolic if symbolic else Index.Numeric
+        if delta:
+            Index = Index.Delta
+        return Index
         
     def __eq__(self, other):
         # We try to short-circuit comparison by starting with cheap tests
@@ -3533,8 +3724,8 @@ class RangeAxis(MapAxis):
                 max = mtb.units.unit_convert(max, unit).magnitude
                 step = mtb.units.unit_convert(step, unit).magnitude
             kwargs['min'] = min; kwargs['max'] = max; kwargs['step'] = step
-            idx_dtype = determine_index_nptype(L)
-            Index = get_AxisIndex(None, dtype=idx_dtype)
+            idx_nptype = determine_index_nptype(L)
+            Index = get_AxisIndex(None, dtype=idx_nptype)
             stops = RangeMapping(index_range=range(0, L),
                                  i0=0, x0=min, step=step,
                                  index_type=Index)
@@ -3552,8 +3743,8 @@ class RangeAxis(MapAxis):
                 index_range = Range.validate(index_range)
             assert isinstance(index_range, range)
             L = len(index_range)
-            idx_dtype = determine_index_nptype(L)
-            Index = get_AxisIndex(None, dtype=idx_dtype)
+            idx_nptype = determine_index_nptype(L)
+            Index = get_AxisIndex(None, dtype=idx_nptype)
             stops = RangeMapping(**stops, index_type=Index)
             kwargs['stops'] = stops
             super().__init__(**kwargs)
