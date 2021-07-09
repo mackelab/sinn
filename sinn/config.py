@@ -1,6 +1,7 @@
 import logging
 import numpy as np
 import packaging
+from enum import IntEnum
 from typing import TypeVar, Union
 
 import theano_shim as shim
@@ -12,11 +13,14 @@ logger = logging.getLogger('sinn.config')
 integration_precision = 1
 truncation_ratio = 0.001
 
-debug_level = 2
-   # 0 - Turn off all optional tests and assertions
-   # 1 - Basic tests, which add minimal execution time
-   # 2 - Include tests using eval on Theano variables. This will slow execution
-   # 3 - Asserts are added to the Theano graph. This may prevent certain Theano optimizations
+DebugLevels = IntEnum("DebugLevels", "NONE BASIC TESTS GRAPH_ASSERTS GRAPH_PRINTS")
+debug_level = DebugLevels.TESTS
+   # 1 - Turn off all optional tests and assertions
+   # 2 - Basic tests, which add minimal execution time
+   # 3 - Include tests using eval on Theano variables. This will slow execution
+   # 4 - Asserts are added to the Theano graph. This may prevent certain Theano optimizations
+   # 5 - Print statements are added to the Theano graph, including within a scan loop.
+   #     At this level, it is recommended to integrate models only a few steps.
    # NOTE: The debug_level was forgotten, and only a few functions yet use it.
 
 # max_eval_cost = 20

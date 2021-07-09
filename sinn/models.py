@@ -112,10 +112,10 @@ def get_model(modelname, *args, **kwargs):
 #     Walk a nested dict structure, using a generator.
 #      Values associated to keys matching one of the values in `terminate` are not
 #      recursed into, even if they are dictionaries.
-# 
+#
 #     Composite keys are created by joining each key to the key of the parent dict
 #     using `separator`.
-# 
+#
 #     .. Note:: Copied from the parameters package (parameters.__init__.py), to
 #        add the `terminate` argument.
 #     """
@@ -726,7 +726,7 @@ def connect_submodel_validator(submodel_name):
     When a history is part of multiple submodels, it is only serialized once.
     This validator adds histories back into the dictionaries for submodels
     where they are missing.
-    
+
     Demonstrative usage::
     >>> class A(Model):
           ha: History
@@ -737,7 +737,7 @@ def connect_submodel_validator(submodel_name):
           b: B
           _connect_submodel_a = connect_submodel_validator('a')
           _connect_submodel_b = connect_submodel_validator('b')
-          
+
     Actual usage: The Model metaclass adds these validators automatically,
       so users do not need to do so in their models.
     """
@@ -983,7 +983,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         obj = super().dict(*args, exclude=exclude, **kwargs)
         # Add the model name
         obj['ModelClass'] = mtb.iotools.find_registered_typename(self)
-        
+
         return obj
 
     @classmethod
@@ -998,17 +998,17 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         """
         Keep submodel parameters in sync with the container model.
         This method has no effect if there are no submodels.
-        
+
         This method has the following effect (`submodel.params` is the
         parameter set of the submodel, and `model.subparams` is the
         corresponding subset of parameters of the container model)::
-        
+
             params_values = submodel.Parameters(model.subparams).get_values()
             submodel.params.set_values(param_values)
             model.subparams = submodel.params
-        
+
         The reasoning is as follows:
-        
+
         - We normally set parameter values with `model.params.set_values(value
           dict)`. The values then need to be propagated to the matching
           parameters of submodels.
@@ -1033,7 +1033,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 # Update the variable name to include the parent model.
                 # (with a guard in case we run this twice)
                 if hasattr(θ, 'name') and submodelname not in θ.name:
-                    # (There are ways the test above can fail (e.g. if the 
+                    # (There are ways the test above can fail (e.g. if the
                     # parameter's name is the same as the submodel's), but
                     # those seem quite unlikely.
                     θ.name = submodelname + "." + θ.name
@@ -1048,7 +1048,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         in the source code.
         """
         self.set_submodel_params()
-        
+
         if update_functions is not None:
             # 1) update_functions should be a dict, and will override update function
             # defs from the model declaration.
@@ -1133,14 +1133,14 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         #     # object.__setattr__(self, 'batch_size_var',
         #     #                    shim.shared(size, name='batch_size'))
         #     # #     # Must be large enough so that test_value slices are not empty
-        
+
         # Set the value of `connections` so that it reflects actual connections
         # TODO: Put in a root_validator (requires `nested_models` which works as class method)
         already_seen = {}  # Keeps track of histories that have been seen
         conn_objs = {}     # Connection pairs for objects in different submodels
                            # Order: lower model.obj name : upper model.obj name,
                            # where the "lower" model is the one which can be instantiated first
-        # NB: The order in which we iterate over nested_models is set by  
+        # NB: The order in which we iterate over nested_models is set by
         #     the order in which submodels are defined in the class
         for subnm, submodel in self.nested_models.items():
             for objnm, obj in ChainMap(submodel.nested_histories,
@@ -1511,7 +1511,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                     and inp not in rng_inputs):
                     rng_inputs.append(inp)
         return rng_inputs
-        
+
     @property
     def nonnested_rngs(self) -> Dict[str, mtb.typing.AnyRNG]:
         d = {}
@@ -1640,7 +1640,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         the model. This is only defined if all histories are synchronized.
         (*Locked* histories need not be synchronized, but must be computed at
         least as far as unlocked histories.)
-        
+
         Special case: if all listed histories are locked (or `histories` is
         empty), then a tidx corresponding to `self.t0idx` is returned.
         Rationale: the time point of locked histories is meaningless, since
@@ -1661,7 +1661,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
            This does not return an AxisIndex, so always wrap this variable
            with [model].time.Index or [model].time.Index.Delta before using
            it to index into a history.
-           
+
         .. Warning::
            Each computational graph should only involve calls to `get_num_tidx`
            with the same list of histories. Different lists of histories
@@ -2037,7 +2037,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         """
         shim.reset_updates()
 
-        for hist in self.unlocked_histories:
+        for hist in self.history_set:
             hist.theano_reset()
         for kernel in self.kernel_list:
             kernel.theano_reset()
@@ -2107,7 +2107,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 rng.state_updates = rng.state_updates[len(stashed_state_updates):]
                     # NB: `reseed_rng` has changed the state updates, so we can't
                     #     just reuse cur_state_updates.
-            
+
         # The code below did not require stashing RNG updates, but only works
         # with RandomStream (MRG updates cannot as easily be identified in
         # the symbolic updates, because they appear as complex expressions
@@ -2383,7 +2383,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         #         "({}), but there are none in the update dictionary "
         #         "(`shim.get_updates()`)".forma(hlist))
         return no_updates
-        
+
     def _get_cache_key(self, histories=()):
         # The compiled function depends both on the histories we want to update,
         # and on which histories are locked.
@@ -2549,7 +2549,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
            `updates` dictionary. Moreover, these updates must depend on at least
            one history time index which can be related to the model's time
            index.
-           
+
         .. Remark:: `update` dependencies across time steps are *integrable* but
            not *differentiable*. Example: since histories store their data as a
            shared variable `_num_data`, `updates` could in theory contain a pair
@@ -2635,16 +2635,16 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         #     assuming that histories are synchronized (i.e. that all unlocked
         #     state histories have the same cur_tidx). This is checked when
         #     `num_tidx` is retrieved.
-        anchor_tidx = self.num_tidx
-            # `get_num_tidx` asserts that histories are synchronized
+        anchor_tidx = self.num_tidx  # NB: `<>.num_tidx` asserts that histories are synchronized
+        tidx_vars = [h._num_tidx for h in self.unlocked_histories]  # The index variables to replace by anchor_tidx
         if not self.time.Index(anchor_tidx+1).in_bounds:
             raise RuntimeError(
                 "In order to compute a scan function, the model must "
                 "have at least one uncomputed time point.")
         # Build the substitution dictionary to convert all history time indices
         # to that of the model. This requires that histories be synchronized.
-        anchor_tidx_typed = self.time.Index(anchor_tidx)
-        tidxsubs = {h._num_tidx: anchor_tidx_typed.convert(h.time).plain
+        anchor_tidx_typed = self.time.Index(anchor_tidx)  # Do only once to keep graph as clean as possible
+        tidxsubs = {h._num_tidx: anchor_tidx_typed.convert(h.time)
                     for h in self.unlocked_histories}
 
         # Now we recover the global updates, and replace the multiple history
@@ -2670,17 +2670,16 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # We only need the backward taps of histories which also have forward taps:
         # since the others don't change during iteration, we can keep indexing
         # directly into their `_num_data`.
-        
+
         # Create the list of output variables for the scan step
-        # Negative tap variables (which appear within the graph of positive 
+        # Negative tap variables (which appear within the graph of positive
         # tap variables) are substituted in by the `onestep` function below
         # `clone` replaces time index vars by expressions depending on the anchor
         # outputs = [shim.graph.clone(h[h._num_tidx+1], replace=tidxsubs)
-        outputs = [shim.graph.clone(h._taps[h.time.Index.Delta(1)], replace=tidxsubs)
-                   for h in output_hists]
+        outputs = [h._taps[h.time.Index.Delta(1)] for h in output_hists]
         for o, h in zip(outputs, output_hists):
-            o.name = f"{h.name}[k] (outside scan)"  # Corresponding var inside scan is named "{h.name}[k]"
-        
+            o.name = f"{h.name}[k] (anchored)"  # Corresponding var inside scan is named "{h.name}[k]"
+
         # Construct the outputs info from the negative taps.
         # NB: Initial data must be contiguous, even if negative taps are not,
         #     so taps [-3, -1] still require [k-3, k-2, k-1, k], where k is the
@@ -2699,7 +2698,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         for h in output_hists:
             negtaps = [tapk for tapk in sorted(h._taps) if tapk <= 0]
             if len(negtaps) == 0:
-                # History is not needed to evaluate any graph. 
+                # History is not needed to evaluate any graph.
                 # In theory there should be no need for an init val and the
                 # line below should be the most appropriate
                 # > outputs_info.append({'taps': None})
@@ -2712,7 +2711,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 tap_names.append(f"{h.name}[k-1]")
                 outputs_info.append({'initial': init_val, 'taps': [-1]})
             else:
-                scantaps = [k.plain-1 for k in negtaps]
+                scantaps = [k-1 for k in negtaps]
                 init_length = -min(scantaps)
                 assert init_length > 0, "create scan -> output_info -> init length must be positive"
                 # NB: This will add any intermediate tap to the history's _taps;
@@ -2720,8 +2719,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 # NB: We take care here that the instances in output_taps_replace
                 #     are the same ones as in init_vals
                 # init_vals = [shim.graph.clone(h[h._num_tidx+Δk], replace=tidxsubs)
-                init_vals = [shim.graph.clone(h._taps[h.time.Index.Delta(Δk)], replace=tidxsubs)
-                    # NB: The use of _taps[…] is temporary, to help detect bugs (almost always, all previous taps should already have been calculated)
+                init_vals = [h._taps[h.time.Index.Delta(Δk)]
+                    # NB: The use of _taps[…] is temporary, to help detect if a required tap is not already calculed (almost always, all previous taps should already have been calculated)
                              for Δk in range(-init_length+1, 1)]
                 if scantaps == [-1]:
                     # To avoid requiring extra dimensions when no taps are used,
@@ -2731,72 +2730,128 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 else:
                     init_val = shim.stack(init_vals)
                     init_val.name = f"{h.name}[scan init]"
-                # init_val = init_vals  # DEBUG
                 init_tap_idx = [k+init_length for k in scantaps]
                 assert init_tap_idx[0] == 0, "Bug in index arithmetic for scan outputs_info"
                 output_taps_replace.extend([init_vals[Δk] for Δk in init_tap_idx])
-                # Add names for debugability
-                for iv, Δk in zip(init_vals, scantaps):
-                    iv.name = f"{h.name}[k-{abs(Δk)}] (outside scan)"
+                # Only substitute anchor tidx until after we've added to output_taps_replace,
+                # so that scan can still sub the tap vars
+                # init_vals = [shim.graph.clone(v, replace=tidxsubs) for v in init_vals]
+                # # Add names for debugability
+                # for iv, Δk in zip(init_vals, scantaps):
+                #     iv.name = f"{h.name}[k-{abs(Δk)}] (anchored)"
                 tap_names.extend(f"{h.name}[k-{abs(Δk)}]" for Δk in scantaps)
                 # Add to outputs_info
-                outputs_info.append({'initial': init_val, 'taps': scantaps})
-        
-        # Replace all time indices in updates by expressions depending on anchor
-        updates = {k: shim.graph.clone(g, replace=tidxsubs)
-                   for k,g in updates.items()}
+                outputs_info.append(
+                    {'initial': shim.graph.clone(shim.graph.clone(init_val,
+                        replace=tidxsubs),  # All indices -> anchor_tidx
+                        replace={anchor_tidx: curtidx}),  # ancho_tidx -> symbolic index used in function
+                     'taps': scantaps})
+
+        # # Replace all time indices in updates by expressions depending on anchor
+        # updates = {k: shim.graph.clone(g, replace=tidxsubs)
+        #            for k,g in updates.items()}
         # Ensure that we actually do have a time dependence somewhere in the
         # graph we send to scan
-        all_exprs = chain(outputs, output_taps_replace, updates.values())    
-        if not set(shim.graph.symbolic_inputs(all_exprs)) & set([anchor_tidx]):
-                # & (set(h._num_tidx for h in self.unlocked_histories)
+        all_exprs = chain(outputs, output_taps_replace, updates.values())
+        if not set(shim.graph.symbolic_inputs(all_exprs)) & set(tidx_vars):
                 #    | set([anchor_tidx])) ):
             raise RuntimeError("The updates dictionary has no dependency on "
                                "any time index. Cannot build a scan graph.")
+        all_exprs = chain(outputs, output_taps_replace, updates.values())
+        # The test below could be used if anchor_tidx were a brand new variable, and not just self.num_tidx (which can be added by `accumulate`)
+        # assert not set(shim.graph.symbolic_inputs(all_exprs)) & set([anchor_tidx]), \
+        #     "The anchor_tidx must not be substituted into expressions before the scan step is constructed, and should not be used in expressions outside the `scan` (use the symbolic `curtidx` in the latter case)."
 
         # Grab the list of shared vars to pass as non_sequences
         # NB: Providing the list of shared variables is not required, but
         #    supposedly helps keep the graph cleaner and more efficient – which
         #    might be especially beneficial with complex history update functions.
         #    (https://theano-pymc.readthedocs.io/en/latest/library/scan.html?highlight=scan#using-shared-variables-gibbs-sampling)
-        #    I don't know how much of a difference this makes in practice, since 
+        #    I don't know how much of a difference this makes in practice, since
         #    I generally don't see a difference in the output of debug print.
         shared_vars_in_graph = [
             v for v in shim.graph.shared_inputs(updates.values())
             if v is not anchor_tidx]  # anchor_tidx is replaced inside onestep
         n_shared_vars = len(shared_vars_in_graph)
-            
+
         # Now we build the step function that will be passed to `scan`.
+        # NB: Keyword args are used to pass variables into onestep's local scope.
+        #    Although not strictly necessary, it's better form and avoids some
+        #    edge cases with scopes and function closures.
         def onestep(tidx, *args,
                     outputs=outputs, output_taps_replace=output_taps_replace,
                     updates=updates, output_hists=output_hists, tap_names=tap_names,
-                    n_shared_vars=n_shared_vars):
+                    tidxsubs=tidxsubs, n_shared_vars=n_shared_vars):
             assert len(args) == len(output_taps_replace) + n_shared_vars, \
                 "Unexpected number of scan arguments. Unpacking relies on alignment of `args`, and thus will almost certainly fail"
+            if config.debug_level >= config.DebugLevels.GRAPH_PRINTS:
+                tidx = shim.print(tidx, "tidx in scan")
             # Construct the replace dict to substitute the scan vars passed in *args
             output_taps = args[:len(output_taps_replace)]
             taps_replace_dict = {orig: new for orig, new
                                  in zip(output_taps_replace, output_taps)}
-            replace_dict = {anchor_tidx: tidx, **taps_replace_dict}
+            # Replace anchored `anchor_tidx` by the unanchored `tidx` in the tidx substitution dictionary
+            tidxsubs = {k: shim.graph.clone(v, replace={anchor_tidx: tidx})
+                        for k, v in tidxsubs.items()}
             # Construct the output by substituting the scan args
-            step_outputs = [shim.graph.clone(o, replace=replace_dict)
+            # NB: It's important to do the taps substitution before the tidx
+            #   substitutions, because once the tidcs are changed, the subgraphs
+            #   corresponding to taps no longer have the same identity.
+            step_outputs = [shim.graph.clone(shim.graph.clone(o, 
+                                replace=taps_replace_dict),
+                                replace=tidxsubs)  # Convert all hist anchors to expressions relative the unanchored tidx
                             for o in outputs]
             step_updates = OrderedDict(
-                (k, shim.graph.clone(g, replace=replace_dict))
-                for k,g in updates.items())
+                (k, shim.graph.clone(shim.graph.clone(g,
+                        replace=taps_replace_dict),
+                        replace=tidxsubs) )
+                for k, g in updates.items())
             # Add var names for easier debugging
             assert len(output_taps) == len(tap_names)
             for o, h in zip(step_outputs, output_hists):
                 o.name = f"{h.name}[k]"
             for o, tap_name in zip(output_taps, tap_names):
                 o.name = tap_name
+            # Assert that all tap variables appear in the final computational graphs
+            symbinputs = shim.graph.symbolic_inputs(step_outputs + list(step_updates.values()))
+            dummy_taps = [tap for orig_tap, tap in taps_replace_dict.items()
+                          if orig_tap.name and "[scan init, dummy]" in orig_tap.name]
+            missing_taps = [tap for tap in output_taps if tap not in symbinputs + dummy_taps]
+            spurious_taps = [tap for tap in dummy_taps if tap in symbinputs]
+            if missing_taps:
+                raise RuntimeError(
+                    "Model.convert_point_updates_to_scan.onestep: The "
+                    "following taps don't appear in the scan's iteration:\n"
+                    f"{missing_taps}\nMost likely a graph substitution failed; "
+                    "this could be a bug in sinn.Model.")
+            if spurious_taps:
+                raise RuntimeError(
+                    "Model.convert_point_updates_to_scan.onestep: The "
+                    "following dummy taps were created within convert_point_updates_to_scan() "
+                    "but somehow appeared in the scan's iteration:\n"
+                    f"{spurious_taps}\nThis is almost certainly a bug in sinn.Model.")
+            # Assert that for output histories (those with taps, and thus those
+            # which a) slide forward and b) have unfilled histories), only the
+            # taps appear in the computational graphs.
+            unsubstituted_hists = [h for h in output_hists if h._num_data in symbinputs]
+            if unsubstituted_hists:
+                raise RuntimeError(
+                    "Model.convert_point_updates_to_scan.onestep: unlocked "
+                    "unlocked histories are integrated foward by scan; they "
+                    "should only appear in scan's computational graphs as taps. "
+                    "Yet the ones below also appear through their underlying "
+                    "shared variable `_num_data`; since `_num_data` is only "
+                    "filled _after_ the scan, this strongly suggests that "
+                    "something went wrong when we construct the scan graph.")
             # Return outputs and updates
+            if config.debug_level >= config.DebugLevels.GRAPH_PRINTS:
+                step_outputs = [shim.print(o, f"scan output ({o.name})") for o in step_outputs]
             return step_outputs, step_updates
 
         # Check that there are no missing inputs: Theano's error messages
         # for this are nasty. We want to catch the mistake first and print
         # better information
-        all_exprs = chain(outputs, output_taps_replace, updates.values())    
+        all_exprs = chain(outputs, output_taps_replace, updates.values())
         symbinputs = shim.graph.pure_symbolic_inputs(all_exprs)
         if symbinputs:
             raise shim.graph.MissingInputError(
@@ -2822,7 +2877,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # To do this, we create a new update dictionary for the shared data
         # underlying updated histories, applying the values in `outs`,
         # and combine it with `upds`.
-        
+
         if outs is None: outs = []
         assert len(output_hists) == len(outs)
         # curtidx, stoptidx may be involved in arithmetic ops, but they should have one symbolic input each
@@ -2838,15 +2893,28 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         if len(inp_curtidx) == 1 and len(inp_stoptidx) == 1:
             # Test values for the assertions
             # TODO?: Use actual test values ?
-            inp = {inp_curtidx[0]: 0, inp_stoptidx[0]: 10}
+            # inp = {inp_curtidx[0]: self.num_tidx, inp_stoptidx[0]: self.num_tidx+6}
+            inp = {inp_curtidx[0]: 0, inp_stoptidx[0]: 5}
         else:
             inp = None
+        nsteps = stoptidx-curtidx
         for h, out in zip(output_hists, outs):
-            outslc = slice(h._num_tidx + 1, h._num_tidx + 1 + (stoptidx-curtidx))
-            outslc = slice(shim.graph.clone(outslc.start, replace=tidxsubs),
-                           shim.graph.clone(outslc.stop,  replace=tidxsubs))
+            outslc = slice(h._num_tidx + 1, h._num_tidx + 1 + nsteps)
+            # outslc = slice(shim.graph.clone(outslc.start, replace=tidxsubs),
+            #                shim.graph.clone(outslc.stop,  replace=tidxsubs))
             # Sanity check: outslc resolves to a non-empty slice of same shape as out
             evalslc = None if not inp else shim.eval(outslc, givens=inp, if_too_costly='ignore')
+            # # DEBUG >>>>> 
+            # print([h.name for h in self.unlocked_histories])
+            # print(shim.eval(out, givens=inp, max_cost=None))
+            # import theano
+            # try:
+            #     gg = shim.grad(out.sum(), <latent_hist._num_data>)[0][:8]
+            #     ff = shim.graph.compile(list(inp.keys()), gg, mode='guard:nan,inf,big')
+            #     print(ff(0, 5))
+            # except theano.gradient.DisconnectedInputError:
+            #     pass
+            # # <<<<< DEBUG
             if evalslc:
                 assert evalslc.stop > evalslc.start, f"Model.convert_point_updates_to_scan: negative or zero length output slice for history {h.name}. " \
                     f"After the scan op, the generated data for this history would be of shape {out.shape.eval(inp)}, but the time slice (first time dimension) has end points\nStart: {evalslc.start}\nStop:  {evalslc.stop}"
@@ -2861,7 +2929,25 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                             f"but the time slice (first time dimension) has end points\nStart: {evalslc.start}\nStop:  {evalslc.stop}")
             # Add updates for this history
             upds = {**upds, **h._get_symbolic_update(outslc, out)}
-                
+            
+        # Any remaining anchor tidx should map to curtidx; replace by the symbolic `curtidx` in the tidx substitution dictionary
+        tidxsubs = {anchor_tidx: curtidx,
+                    **{k: shim.graph.clone(v, replace={anchor_tidx: curtidx})
+                       for k, v in tidxsubs.items()}}
+        upds = {k: shim.graph.clone(v, replace=tidxsubs)
+                for k,v in upds.items()}
+            
+        # Assert that none of the anchor time indices are left as inputs in the graph
+        # Time indices should be functions of `curtidx` or `stoptidx` only.
+        disallowed_tidx_inputs = (({h._num_tidx for h in self.history_set if h.locked} | {anchor_tidx})
+                                  & set(shim.graph.symbolic_inputs(upds.values())))
+        if disallowed_tidx_inputs:
+            raise RuntimeError(
+                "The following anchor time indices remain in update scan graph. "
+                "These should have been replaced by the unanchored time index "
+                "variables created within Model.convert_point_updates_to_scan, "
+                "since they are not otherwise updated as the scan iterates "
+                f"over time points.\n{disallowed_tidx_inputs}")
         # out_upds = {h._num_data: shim.set_subtensor(h._num_data[curtidx:stoptidx], out)
         #             for h, out in zip(output_hists, outs)}
         return upds

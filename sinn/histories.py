@@ -1497,16 +1497,22 @@ class History(HistoryBase, abc.ABC):
                            .format(self.name, self.cur_tidx))
         self.locked = True
 
-    def unlock(self):
-        """Remove the history lock."""
-        # warn(f"Unlocking history {self.name}. Note that unless you are "
-        #      "debugging, you shouldn't call this function, since sinn assumes "
-        #      "that locked histories will never change.")
-        # if shim.pending_updates():
-        if self._pending_ops_str():
-            warn(f"Failed unlocking history {self.name}. Histories cannot be "
-                 "unlocked while there are pending updates."
-                 f"{self._pending_ops_str()}")
+    def unlock(self, if_pending_updates="raise"):
+        """
+        Remove the history lock.
+        :param:if_pending_updates: 'raise' | 'warn' | 'ignore' | 'force'
+        """
+        if self._pending_ops_str() and if_pending_updates != "force":
+            msg = (f"Failed unlocking history {self.name}. Histories cannot be "
+                   "unlocked while there are pending updates."
+                   f"{self._pending_ops_str()}")
+            if if_pending_updates == "raise":
+                raise RuntimeError(msg)
+            elif if_pending_updates == "warn":
+                warn(msg)
+            else:
+                assert if_pending_updates == "ignore"
+                pass
         else:
             self.locked = False
 
@@ -2077,9 +2083,9 @@ class History(HistoryBase, abc.ABC):
             #     "calling `theano_reset` is not permitted in this situation.")
             raise RuntimeError("There are pending updates in `theano_shim`. "
                                "Clear those first with `shim.reset_updates`.")
-        if self.locked:
-            raise RuntimeError("Cannot modify the locked history {}."
-                               .format(self.name))
+        # if self.locked:
+        #     raise RuntimeError("Cannot modify the locked history {}."
+        #                        .format(self.name))
 
         self._taps.clear()
         # self._sym_tidx = self._num_tidx
@@ -2902,6 +2908,9 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
             If `key` is a slice or array, array is 2D. First dimension is time.
         """
         # TODO: C.f. Series._getitem_internal. The tap looping logic is cleaner there.
+        if self.symbolic and self.locked:
+            raise NotImplementedError("TODO: Port the indexing logic from Series._getitem_internal back to Spiketrain._getitem_internal.")
+        
         assert shim.isscalar(axis_index) or isinstance(axis_index, slice)  # Mostly to guarantee that data_index is not an array
         index_is_scalar = shim.isscalar(axis_index)
         if not isinstance(axis_index, slice):
@@ -3088,12 +3097,12 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
                 pass
         try:
             # assert shim.eval(earliestidx) <= shim.eval(self._sym_tidx) + 1
-            assert shim.eval(earliestidx.plain) <= self.cur_tidx + self._latest_tap + 1
+            assert shim.eval(earliestidx) <= self.cur_tidx + self._latest_tap + 1
         except TooCostly:
             pass
 
         # Clear any invalidated data before applying the updates
-        if shim.eval(earliestidx.plain, max_cost=None) <= self.cur_tidx:
+        if shim.eval(earliestidx, max_cost=None) <= self.cur_tidx:
             # <= shim.eval(self._sym_tidx, max_cost=None)):
             if shim.is_symbolic(tidx):
                 raise TypeError("Overwriting data (i.e. updating in the past) "
@@ -3567,11 +3576,15 @@ class Series(ConvolveMixin, History):
         -------
         ndarray
         """
-        if self.symbolic:
+        if self.symbolic and not self.locked:
+            # NB: If the history is locked, we *don't* want to make axis_index
+            #   relative to self._num_tidx, since it won't be incremented
+            #   with the iteration. `axis_index` should either be absolute, or
+            #   relative to some other index which *will* be incremented.
             if isinstance(axis_index, slice):
-                # slc = shim.eval(axis_index, max_cost=None)
-                slc = shim.eval(slice(axis_index.start, axis_index.stop),
-                                max_cost=None)
+                slc = shim.eval(axis_index, max_cost=None)
+                # slc = shim.eval(slice(axis_index.start, axis_index.stop),
+                #                 max_cost=None)
                 # NB: Casting to Index isn't all that useful: looping over range still returns plain ints
                 Δks = range(self.time.Index(slc.start) - self.cur_tidx,
                             self.time.Index(slc.stop) - self.cur_tidx)
@@ -3586,22 +3599,93 @@ class Series(ConvolveMixin, History):
             for Δk in Δks:
                 Δk = self.time.Index.Delta(Δk)  # For slices and arrays, the type is lost
                 if Δk in self._taps:
-                    taps.append(self._taps[Δk])
+                    pass
                 elif Δk <= 0:
                     # Keep track of which values were used by adding them to taps
                     # Also ensure that multiple calls with same axis_index
                     # return the same instance of a time slice (hence why we
                     # reuse _taps when possible)
-                    self._taps[Δk] = self._num_data[self.time.axis_to_data_index(self._num_tidx) + Δk]
-                    taps.append(self._taps[Δk])
+                    if config.debug_level < config.DebugLevels.GRAPH_PRINTS:
+                        self._taps[Δk] = self._num_data[self.time.axis_to_data_index(self._num_tidx) + Δk]
+                    else:
+                        idx = self.time.axis_to_data_index(self._num_tidx) + Δk
+                        idx = shim.print(idx, f"Data index for unlocked '{self.name}'")
+                        value = self._num_data[idx]
+                        value = shim.print(value, f"Value for unlocked '{self.name}'")
+                        self._taps[Δk] = value
                 else:
                     raise AssertionError("_compute_up_to should have precomputed "
                                          "all forward taps (Δk > 0).")
+                taps.append(self._taps[Δk])
             if shim.isscalar(axis_index):
                 assert len(taps) == 1
                 return taps[0]
             else:
                 return shim.stack(taps)
+        elif self.symbolic:
+            assert self.locked
+            # NB²: We still use the _taps dict to ensure the same instance is
+            #   returned for the same index, but we use the absolute position
+            #   as a key and don't distinguish whether Δk is positive or non-positive.
+            if self._num_tidx in shim.graph.symbolic_inputs(axis_index):
+                # This won't catch using an anchor index from a locked history
+                # to index into *another* history, but at least it catches the
+                # cases where it is used to index its own history.
+                raise RuntimeError(f"Attempted to index locked history {self.name} "
+                                   "with its own anchor index. The anchor index "
+                                   "of a locked history is not not meaningful; "
+                                   "indexing should be absolute or relative to "
+                                   "an unlocked time index.")
+            if isinstance(axis_index, slice):
+                slc = shim.eval(axis_index, max_cost=None)
+                # NB: Casting to Index isn't all that useful: looping over range still returns plain ints
+                ks = range(self.time.Index(slc.start),
+                            self.time.Index(slc.stop))
+                start = axis_index.start
+            elif shim.isscalar(axis_index):
+                ks = [self.time.Index(shim.eval(axis_index, max_cost=None))]
+                start = axis_index
+            else:
+                assert shim.isarray(axis_index)
+                ks = self.time.Index(shim.eval(axis_index, max_cost=None))
+                if ks.ndim == 0:
+                    ks = [ks]
+                    start = axis_index
+                else:
+                    assert ks.ndim == 1, "If `axis_index` is an array, it should be 0-d or 1-d."
+                    start = axis_index[0]
+                    try:
+                        start_is_min = shim.eval(axis_index.min() == start)
+                    except TooCostly:
+                        pass
+                    else:
+                        if not start_is_min:
+                            raise ValueError("`axis_index` array must be monotone increasing with step 1.")
+            taps = []
+            k0 = self.time.Index(ks[0])  # For slices and arrays, the type was lost 
+            start_data_index = self.time.axis_to_data_index(start)
+            for k in ks:
+                k = self.time.Index(k)   # For slices and arrays, the type was lost
+                Δk = k - k0
+                assert not shim.issymbolic(Δk)
+                if k in self._taps:
+                    pass
+                else:
+                    if config.debug_level < config.DebugLevels.GRAPH_PRINTS:
+                        self._taps[k] = self._num_data[self.time.axis_to_data_index(start)+Δk]
+                    else:
+                        idx = self.time.axis_to_data_index(start)+Δk
+                        idx = shim.print(idx, f"Data index for locked '{self.name}'")
+                        value = self._num_data[idx]
+                        value = shim.print(value, f"Value for locked '{self.name}'")
+                        self._taps[k] = value
+                taps.append(self._taps[k])
+            if shim.isscalar(axis_index):
+                assert len(taps) == 1
+                return taps[0]
+            else:
+                return shim.stack(taps)
+
         else:
             return self._num_data[self.time.axis_to_data_index(axis_index)]
 
