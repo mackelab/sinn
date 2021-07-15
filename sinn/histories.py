@@ -2839,13 +2839,30 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
             # Both time_idcs and neuron_idcs have the same length; either can be used to get the number of spikes to add
             onevect = shim.ones(time_idcs.shape, dtype=self.dtype)
             onevect.name = f"𝟙 ({self.name}, update data)"
+            # Recall: Given an array of integers, np.bincount returns the number of 0, 1, ….
+            # Since there is one entry in `time_idcs` for each spike, we can use it to count the number of spikes per time bin
             counts_per_time_point = shim.ifelse(
                 time_idcs.size > 0,
                 shim.bincount(time_idcs), # Invalid if time_idcs is empty
                 shim.zeros((tidx.stop-tidx.start,), dtype='int64')  # bincount returns int64
             )
             counts_per_time_point.name = f"spike counts per k ({self.name}, update data)"
-                # counts_per_time_point is a vector [#{k=0}, #{k=1}, …]                
+                # counts_per_time_point is a vector [#{k=0}, #{k=1}, …]
+            # `counts_per_time_point` will only go up to the latest value in the provided array
+            # Thus it can be shorter than (stop - start), if there was no spike at the last time point
+            # => Appear zero for any missing time point
+            L = tidx.stop - tidx.start
+            L_counts = counts_per_time_point.shape[0]
+            counts_per_time_point = shim.concatenate(
+                (counts_per_time_point,
+                 shim.zeros((L-L_counts,), dtype=counts_per_time_point.dtype)))
+            # L = shim.print(L, "L")
+            # L_counts = shim.print(L_counts, "L_counts")
+            # Δ = shim.print(L-L_counts, "L - L_counts")
+            # z = shim.print(shim.zeros((Δ,), dtype=counts_per_time_point.dtype), "zeros")
+            # counts = shim.print(counts_per_time_point, "counts")
+            # counts_per_time_point = shim.print(shim.concatenate((counts, z)), "concatenated counts")
+            # # END DEBUG
             if not shim.is_graph_object(counts_per_time_point):
                 assert len(counts_per_time_point) == tidx.stop - tidx.start
             # We need to increment each row pointer by the number of new elements
@@ -2856,8 +2873,9 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
                 # This is perfect, since we don't need to increment the pointer
                 # for time point tidx.start (there are no new spikes above/before it)
                 
-            new_indptr = shim.inc_subtensor(indptr[tidx.start+1:tidx.stop], ptr_incr)
-            new_indptr = shim.inc_subtensor(new_indptr[tidx.stop:], ptr_incr[-1])
+            # NB: indptr has one more stop than self.time, so stop+1 is always a valid end point
+            new_indptr = shim.inc_subtensor(indptr[tidx.start+1:tidx.stop+1], ptr_incr)
+            new_indptr = shim.inc_subtensor(new_indptr[tidx.stop+1:], ptr_incr[-1])
             upds = {
                 curtidx: tidx.stop-1,
                 data   : shim.concatenate((data, onevect)),
