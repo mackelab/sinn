@@ -3,6 +3,9 @@ import pytest
 
 import shutil
 import os.path
+import tempfile
+
+tmpstore = {}
 
 @pytest.fixture
 def clean_theano_dir(monkeypatch):
@@ -14,16 +17,42 @@ def clean_theano_dir(monkeypatch):
     clean cache), I think we can assume this is due to the testing environment.
     In any case it's not something we are equiped to fix.
 
-    PROPER SOLUTION:
-        Assign a different compilation directory for each test by setting
-        THEANO_FLAGS="base_compiledir=~/.theano/pytest/[test_dir]"
-        Unfortunately, `monkeypatch.setenv()` does not seem to work for this.
-
-    WHAT WE ACTUALLY DID (Quick 'n dirty solution)
-        At the beginning of each test using this fixture, the entire .theano
-        directory is cleared. This is hacky for at least two reasons:
-        - Any other files in .theano are also deleted.
-          Are there long-lived files here ?
-        - It hardcodes the location of the compile dir.
+    SOLUTION: Assign a different compilation directory for each test.
     """
-    shutil.rmtree(os.path.expanduser("~/.theano"), ignore_errors=True)
+    import theano
+    tmpdir = tempfile.TemporaryDirectory()
+    theano.config.compiledir = tmpdir.name
+    # To keep the temporary directory open while the test runs, we assign
+    # the object to the global variable 'tmpstore' which is kept alive.
+    # When the test is finished, monkeypatch undoes this modification, thus
+    # destroying `tmpdir`, and the associated directory is deleted
+    monkeypatch.setitem(tmpstore, 'compiledir', tmpdir)
+
+## 'slow' mark & '--runslow' option, following the example from the pytest docs: https://docs.pytest.org/en/6.2.x/example/simple.html?highlight=fixtures#control-skipping-of-tests-according-to-command-line-option
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--runslow", action="store_true", default=False, help="run slow tests"
+    )
+    parser.addoption(
+        "--runslow-only", action="store_true", default=False, help="only run slow tests"
+    )
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "slow: mark test as slow to run")
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--runslow"):
+        # --runslow given in cli: do not skip slow tests
+        return
+    if config.getoption("--runslow-only"):
+        # --runslow-only given in cli: skip all non-slow tests
+        skip_fast = pytest.mark.skip(reason="--runslow-only option skips all fast tests")
+        for item in items:
+            if "slow" not in item.keywords:
+                item.add_marker(skip_fast)
+    else:
+        skip_slow = pytest.mark.skip(reason="need --runslow option to run")
+        for item in items:
+            if "slow" in item.keywords:
+                item.add_marker(skip_slow)

@@ -597,6 +597,7 @@ def test_symhistory_spiketrain_updates(clean_theano_dir):
     return _test_history_spiketrain_updates('theano')
 def test_numhistory_serialization():
     return _test_history_serialization('numpy')
+@pytest.mark.slow
 def test_symhistory_serialization(clean_theano_dir):
     return _test_history_serialization('theano')
 

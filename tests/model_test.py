@@ -138,6 +138,50 @@ def _test_model(cgshim):
         # with 'sum' below, we aren't just reusing deserialized values.
     model2.integrate(30, histories=model2.spikes)
     assert model2.spikes.data.sum() > 0
+    
+def _test_accumulator(cgshim):
+    # All sinn imports need to be guarded inside functions, to avoid
+    # shim state being messed up
+    shim.load(cgshim)
+
+    mtb.typing.freeze_types()
+    import sinn
+    cd_to_test_dir()
+    mtb.serialize.config.trust_all_inputs = True
+    
+    # Silence warning that TestModelNoState has no state
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        from model_test_classes import TestModel
+    from sinn.histories import TimeAxis
+
+    TimeAxis.time_unit = ureg.s
+    TimeAxis.time_step = np.float64(2**-6)
+
+    model = TestModel(params = TestModel.Parameters(λ0=10, τ=1, σ=25, N=7),
+                      time = TimeAxis(min=0, max=10),
+                      rng = shim.config.RandomStream(505))
+                      
+    @model.accumulate
+    def sum_spikes(model, t):
+        return model.spikes(t).sum()
+        
+    # Compile a function which will both sum spikes and advance the model
+    total_spikes_expr, updates = sum_spikes(model.curtidx_var, model.stoptidx_var)
+    f = shim.graph.compile([model.curtidx_var, model.stoptidx_var],
+                           total_spikes_expr,
+                           updates=updates)
+    # Once the function is compiled, clean up the accumulated symbolic variables
+    # (Sinn raises RuntimeError if we retrieve history data before doing this.)
+    model.theano_reset(warn_rng=False)  # Don't worry about invalidating RNG updates:
+                                        # there are no other graphs to compile
+                           
+    # Evaluate the compiled function.
+    # Since we included updates, it has also updated the shared data variables in the histories
+    # (here, `model.spikes`)
+    total_spikes = f(0, 30)
+    assert total_spikes == model.spikes.data.sum()
 
 def model_compare(model1, model2):
     cd_to_test_dir()
@@ -156,11 +200,19 @@ def model_compare(model1, model2):
     for attr in (attr for attr,v in model1.__dict__.items() if isinstance(v, History)):
         hist_compare(getattr(model1, attr), getattr(model2, attr))
 
+@pytest.mark.slow
 def test_model_theano(clean_theano_dir):
     return _test_model('theano')
+    
+@pytest.mark.slow
 def test_model_numpy():
     return _test_model('numpy')
+    
+@pytest.mark.slow
+def test_accumulator_theano(clean_theano_dir):
+    return _test_accumulator('theano')
 
 if __name__ == "__main__":
     # test_model_numpy()
-    test_model_theano(None)
+    # test_model_theano(None)
+    _test_accumulator('theano')
