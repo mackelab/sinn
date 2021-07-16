@@ -2818,6 +2818,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
             onevect = shim.ones(idcs.shape, dtype=self.dtype)
             onevect.name = f"𝟙 ({self.name}, update data)"
             
+            data_index = tidx + self.pad_left  # FIXME? Can we use something like self.time.data_index, to be 100% the index arithmetic is consistent (currently cannot because tidx may be pure symbolic)
             upds = {
                 curtidx: tidx,
                 data   : shim.concatenate((data, onevect)),
@@ -2874,8 +2875,10 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
                 # for time point tidx.start (there are no new spikes above/before it)
                 
             # NB: indptr has one more stop than self.time, so stop+1 is always a valid end point
-            new_indptr = shim.inc_subtensor(indptr[tidx.start+1:tidx.stop+1], ptr_incr)
-            new_indptr = shim.inc_subtensor(new_indptr[tidx.stop+1:], ptr_incr[-1])
+            data_index = slice(tidx.start + self.pad_left, tidx.stop + self.pad_left)
+                # FIXME? Can we use something like self.time.data_index, to be 100% the index arithmetic is consistent (currently cannot because tidx may be pure symbolic)
+            new_indptr = shim.inc_subtensor(indptr[data_tidx.start+1:data_tidx.stop+1], ptr_incr)
+            new_indptr = shim.inc_subtensor(new_indptr[data_tidx.stop+1:], ptr_incr[-1])
             upds = {
                 curtidx: tidx.stop-1,
                 data   : shim.concatenate((data, onevect)),
@@ -3568,8 +3571,13 @@ class Series(ConvolveMixin, History):
                 raise TypeError("`tidx` must be either a scalar, a slice, or an array.")
             assert tidx.ndim == 1, "`tidx must be 1D"
             upds[self._num_tidx] = shim.cast(tidx.max(), idx_dtype)
-        # Update data    
-        upds[self._num_data] = shim.set_subtensor(self._num_data[tidx], values)
+        # Update data
+        if isinstance(tidx, slice):
+            # FIXME? Can we use something like self.time.data_index, to be 100% the index arithmetic is consistent (currently cannot because tidx may be pure symbolic)
+            data_index = slice(tidx.start + self.pad_left, tidx.stop + self.pad_left)
+        else:
+            data_index = tidx + self.pad_left
+        upds[self._num_data] = shim.set_subtensor(self._num_data[data_index], values)
         # Return
         return upds
 
