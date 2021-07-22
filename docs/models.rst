@@ -17,8 +17,12 @@ Models *must* define a :attr:`time` attribute of type `~sinn.axis.DiscretizedAxi
   Instances of `~sinn.histories.History`.
 - state variables
   A subset *histories*; if all these histories are computed up to ``t``, then the model can compute ``t+1``. See :ref:`model-state`.
+- a random number generator (RNG)
+  Update functions which require random numbers should expect this RNG as argument.
+  (Note: Multiple RNGs are rarely needed, and are not well supported.)
+- other models
 
-Parameters and state are defined by special classes at the top of your model, while histories and kernels are listed at the top level. Parameters should be defined first, so that they are available when defining histories and kernels::
+Parameters and state are defined by special classes at the top of your model, while histories, kernels, RNG and submodels are listed at the top level. Parameters should be defined first, so that they are available when defining histories and kernels::
 
   import theano_shim as shim
   from sinn.models import Model, ModelParams
