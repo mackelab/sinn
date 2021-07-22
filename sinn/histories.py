@@ -749,6 +749,24 @@ class History(HistoryBase, abc.ABC):
             #                             ('_sym_data', '_num_data')))
         self._stash = Stash(self, ('_taps', {}))
 
+    def __eq__(self, other: Any) -> bool:
+        # Don't rely on Pydantic __eq__: it constructs .dict(), which for History
+        # makes a full copy of the data and fails if there are pending updates
+        return (self.ndim == other.ndim
+                and self.name == other.name
+                and self.shape == other.shape
+                and self.dtype == other.dtype
+                and self.iterative == other.iterative
+                and self.symbolic == other.symbolic
+                and self.time == other.time
+                and self._batch_loop_flag == other._batch_loop_flag
+                and self._update_function == other._update_function
+                and self._range_update_function == other._range_update_function
+                and self._num_data == other._num_data
+                and self._num_tidx == other._num_tidx
+                # Allow locked state to differ ?
+                )
+        
     def copy(self, *args, **kwargs):
         """
         .. Note:: The copied history has no associated update function.
@@ -2281,6 +2299,10 @@ class PopulationHistory(PopulationHistoryBase):
         super().__init__(template=template, **kwargs)
 
     __hash__ = History.__hash__  # Not inherited; see https://github.com/samuelcolvin/pydantic/issues/2422#issuecomment-828439446
+    
+    def __eq__(self, other: Any) -> bool:
+        return (super().__eq__(other)
+                and self.pop_sizes == other.pop_sizes)
 
     @validator('pop_sizes')
     def check_pop_sizes(cls, pop_sizes):
@@ -4015,6 +4037,7 @@ class Series(ConvolveMixin, History):
         """
         # if self._sym_tidx is not self._num_tidx:
         if self._latest_tap:
+            breakpoint()
             raise RuntimeError("You are in the midst of constructing a Theano graph. "
                                "Reset history {} before trying to obtain its time array."
                                .format(self.name))

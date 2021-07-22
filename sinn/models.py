@@ -2535,13 +2535,15 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             # The way we do this, at time point k, we evaluate k+1
             # => Start iterations at the _current_ k, and stop one early
             # => curtidx is included below, and we do stoptidx-1
-        return self.map_over_time(None, shim.get_updates(), curtidx, stoptidx-1)
+        return self.map_over_time(None, shim.get_updates(), curtidx, stoptidx-1, histories)
 
     def map_over_time(self,
                       f        : Optional[CallableT[[sinn.axis.SymbolicAbstractAxisIndex], Any]]=None,
                       updates  : Optional[dict]=None,
                       curtidx  =None,
-                      stoptidx =None):
+                      stoptidx =None,
+                      histories: Tuple[History,...]=()
+                      ):
         """
         Return the computational graph of the function `f` evaluated at all
         time points between `curtidx` (inclusive) and `stoptidx` (exclusive).
@@ -2607,6 +2609,16 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         stoptidx: symbolic (int)
             Default: `self.stoptidx_var`
             We want to compute the model up to this point exclusive.
+        histories:
+            List of histories which we want to update. This only affects which
+            histories are included in the update dictionary: the histories
+            which are computed are exactly those required to compute `f`.
+            This can be used to avoid storing the output from intermediate
+            histories: since they are not ultimately stored, when compiling,
+            Theano will know it can discard their value once they are no longer
+            needed.
+            Default not to update any history, thus making the evaluation of `f`
+            without side-effects.
 
         Returns
         -------
@@ -3033,6 +3045,13 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         
         # Remove history updates from `outs`, since they are now in `upds`
         outs = outs[:len(f_outputs)]
+        
+        # Remove undesired history updates (typically intermediate histories)
+        excl_hists = (h for h in self.history_set if h not in histories)
+        excl_upds = set(chain(*((h._num_tidx, h._num_data) for h in excl_hists)))
+        for k in list(upds.keys()):
+            if k in excl_upds:
+                del upds[k]
             
         # Any remaining anchor tidx should map to curtidx; replace by the symbolic `curtidx` in the tidx substitution dictionary
         tidxsubs = {anchor_tidx: curtidx,
