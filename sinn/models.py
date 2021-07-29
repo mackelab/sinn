@@ -147,21 +147,29 @@ class ModelParams(BaseModel):
         kwargs = ParameterSet(kwargs)
         super().__init__(*args, **kwargs)
 
-    def get_values(self):  # -> NumericModelParams
+    def get_values(self, borrow: bool=False):  # -> NumericModelParams
         """
         Helper method which calls `get_value` on each parameter.
         Returns a copy of the ModelParams, where each shared variable has
         been replaced by its current numeric value.
+        
+        Parameters
+        ----------
+        borrow:
+            False: (Default) Force a copy of the data.
+            True: Attempt to avoid a copy.
+            Normally this is simply passed to the shared var's `get_value` method.
         """
-        d = {k: v.get_values() if isinstance(v, ModelParams) else
-                v.get_value() if shim.isshared(v) else
-                v
+        d = {k: v.get_values(borrow=borrow) if isinstance(v, ModelParams) else
+                v.get_value(borrow=borrow) if shim.isshared(v) else
+                v if borrow else getattr(v, 'copy', lambda: copy.copy(v))()
              for k,v in self}
         return IndexableNamespace(**d)
 
     def set_values(self, values: ModelParams,  # TODO -> NumericModelParams
                    must_set_all_params: bool=False,
-                   must_not_set_other_params: bool=True):
+                   must_not_set_other_params: bool=True,
+                   borrow: bool=False):
         """
         TODO: The annotation is not quite correct. Values should be Params-like,
               but contain no symbolic variables.
@@ -178,6 +186,10 @@ class ModelParams(BaseModel):
             Whether the model params must be a subset of `values`.
         must_not_set_other_params:
             Whether `values` must be a subset of the model params.
+        borrow:
+            False: (Default) Force a copy of the data.
+            True: Attempt to avoid a copy.
+            Normally this is simply passed to the shared var's `get_value` method.
         """
         if isinstance(values, dict):
             values_dict = values
@@ -210,8 +222,16 @@ class ModelParams(BaseModel):
             else:
                 self_v = getattr(self, k)
                 if shim.isshared(self_v):
-                    self_v.set_value(v)
+                    self_v.set_value(v, borrow=borrow)
                 else:
+                    if shim.is_graph_object(v):
+                        raise TypeError(
+                            f"Parameter values provided to {type(self).__qualname__} "
+                            "must either be shared variables or plain Python "
+                            "or NumPy values. Theano expressions are not "
+                            f"supported.\nReceived: {v}.")
+                    if not borrow:
+                        v = getattr(v, 'copy', lambda: copy.copy(v))()
                     setattr(self, k, v)
 ModelParams.update_forward_refs()
 

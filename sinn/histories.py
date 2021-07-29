@@ -1415,28 +1415,15 @@ class History(HistoryBase, abc.ABC):
             Each tuple: (time, value)
         """
         # NOTE: One could probably do something fancy with the duplicate t
-        #       to minimize memory footprint, but that beyond the current scope
+        #     to minimize memory footprint, but that's beyond our current scope
         data = self.get_data_trace(include_padding=False)
         if len(data) == 0:
             warn(f"History '{self.name}' has no computed values. Returning "
                  "empty traces.")
             return [[] for xidx in np.ndindex(self.shape)]
-        times = self.time.unpadded_stops_array
+        times = self.time.unpadded_stops_array[:self.cur_tidx-self.t0idx]
         return [[(t, data[(tidx, *xidx)]) for tidx, t in enumerate(times)]
                 for xidx in np.ndindex(self.shape)]
-
-    # `trace` was never useful, because a) of history components
-    # and b) the returned shape didn't plot well anyway
-    # @property
-    # def trace(self):
-    #     """
-    #     Return the tuple (`time_array`, `data`).
-    #     The time stops of `data` matches those of `time_array`.
-    #     """
-    #     # slc = slice(self.t0idx, self.cur_tidx+1)
-    #     return (self.get_time_stops(),
-    #             self.get_data_trace())
-
 
     @property
     def data(self):
