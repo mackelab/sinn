@@ -169,6 +169,13 @@ def _test_accumulator(cgshim):
         
     # Compile a function which will both sum spikes and advance the model
     total_spikes_expr, updates = sum_spikes(model.curtidx_var, model.stoptidx_var)
+    # Accumulators by default don't advance histories
+    assert model.spikes._num_tidx not in updates
+    assert model.spikes._num_data[0] not in updates
+    # # TODO: Add option to tell accumulator to also update certain histories
+    # @model.accumulate(histories='all'|'state'|'spikes')
+    # def sum_spikes(model, t):
+    #     return model.spikes(t).sum()
     f = shim.graph.compile([model.curtidx_var, model.stoptidx_var],
                            total_spikes_expr,
                            updates=updates)
@@ -181,7 +188,8 @@ def _test_accumulator(cgshim):
     # Since we included updates, it has also updated the shared data variables in the histories
     # (here, `model.spikes`)
     total_spikes = f(0, 30)
-    assert total_spikes == model.spikes.data.sum()
+    assert total_spikes > 0
+    # assert total_spikes == model.spikes.data.sum()  # Only works if 'spikes' history was also advanced
 
 def model_compare(model1, model2):
     cd_to_test_dir()

@@ -65,3 +65,10 @@ class TestModelNoState(Model):
 class TestModel(TestModelNoState):
     class State:
         λ :Any
+
+class TestModel2(Model):
+    """
+    Multi-layer deterministic model for catching off-by-one time index errors.
+    """
+    # TODO:
+    # - Test model with left padding, that update assignments align properly

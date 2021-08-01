@@ -3068,7 +3068,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         
         # Remove undesired history updates (typically intermediate histories)
         excl_hists = (h for h in self.history_set if h not in histories)
-        excl_upds = set(chain(*((h._num_tidx, h._num_data) for h in excl_hists)))
+        excl_upds = set(chain(*((h._num_tidx, *(h._num_data if isinstance(h._num_data, tuple) else [h._num_data]))
+                                for h in excl_hists)))
         for k in list(upds.keys()):
             if k in excl_upds:
                 del upds[k]
@@ -3154,6 +3155,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         -----
         UserWarning
             : If the wrapped function has 2 arguments and the first is not 'self'.
+            
+        .. Todo:: Add a mechanism for optionally advancing histories at the
+           same time a value is accumulated.
         """
         def wrapped_acc(f):
             # Inspect the signature of `f` to see if there is a `self` argument
@@ -3209,6 +3213,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                     res.name = f"{f.__name__}"  # TODO: As below, allow setting a different var name
                     return res
                 # Convert the step update to an iteration
+                # TODO: Add mechanism for optionally also advancing history
                 cost, updates = self.map_over_time(
                     fwrap, shim.get_updates(), curtidx, curtidx+batchsize)
                 if isinstance(cost, Sequence):  # NB: `map_over_time` unpacks length one lists, so cost must have at least length 2

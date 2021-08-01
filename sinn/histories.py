@@ -752,7 +752,8 @@ class History(HistoryBase, abc.ABC):
     def __eq__(self, other: Any) -> bool:
         # Don't rely on Pydantic __eq__: it constructs .dict(), which for History
         # makes a full copy of the data and fails if there are pending updates
-        return (self.ndim == other.ndim
+        return (type(self) == type(other)
+                and self.ndim == other.ndim
                 and self.name == other.name
                 and self.shape == other.shape
                 and self.dtype == other.dtype
@@ -2884,7 +2885,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
                 # for time point tidx.start (there are no new spikes above/before it)
                 
             # NB: indptr has one more stop than self.time, so stop+1 is always a valid end point
-            data_index = slice(tidx.start + self.pad_left, tidx.stop + self.pad_left)
+            data_tidx = slice(tidx.start + self.pad_left, tidx.stop + self.pad_left)
                 # FIXME? Can we use something like self.time.data_index, to be 100% the index arithmetic is consistent (currently cannot because tidx may be pure symbolic)
             new_indptr = shim.inc_subtensor(indptr[data_tidx.start+1:data_tidx.stop+1], ptr_incr)
             new_indptr = shim.inc_subtensor(new_indptr[data_tidx.stop+1:], ptr_incr[-1])
@@ -4024,7 +4025,6 @@ class Series(ConvolveMixin, History):
         """
         # if self._sym_tidx is not self._num_tidx:
         if self._latest_tap:
-            breakpoint()
             raise RuntimeError("You are in the midst of constructing a Theano graph. "
                                "Reset history {} before trying to obtain its time array."
                                .format(self.name))
