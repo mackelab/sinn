@@ -46,9 +46,12 @@ extensions = [
     'sphinx.ext.mathjax',
     'sphinx.ext.viewcode',
     'sphinx.ext.napoleon',
+    'sphinxcontrib.mermaid'
 ]
 
 autosummary_generate = True
+mermaid_output_format = "raw"  # 'png' | 'svg'
+mermaid_params = ['--width', '2000']
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']

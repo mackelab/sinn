@@ -1,3 +1,5 @@
+.. _axis_devdocs:
+
 *********
 Data axes
 *********

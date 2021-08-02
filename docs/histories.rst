@@ -1,3 +1,5 @@
+.. _histories_devdocs:
+
 *********
 Histories
 *********
