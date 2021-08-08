@@ -2144,17 +2144,22 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         #                 v.set_value(np.random.RandomState(int(old_r_seed)),
         #                             borrow=True)
 
-    def update_params(self, new_params, **kwargs):
+    def update_params(self, new_params, clear: bool=True, **kwargs):
         """
-        Update model parameters. Clears all histories except those whose `locked`
-        attribute is True, as well as any kernel which depends on these parameters.
-
+        Update model parameters.
+        Clears any kernel cache which depends on these parameters.
+        By default, also clears unlocked histories: if one assumes stationarity
+        of parameters, then a parameter change invalidates histories.
+        
         TODO: Make `new_params` a dict and just update parameters in the dict.
 
         Parameters
         ----------
         new_params: self.Parameters | dict
             New parameter values.
+        clear:
+            True (default): Also clear unlocked histories.
+            False: Don't clear any history.
         **kwargs:
             Alternative to specifying parameters with `new_params`
             Keyword arguments take precedence over values in `new_params`.
@@ -2212,14 +2217,16 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         self.params.set_values(pending_params)
         self.set_submodel_params()
 
-        # NB: I think the only way params can change identity if if we have
+        # NB: I think the only way params can change identity is if we have
         #     a nested model and `set_submodel_params` reassigns them.
         clear_advance_fn = any(id(val) != old_ids[name]
                                for name, val in self.params)
 
         logger.debug("Model params are now {}.".format(self.params))
 
-        self.clear()
+        if clear:
+            logger.info("Clearing unlocked histories because parameters have changed.")
+            self.clear()
         if clear_advance_fn:
             # Only clear advance function when necessary, since it forces a
             # recompilation of the graph.

@@ -3929,3 +3929,10 @@ DiscretizedAxis.update_forward_refs()
 MapAxis.update_forward_refs()
 RangeAxis.update_forward_refs()
 ArrayAxis.update_forward_refs()
+
+# While a specific AxisIndex may be symbolic, the Axes and Mapping always have
+# concrete stops. Thus there is no need to loop over them to check if they have
+# symbolic arguments. (This loop can also be expensive, since discretized axes
+# can have many stops.) Adding them to theano_shim's TerminatingTypes prevents
+# iterating over them when looking for symbolic arguments.
+shim.config.add_terminating_types([Axis, SequenceMapping])
