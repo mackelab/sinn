@@ -142,6 +142,15 @@ class ModelParams(BaseModel):
     class Config:
         json_encoders = mtb.typing.json_encoders
 
+    # Almost all models will use NumPy arrays for some of their parameters,
+    # so it seems justified to include the deserializer in the base class
+    @root_validator(pre=True)
+    def deserialize_arrays(cls, values):
+        for k, v in values.items():
+            if mtb.typing.json_like(v, "Array"):
+                values[k] = mtb.typing.Array.validate(v)
+        return values
+        
     def __init__(self, *args, **kwargs):
         # Reconstruct hierarchies from dotted parameter names
         kwargs = ParameterSet(kwargs)
