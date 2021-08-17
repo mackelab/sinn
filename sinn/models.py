@@ -7,7 +7,7 @@ Copyright 2017-2021 Alexandre René
 TODO
 ----
 
-- At present, things link ``h for h in model.statehists`` will use __eq__
+- At present, things like ``h for h in model.statehists`` will use __eq__
   for the ``in`` check, which for histories creates a dict and compares.
   Iterables like `statehists` should be something like a ``set``, such that
   this check then just compares identity / hashes.
@@ -36,7 +36,7 @@ from pydantic import BaseModel, PrivateAttr, validator, root_validator
 from pydantic.typing import AnyCallable
 from typing import (
     Any, Optional, Union, Tuple, Sequence, List, Dict, Set, Generator,
-    Callable as CallableT)
+    Callable as CallableT, NamedTuple)
 from types import SimpleNamespace
 from dataclasses import dataclass
 from parameters import ParameterSet
@@ -242,6 +242,62 @@ class ModelParams(BaseModel):
                     if not borrow:
                         v = getattr(v, 'copy', lambda: copy.copy(v))()
                     setattr(self, k, v)
+      
+class SubmodelParams(ModelParams):
+    """
+    Class used as a placeholder for parameters of a submodel of unknown type.
+    
+    This performs not parameter validation (since it does not know the expected
+    parameters). It simply assumes that all provided values are valid, and
+    provides the same interface as `ModelParams`.
+    
+    Typically, when a `Model` is instantiated which contains submodels, their
+    `SubmodelParams` are automatically replaced by the appropriate `ModelParams`.
+    
+    .. Note:: For consistency, `SubmodelParams` always returns its parameters
+       with parameter names in lexicographical order.
+
+    .. Caution:: Support for generic submodels is still at the proof-of-concept
+       stage. While the goal is eventually to treat a submodel type as a true generic
+       type, at present submodels are just typed as `Model`, and updating the
+       Parameters with the submodel's Parameters classes is done during model
+       instantiation (instead of during *class creating*, as could be done with
+       a generic type). This also means that an *instance's* `Parameters` class
+       is distinct from the *class'* `Parameters` class.
+       
+       
+    Example usage::
+    
+    >>> from sinn.models import Model, SubmodelParams
+    >>>
+    >>> class MyModel(Model):
+    >>>   class Parameters:
+    >>>     sub: SubmodelParams
+    >>>   sub: Model
+    >>>
+    >>> class MySubmodel(Model):
+    >>>   class Parameters:
+    >>>     a: int
+    >>>     b: float
+    >>>
+    >>> subΘ = MySubmodelParams(a=1, b=3.)
+    >>> submodel = MySubmodel(..., params=subΘ)
+    >>> model = MyModel(..., sub=submodel, params={'submodel': subΘ})
+    """
+    class Config:
+        extra = 'allow'
+    # DEVNOTE: The order of non-field attributes (those allowed by
+    # extra = 'allow') is undefined. Even when attributes are added in the
+    # same order, they may be returned in different orders when iterating.
+    # This is why we define __iter__ and dict() below.
+    def __iter__(self):
+        values = {k: v for k,v in super().__iter__()}
+        for k in sorted(values):
+            yield k, values[k]
+    def dict(self, **kwargs):
+        d = super().dict(**kwargs)
+        return {k: d[k] for k in sorted(d)}
+                    
 ModelParams.update_forward_refs()
 
 # Model decorators
@@ -553,6 +609,54 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
                 params_namespace = {}
             Parameters = paramsmeta("Parameters", (OldParameters, ModelParams),
                                     params_namespace)
+                                    
+        if any("Union" in str(field.type_)
+               for field in Parameters.__fields__.values()):
+           possible_offenders = [field for field in Parameters.__fields__.values()
+                                 if "Union" in str(field.type_)]
+           # We allow 'Union' types in one case: if all types in the union
+           # have the same dtype and ndim.
+           offenders = []
+           for field in possible_offenders:
+               if getattr(field.type_, '__origin__', None) is not Union:
+                   # Things like List[Union[int, float]] will end up here
+                   offenders.append(field.name)
+                   continue
+               dtypes = set()
+               ndims = set()
+               for T in field.type_.__args__:
+                   if hasattr(T, 'nptype'):  # NPValue, Array, Tensor, Shared
+                       dtype = str(np.dtype(T.nptype))
+                   elif hasattr(T, 'dtype'):  # Theano, PyMC3 types
+                       dtype = str(np.dtype(T.dtype))
+                   elif isinstance(T, type) and issubclass(T, np.number): # NumPy types
+                       dtype = str(np.dtype(T))
+                   else:
+                       # Not a NumPy compatible type
+                       offenders.append(field.name)
+                       break
+                   if hasattr(T, 'ndim_'):  # NPValue, Array, PyMC_RV
+                       ndim = T.ndim_
+                   elif isinstance(getattr(T, 'ndim', None), int):  # Theano, PyMC3 types
+                       ndim = T.ndim
+                   elif isinstance(T, type) and issubclass(T, np.number): # NumPy types
+                       ndim = 0
+                   else:
+                       # If none of the types specify ndim, that is also fine
+                       # NB: NPValue & co. set ndim to 'None' when it is unspecified
+                       ndim = None
+                   dtypes.add(dtype)
+                   ndims.add(ndim)
+               if len(dtypes) > 1 or len(ndims) > 1:
+                   offenders.append(field.name)
+           if offenders:
+               logger.error(f"Model '{cls}' has a Union type for the following "
+                            f"parameters: {offenders}.\n"
+                            "This is strongly discouraged: The compilation of "
+                            "Theano models assumes that parameter types are fixed – "
+                            "breaking this assumption can cause nasty linker errors. "
+                            "Exception: Unions of types which all have the same "
+                            "dtype and number of dims are permitted.")
 
         # Sanity check Config subclass, if present
         # Config = namespace.get('Config', None)
@@ -806,6 +910,8 @@ def connect_submodel_validator(submodel_name):
         return submodel
     f.__name__ = f"connect_submodel_{submodel_name.replace('.', '_')}"
     return validator(submodel_name, pre=True, allow_reuse=True)(f)
+    
+_concrete_parameter_classes = {}
 
 class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     """Abstract model class.
@@ -909,6 +1015,10 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         """
         pass
 
+    # =================================================
+    # Construction, initialization, copying, validation
+    # =================================================
+        
     # Register subclasses so they can be deserialized
     def __init_subclass__(cls):
         if not inspect.isabstract(cls) and '__throwaway_class' not in cls.__dict__:
@@ -1023,6 +1133,52 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         m = super().parse_obj(obj)
         return m
 
+    def update_parameters_type(self):
+        """
+        Replace the placeholder `SubmodelParams` by the actual `Parameters`
+        types used by submodels. This must be done after the type of the
+        submodels is known (which currently is known only after instantiation,
+        since we don't support true generic types for submodels).
+        """
+        global _concrete_parameter_classes
+        
+        subparams = {submodelname: submodel.Parameters
+                     for submodelname, submodel in self.nested_models.items()}
+        param_type_key = (type(self), tuple(subparams.values()))
+        if param_type_key not in _concrete_parameter_classes:
+            missing = set(subparams) - set(self.Parameters.__fields__)
+            if missing:
+                raise RuntimeError(
+                    "The following submodels have no matching entry under "
+                    f"in {type(self).__name__}'s Parameters: {missing}.")
+            for subname, truetype in subparams.copy().items():
+                basetype = self.Parameters.__fields__[subname].type_
+                if not isinstance(basetype, type):
+                    raise TypeError(f"{basetype} should be a type.")
+                if basetype is truetype:
+                    # No need to replace this type
+                    del subparams[subname]
+                elif not issubclass(basetype, SubmodelParams):
+                    submodel = self.nested_models[subname]
+                    raise TypeError(
+                        f"Attempting to instantiate model {type(self).__name__} "
+                        f"with submodel {subname} of type {type(submodel)}, "
+                        f"but {type(self).__name__}.Parameters.{subname} expects "
+                        f"{basetype}.")
+            if subparams:
+                new_name = (
+                    f"{self.Parameters.__qualname__}"
+                    f"[{', '.join(T.__qualname__ for T in param_type_key[1])}]")
+                new_param_type = type(new_name, (self.Parameters,),
+                                      {'__annotations__': subparams})
+            else:
+                # There actually aren't any SubmodelParams to replace
+                new_param_type = self.Parameters
+            _concrete_parameter_classes[param_type_key] = new_param_type
+        else:
+            new_param_type = _concrete_parameter_classes[param_type_key]
+        self.Parameters = new_param_type
+
     def set_submodel_params(self):
         """
         Keep submodel parameters in sync with the container model.
@@ -1076,6 +1232,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         Both arguments are meant for internal use and documented with comments
         in the source code.
         """
+        self.update_parameters_type()
         self.set_submodel_params()
 
         if update_functions is not None:
@@ -1235,22 +1392,25 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         return None
 
     @root_validator
-    def sanity_rng(cls, values):
+    def required_rngs_exist(cls, values):
+        """
+        Check that all required random number generators (rngs) are specified.
+        This function is just a sanity check: it only ensures that the RNGs
+        are not None, if any of the outputs are uncomputed.
+        """
         hists = values.get('histories', None)
         if hists is None: return values
         for h in hists:
             input_rng = [inp for inp in h.update_function.inputs
                          if isinstance(inp, mtb.typing.AnyRNG)]
             if len(input_rng) > 0:
-                Model.output_rng(h, input_rng)
+                Model._required_rngs_exist(h, input_rng)
         return values
 
     @staticmethod
-    def output_rng(outputs, rngs):
+    def _required_rngs_exist(outputs, rngs):
         """
-        Check that all required random number generators (rngs) are specified.
-        This function is just a sanity check: it only ensures that the RNGs
-        are not None, if any of the outputs are uncomputed.
+        Utility function for `required_rngs_exist`.
 
         Parameters
         ----------
@@ -1276,7 +1436,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             outputs = [outputs]
         else:
             if not all(isinstance(output, History) for output in outputs):
-                raise AssertionError("Model.output_rng: not all listed outputs "
+                raise AssertionError("Model.required_rngs_exist: not all listed outputs "
                                      f"are histories.\nOutputs: {outputs}.")
         try:
             len(rngs)
@@ -1317,8 +1477,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                  "ignored, since the histories are already computed:\n"
                  "(hist name: random input)\n" + useless)
 
-    #############
+    # ==========================================
     # Specializations of standard dunder methods
+    # ==========================================
 
     def __str__(self):
         name = self.name
@@ -1419,9 +1580,10 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         #         val.clear()
         # return state
 
-    ###################
+    # =====================================
     # Inspection / description methods
     # These methods do not modify the model
+    # =====================================
 
     # TODO: Some redundancy here, and we could probably store the
     # hist & kernel lists after object creation – just ensure this is
@@ -1778,6 +1940,52 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         else:
             return True
 
+    def get_tidx(self, t, allow_rounding=False):
+        # Copied from History.get_tidx
+        if self.time.is_compatible_value(t):
+            return self.time.index(t, allow_rounding=allow_rounding)
+        else:
+            # assert self.time.is_compatible_index(t)
+            assert shim.istype(t, 'int')
+            if (isinstance(t, sinn.axis.AbstractAxisIndexDelta)
+                and not isinstance(t, sinn.axis.AbstractAxisIndex)):
+                raise TypeError(
+                    "Attempted to get the absolute time index corresponding to "
+                    f"{t}, but it is an index delta.")
+            return self.time.Index(t)
+    get_tidx.__doc__ = History.get_tidx.__doc__
+
+    def get_tidx_for(self, t, target_hist, allow_fractional=False):
+        raise DeprecationWarning("Use the `convert` method attached to the AxisIndex.")
+
+    def index_interval(self, Δt, allow_rounding=False):
+        return self.time.index_interval(value, value2,
+                                        allow_rounding=allow_rounding,
+                                        cast=cast)
+    index_interval.__doc__ = TimeAxis.index_interval.__doc__
+
+    def get_time(self, t):
+        # Copied from History
+        # NOTE: Copy changes to this function in Model.get_time()
+        # TODO: Is it OK to enforce single precision ?
+        if shim.istype(t, 'int'):
+            # Either we have a bare int, or an AxisIndex
+            if isinstance(t, sinn.axis.AbstractAxisIndex):
+                t = t.convert(self.time)
+            elif isinstance(t, sinn.axis.AbstractAxisIndexDelta):
+                raise TypeError(f"Can't retrieve the time corresponding to {t}: "
+                                "it's a relative, not absolute, time index.")
+            return self.time[t]
+        else:
+            assert self.time.is_compatible_value(t)
+            # `t` is already a time value -> just return it
+            return t
+
+    get_time.__doc__ = History.get_time.__doc__
+    
+    # ------------------------
+    # User-facing descriptions
+
     @class_or_instance_method
     def get_summary(self, hists=None):
         summary = SimpleNamespace()
@@ -1919,52 +2127,54 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         summary = (nameline + stateline + paramline + nestedline
                    + '\n' + updateblock)
         return '\n'.join((summary, *nested_summaries))
-
-    def get_tidx(self, t, allow_rounding=False):
-        # Copied from History.get_tidx
-        if self.time.is_compatible_value(t):
-            return self.time.index(t, allow_rounding=allow_rounding)
+    
+    def print_parameter_info(self, indent=0):
+        """
+        Print for each parameter a set of info typically useful for debugging:
+        Python type, NumPy dtype, Theano broadcast pattern / dimensions,
+        shape (if numeric value). Usage:
+        Print parameter info for model `model`::
+        
+        >>> model.print_parameter_info()
+        
+        Print parameter info for an arbitrary parameter set `params`
+        (may be dict, ParameterSet, ModelParams or IndexableNamespace)::
+        
+        >>> from sinn import Model
+        >>> Model.print_parameter_info(params)
+        
+        Mild formatting is used to keep the output human-readable.
+        """
+        if isinstance(self, (dict, sinn.ModelParams, mtb.typing.IndexableNamespace)):
+            # Method was called as a class method.
+            # 'self' is the provided argument, which is the paramset to print
+            Θ = self
         else:
-            # assert self.time.is_compatible_index(t)
-            assert shim.istype(t, 'int')
-            if (isinstance(t, sinn.axis.AbstractAxisIndexDelta)
-                and not isinstance(t, sinn.axis.AbstractAxisIndex)):
-                raise TypeError(
-                    "Attempted to get the absolute time index corresponding to "
-                    f"{t}, but it is an index delta.")
-            return self.time.Index(t)
-    get_tidx.__doc__ = History.get_tidx.__doc__
+            Θ = self.params
+        for k, v in getattr(Θ, 'items', lambda: Θ)():
+            if isinstance(v, (dict, sinn.ModelParams, mtb.typing.IndexableNamespace)):
+                print(k)
+                Model.print_parameter_info(v, indent=indent+2)
+            else:
+                broadcast = getattr(v, 'broadcastable', None)
+                if broadcast is None:
+                    broadcast = getattr(v, 'ndim', None)
+                    if broadcast is None:
+                        broadcast = '<no dim info>'
+                    else:
+                        broadcast = f"{broadcast} dims"
+                shape = getattr(v, 'shape', "<no shape>")
+                if shim.issymbolic(shape) and shim.graph.is_computable(v):
+                    shape = shape.eval()
+                shape = str(shape)
+                dtype = getattr(v, 'dtype', '<no dtype>')
+                print(" "*indent + f"{k}:  {type(v)}, "
+                      f"{broadcast}, {shape}, {dtype}")
 
-    def get_tidx_for(self, t, target_hist, allow_fractional=False):
-        raise DeprecationWarning("Use the `convert` method attached to the AxisIndex.")
 
-    def index_interval(self, Δt, allow_rounding=False):
-        return self.time.index_interval(value, value2,
-                                        allow_rounding=allow_rounding,
-                                        cast=cast)
-    index_interval.__doc__ = TimeAxis.index_interval.__doc__
-
-    def get_time(self, t):
-        # Copied from History
-        # NOTE: Copy changes to this function in Model.get_time()
-        # TODO: Is it OK to enforce single precision ?
-        if shim.istype(t, 'int'):
-            # Either we have a bare int, or an AxisIndex
-            if isinstance(t, sinn.axis.AbstractAxisIndex):
-                t = t.convert(self.time)
-            elif isinstance(t, sinn.axis.AbstractAxisIndexDelta):
-                raise TypeError(f"Can't retrieve the time corresponding to {t}: "
-                                "it's a relative, not absolute, time index.")
-            return self.time[t]
-        else:
-            assert self.time.is_compatible_value(t)
-            # `t` is already a time value -> just return it
-            return t
-
-    get_time.__doc__ = History.get_time.__doc__
-
-    ###################
+    # ==============================
     # Methods which modify the model
+    # ==============================
 
     def lock(self):
         for hist in self.history_set:
@@ -2173,6 +2383,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             Alternative to specifying parameters with `new_params`
             Keyword arguments take precedence over values in `new_params`.
         """
+        ## Parse new parameters into the format defined by self.Parameters
         if isinstance(new_params, self.Parameters):
             new_params = new_params.dict()
         if len(kwargs) > 0:
@@ -2182,12 +2393,12 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             ).get_values()
             # Calling `Parameters` validates all new parameters but converts them to shared vars
             # Calling `get_values` converts them back to numeric values
-            # TODO: Simply cast as NumericModelParams
-            # Wait until kernels have been cached before updating model params
 
+        ## Clear kernel caches
         # TODO: Everything with old_ids & clear_advance_fn should be deprecatable
         # We don't need to clear the advance function if all new parameters
         # are just the same Theano objects with new values.
+        
         old_ids = {name: id(val) for name, val in self.params}
         # clear_advance_fn = any(id(getattr(self.params, p)) != id(newp)
         #                        for p, newp in pending_params.dict().items())
@@ -2222,9 +2433,28 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             diskcache.save(str(hash(kernel)), kernel)
             kernel.update_params(**pending_params.dict())
 
-        # Update self.params in place
+        ## Update self.params in place
+        # Check that update is safe
+        cur_Θset_info = ParameterSet(mtb.theano.varcollection_typeinfo(self.params.get_values()))
+        new_Θset_info = ParameterSet(mtb.theano.varcollection_typeinfo(pending_params))
+        errmsgs = []
+        for θkey, new_θinfo in new_Θset_info.flatten().items():
+            cur_θinfo = cur_Θset_info[θkey]
+            if new_θinfo != cur_θinfo:
+                errmsgs.append(f"{θkey}\n  Current value: {cur_θinfo}\n"
+                                       f"  New value    : {new_θinfo}")
+        if errmsgs:
+            msg = ("Some update values do not match the type or shape of "
+                   "their associated current value.\n")
+            msg += "\n".join(errmsgs)
+            msg += ("\n\nTheano requires that these remain unchanged between "
+                    "compilation and execution.")
+            raise RuntimeError(msg)
+        # Perform update
         self.params.set_values(pending_params)
         self.set_submodel_params()
+
+        ## Cleanup: clear histories/compiled fns if necessary
 
         # NB: I think the only way params can change identity is if we have
         #     a nested model and `set_submodel_params` reassigns them.
@@ -3305,125 +3535,3 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         acc_f = self.accumulate_with_offset(0)(f)
         acc_f._accumulator = 'static_accumulate'
         return acc_f
-
-class BinomialLogpMixin:
-    """
-    Mixin class for models with binomial likelihoods.
-
-    .. Note::
-       Not yet tested with v0.2.
-    """
-    def make_binomial_loglikelihood(self, n, N, p, approx=None):
-        """
-        Parameters
-        ----------
-        n: History
-            Number of successful samples
-        N: array of ints:
-            Total number of samples.
-            Must have n.shape == N.shape
-        p: History
-            Probability of success; first dimension is time.
-            Must have n.shape == p.shape and len(n) == len(p).
-        approx: str
-            (Optional) If specified, one of:
-            - 'low p': The probability is always very low; the Stirling approximation
-              is used for the contribution from (1-p) to ensure numerical stability
-            - 'high p': The probability is always very high; the Stirling approximation
-              is used for the contribution from (p) to ensure numerical stability
-            - 'Stirling': Use the Stirling approximation for both the contribution from
-              (p) and (1-p) to ensure numerical stability.
-            - 'low n' or `None`: Don't use any approximation. Make sure `n` is really low
-              (n < 20) to avoid numerical issues.
-        """
-
-        def loglikelihood(start=None, stop=None):
-
-            hist_type_msg = ("To compute the loglikelihood, you need to use a NumPy "
-                             "history for the {}, or compile the history beforehand.")
-            if n.use_theano:
-                if n.compiled_history is None:
-                    raise RuntimeError(hist_type_msg.format("events"))
-                else:
-                    nhist = n.compiled_history
-            else:
-                nhist = n
-
-            phist = p
-            # We deliberately use times here (instead of indices) for start/
-            # stop so that they remain consistent across different histories
-            if start is None:
-                start = nhist.t0
-            else:
-                start = nhist.get_time(start)
-            if stop is None:
-                stop = nhist.tn
-            else:
-                stop = nhist.get_time(stop)
-
-            n_arr_floats = nhist[start:stop]
-            p_arr = phist[start:stop]
-
-            # FIXME: This would break the Theano graph, no ?
-            if shim.isshared(n_arr_floats):
-                n_arr_floats = n_arr_floats.get_value()
-            if shim.isshared(p_arr):
-                p_arr = p_arr.get_value()
-
-            p_arr = sinn.clip_probabilities(p_arr)
-
-            if not shim.is_theano_object(n_arr_floats):
-                assert(sinn.ismultiple(n_arr_floats, 1).all())
-            n_arr = shim.cast(n_arr_floats, 'int32')
-
-            #loglikelihood: -log n! - log (N-n)! + n log p + (N-n) log (1-p) + cst
-
-            if approx == 'low p':
-                # We use the Stirling approximation for the second log
-                l = shim.sum( -shim.log(shim.factorial(n_arr, exact=False))
-                              -(N-n_arr)*shim.log(N - n_arr) + N-n_arr + n_arr*shim.log(p_arr)
-                              + (N-n_arr)*shim.log(1-p_arr) )
-                    # with exact=True, factorial is computed only once for whole array
-                    # but n_arr must not contain any elements greater than 20, as
-                    # 21! > int64 (NumPy is then forced to cast to 'object', which
-                    # does not play nice with numerical ops)
-            else:
-                raise NotImplementedError
-
-            return l
-
-        return loglikelihood
-
-class PyMC3Model(Model, abc.ABC):
-    """
-    A specialized model that is compatible with PyMC3.
-
-    .. Note:
-       Still needs to be ported to v0.2.
-    """
-
-    @property
-    def pymc(self, **kwargs):
-        """
-        The first access should be done as `model.pymc()` to instantiate the
-        model. Subsequent access, which retrieves the already instantiated
-        model, should use `model.pymc`.
-        """
-        if getattr(self, '_pymc', None) is None:
-            # Don't require that PyMC3 be installed unless we need it
-            import sinn.models.pymc3
-            # Store kwargs so we can throw a warning if they change
-            self._pymc_kwargs = copy.deepcopy(kwargs)
-            # PyMC3ModelWrapper assigns the PyMC3 model to `self._pymc`
-            return sinn.models.pymc3.PyMC3ModelWrapper(self, **kwargs)
-        else:
-            for key, val in kwargs.items():
-                if key not in self._pymc_kwargs:
-                    logger.warning(
-                        "Keyword parameter '{}' was not used when creating the "
-                        "model and will be ignored".format(key))
-                elif self._pymc_kwargs[key] != value:
-                    logger.warning(
-                        "Keyword parameter '{}' had a different value ({}) "
-                        "when creating the model.".format(key, value))
-        return self._pymc
