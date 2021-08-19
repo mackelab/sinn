@@ -63,13 +63,17 @@ class DiskCache:
                     # expected format
                     pass
             self._disk_cache_path = shelf_pathname
+            logger.debug(f"Created DiskCache at location '{shelf_pathname}'")
         else:
+            if self._disk_cache_path is not None:
+                logger.debug("Removed DiskCache.")
             self._disk_cache_path = None
 
     def unset_file(self):
         """Remove the cache file from disk."""
         for path in self._db_paths:
             os.remove(path)
+            logger.debug(f"Removed DiskCache file at '{path}'.")
         self._disk_cache_path = None
 
     def __getitem__(self, key):
