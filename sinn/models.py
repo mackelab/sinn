@@ -2579,7 +2579,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         else:
             if isinstance(end, AbstractAxisIndex):
                 end = end.convert(self.time)
-            endtidx = self.get_tidx(end)
+            endtidx = self.get_tidx(end, allow_rounding=True)
 
         # Make sure we don't go beyond given data
         for hist in self.history_set:
