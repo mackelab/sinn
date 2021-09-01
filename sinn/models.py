@@ -284,6 +284,9 @@ class SubmodelParams(ModelParams):
     >>> submodel = MySubmodel(..., params=subΘ)
     >>> model = MyModel(..., sub=submodel, params={'submodel': subΘ})
     """
+    # TODO: If we support true generic submodels, we may not need to assign
+    # to the instance's `self.Parameters`. In that case, we can remove the
+    # exclusion of "Parameters" in `dict()`.
     class Config:
         extra = 'allow'
     # DEVNOTE: The order of non-field attributes (those allowed by
@@ -1102,6 +1105,12 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             {attr for attr, value in self.__dict__.items()
              if isinstance(value, PendingUpdateFunction)}
         )
+        # To deal with submodels which are initially unknown, we may assign a
+        # new concrete Parameters class to self.Parameters (see `SubmodelParams`
+        # and `update_parameters_type()`). This class is recreated during
+        # deserialization (as long as a 'Parameters' argument is not present),
+        # so we exclude it from export
+        exclude = add_exclude_mask(exclude, {"Parameters"})
         # When serialized, HistoryUpdateFunctions include the namespace.
         # Remove this, since it is the same as `self`, and inserts a circular
         # dependence.
@@ -1137,7 +1146,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         """
         Replace the placeholder `SubmodelParams` by the actual `Parameters`
         types used by submodels. This must be done after the type of the
-        submodels is known (which currently is known only after instantiation,
+        submodel is known (which currently is known only after instantiation,
         since we don't support true generic types for submodels).
         """
         global _concrete_parameter_classes

@@ -14,7 +14,7 @@ the following changes:
 - Manages opening/closing the cache file, so simple save()/load() calls suffice.
   (Rather than having to wrap in a `with open(cachefile...` context.)
 - Logging when cache is used.
-- Will not corrupt or destroey an existing cache file, e.g. if parallel
+- Will not corrupt or destroy an existing cache file, e.g. if parallel
   processes try to use the same location.
 
 Created Wed Feb 22 2017
