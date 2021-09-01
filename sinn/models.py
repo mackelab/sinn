@@ -1078,6 +1078,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 replace_in_dict[attr] = copy.copy(v)
                 replace_in_dict[attr]['update_function'] = None
                 replace_in_dict[attr]['range_update_function'] = None
+        # TEMP WORKAROUND – for tasks created before we excluded 'Parameters' in dict()
+        kwargs.pop("Parameters", None)
         # We do it this way to avoid mutating the kwargs
         for attr, v in replace_in_dict.items():
             kwargs[attr] = v
