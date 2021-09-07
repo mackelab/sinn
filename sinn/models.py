@@ -175,7 +175,7 @@ class ModelParams(BaseModel):
              for k,v in self}
         return IndexableNamespace(**d)
 
-    def set_values(self, values: ModelParams,  # TODO -> NumericModelParams
+    def _set_values(self, values: ModelParams,  # TODO -> NumericModelParams
                    must_set_all_params: bool=False,
                    must_not_set_other_params: bool=True,
                    borrow: bool=False):
@@ -187,6 +187,10 @@ class ModelParams(BaseModel):
         Helper method which calls `set_value` on each parameter.
         For non-shared variables, the value is simply updated.
         Values are updated in place.
+        
+        .. Caution:: In almost all situations, one should call
+           `model.update_params` rather than `_set_values` directly, as this will
+           ensure that submodel parameters remain in sync.
 
         Parameters
         ----------
@@ -207,27 +211,28 @@ class ModelParams(BaseModel):
         elif isinstance(values, type(self)):
             values_dict = {k: v for k,v in values}
         else:
-            # `self` is always a subclass, and we want `values` to be instance of that subclass
-            raise TypeError(f"{type(self)}.set_values: `values` must be an "
+            # `self` is always a subclass, and we want `values` to be an instance of that subclass
+            raise TypeError(f"{type(self)}._set_values: `values` must be an "
                             f"instance of {type(self)}, but is rather of type "
                             f"{type(values)}.")
         if must_set_all_params and not set(self.__fields__) <= set(values_dict):
             raise ValueError("The following parameters are missing: "
                              f"{set(self.__fields__) - set(values_dict)}")
         if must_not_set_other_params and not set(values_dict) <= set(self.__fields__):
-            raise ValueError("The following parameters are not recognized by the model: "
-                             f"{set(values_dict) - set(self.__fields__)}")
+            raise ValueError(f"{type(self)} does not recognize the following parameters: "
+                             f"{sorted(set(values_dict) - set(self.__fields__))}.\n"
+                             f"Expected parameters are: {sorted(set(self.__fields__))}.")
         # Build hierarchies, in case `values` uses dotted keys
         values_dict = ParameterSet(values_dict)
         for k, v in values_dict.items():
-            # Special track for nested models
+            # Special path for nested models
             if isinstance(v, (dict, SimpleNamespace)):
                 subΘ = getattr(self, k)
                 assert isinstance(subΘ, ModelParams)
-                subΘ.set_values(v, must_not_set_other_params=False)
-                    # At present, nested model params don't know what model
-                    # they attach to, and therefore can't validate their inputs
-            # Normal track
+                subΘ._set_values(v, borrow=borrow,
+                                must_not_set_other_params=must_not_set_other_params,
+                                must_set_all_params=must_set_all_params)
+            # Normal path
             else:
                 self_v = getattr(self, k)
                 if shim.isshared(self_v):
@@ -247,7 +252,7 @@ class SubmodelParams(ModelParams):
     """
     Class used as a placeholder for parameters of a submodel of unknown type.
     
-    This performs not parameter validation (since it does not know the expected
+    This performs no parameter validation (since it does not know the expected
     parameters). It simply assumes that all provided values are valid, and
     provides the same interface as `ModelParams`.
     
@@ -300,6 +305,18 @@ class SubmodelParams(ModelParams):
     def dict(self, **kwargs):
         d = super().dict(**kwargs)
         return {k: d[k] for k in sorted(d)}
+    def _set_values(self, values,
+                    must_set_all_params=False,
+                    must_not_set_other_params=False,
+                    borrow=False):
+        """
+        Wrapper for `ModelParams._set_values` which always sets
+        `must_not_set_other_params` and `must_set_all_params` to False.
+        Since a `SubmodelParams` is a placeholder, it does not know the expected
+        parameters and thus cannot validate that they match those provided.
+        """
+        return super()._set_values(
+            values, must_set_all_params=False, must_not_set_other_params=False, borrow=borrow)
                     
 ModelParams.update_forward_refs()
 
@@ -1200,12 +1217,12 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         corresponding subset of parameters of the container model)::
 
             params_values = submodel.Parameters(model.subparams).get_values()
-            submodel.params.set_values(param_values)
+            submodel.params._set_values(param_values)
             model.subparams = submodel.params
 
         The reasoning is as follows:
 
-        - We normally set parameter values with `model.params.set_values(value
+        - We normally set parameter values with `model.params._set_values(value
           dict)`. The values then need to be propagated to the matching
           parameters of submodels.
         - submodel.Parameters may implement validation or normalization, which
@@ -1220,7 +1237,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             # Apply submodel's Parameters validator
             subparam_vals = submodel.Parameters.parse_obj(subparams).get_values()
             # Transfer parameter values to submodel
-            submodel.params.set_values(subparam_vals)
+            submodel.params._set_values(subparam_vals)
             # Replace container parameter by corresponding instances of submodel
             for subθname, θ in submodel.params:
                 assert subθname in subparams.__dict__, (
@@ -2462,7 +2479,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                     "compilation and execution.")
             raise RuntimeError(msg)
         # Perform update
-        self.params.set_values(pending_params)
+        self.params._set_values(pending_params)
         self.set_submodel_params()
 
         ## Cleanup: clear histories/compiled fns if necessary
