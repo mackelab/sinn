@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 import scipy as sp
-from warnings import warn
+from warnings import warn, filterwarnings, catch_warnings
 import logging
 logger = logging.getLogger(__name__)
 import abc
@@ -3257,14 +3257,19 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # Now we can construct the scan graph.
         # NB: tidx will be replaced by anchor_tidx (i.e. num_tidx), so it should be k-1
         #     if we want to compute k. Ergo, tidx range must go from curtidx to stoptidx-1.
-        outs, upds = shim.scan(onestep,
-                               sequences = [shim.arange(curtidx, stoptidx,
-                                                        dtype=self.tidx_dtype)],
-                               outputs_info = outputs_info,
-                               non_sequences=shared_vars_in_graph,
-                               name = f"scan ({self.name})",
-                               return_list=True
-                               )
+        with catch_warnings():
+            # Theano still uses np.bool somewhere; there's nothing we or the user can do
+            filterwarnings("ignore",
+                           "`np.bool` is a deprecated alias for the builtin `bool`",
+                           DeprecationWarning)
+            outs, upds = shim.scan(onestep,
+                                   sequences = [shim.arange(curtidx, stoptidx,
+                                                            dtype=self.tidx_dtype)],
+                                   outputs_info = outputs_info,
+                                   non_sequences=shared_vars_in_graph,
+                                   name = f"scan ({self.name})",
+                                   return_list=True
+                                   )
 
         ## Final repackaging: history outputs moved to updates dict ##
 
