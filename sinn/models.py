@@ -16,30 +16,33 @@ TODO
 """
 from __future__ import annotations
 
-import numpy as np
-import scipy as sp
-from warnings import warn, filterwarnings, catch_warnings
-import logging
-logger = logging.getLogger(__name__)
+import sys
 import abc
+import copy
 from collections import namedtuple, OrderedDict, ChainMap, defaultdict
 from collections.abc import Sequence, Iterable, Callable
+from warnings import warn, filterwarnings, catch_warnings
+import logging
 import inspect
 from inspect import isclass
 from itertools import chain, combinations
 from functools import partial, wraps
-import copy
-import sys
+import textwrap
+
+import numpy as np
+import scipy as sp
 
 import pydantic
 from pydantic import BaseModel, PrivateAttr, validator, root_validator
 from pydantic.typing import AnyCallable
+from pydantic.fields import ModelField
 from typing import (
     Any, Optional, Union, Tuple, Sequence, List, Dict, Set, Generator,
     Callable as CallableT, NamedTuple)
 from types import SimpleNamespace
 from dataclasses import dataclass
 from parameters import ParameterSet
+from tabulate import tabulate
 
 import theano_shim as shim
 import mackelab_toolbox as mtb
@@ -61,6 +64,8 @@ from sinn.diskcache import diskcache
 
 # Import into namespace, so user code doesn't need to import utils
 from sinn.utils.pydantic import initializer, add_exclude_mask
+
+logger = logging.getLogger(__name__)
 
 _models = {}
 registered_models = _models.keys()
@@ -138,6 +143,7 @@ def get_model(modelname, *args, **kwargs):
 from mackelab_toolbox.typing import IndexableNamespace
 
 class ModelParams(BaseModel):
+    "Use the `.info()` method for a summary of expected parameters."
 
     class Config:
         json_encoders = mtb.typing.json_encoders
@@ -150,7 +156,7 @@ class ModelParams(BaseModel):
             if mtb.typing.json_like(v, "Array"):
                 values[k] = mtb.typing.Array.validate(v)
         return values
-        
+
     def __init__(self, *args, **kwargs):
         # Reconstruct hierarchies from dotted parameter names
         kwargs = ParameterSet(kwargs)
@@ -161,7 +167,7 @@ class ModelParams(BaseModel):
         Helper method which calls `get_value` on each parameter.
         Returns a copy of the ModelParams, where each shared variable has
         been replaced by its current numeric value.
-        
+
         Parameters
         ----------
         borrow:
@@ -187,7 +193,7 @@ class ModelParams(BaseModel):
         Helper method which calls `set_value` on each parameter.
         For non-shared variables, the value is simply updated.
         Values are updated in place.
-        
+
         .. Caution:: In almost all situations, one should call
            `model.update_params` rather than `_set_values` directly, as this will
            ensure that submodel parameters remain in sync.
@@ -247,18 +253,55 @@ class ModelParams(BaseModel):
                     if not borrow:
                         v = getattr(v, 'copy', lambda: copy.copy(v))()
                     setattr(self, k, v)
-      
+
+    @staticmethod
+    def _param_desc(field: ModelField):
+        internal_name = (f"stored as '{field.name}'" if field.name != field.alias
+                         else "")
+        optional = "optional" if not field.required else ""
+        default = f"default: {repr(field.default)}" if field.default is not None else ""
+        extra = ", ".join(s for s in (internal_name, optional, default) if s)
+        if extra:
+            extra = f" ({extra})"
+        return field.alias, ": " + field._type_display(), extra
+
+    # DEVNOTE: There’s a bit of redundancy here with Model’s `summarize` method
+    #          Whether it makes sense to combine them is currently unclear to me
+    @classmethod
+    def info(cls, level: int=1, print: bool=True) -> Union[None, str]:
+        """
+        Display summary information for this set of parameters.
+        :param:level: Controls the amount of information to display.
+           Level 0: Only display class name (similar to ``str(cls)``)
+           Level 1 (default): Display the list of parameters, along with their
+              type, default value and aliased name (if applicable)
+        :param:print: Whether to print the result (default; returns `None`)
+           or to return it as a string
+
+        """
+        import builtins
+        text = cls.__qualname__
+        if level > 0:
+            param_list = tabulate(
+                [cls._param_desc(field) for field in cls.__fields__.values()],
+                 tablefmt='plain')
+            text += "\n" + textwrap.indent(param_list, "   ")
+        if print:
+            builtins.print(text)
+        else:
+            return text
+
 class SubmodelParams(ModelParams):
     """
     Class used as a placeholder for parameters of a submodel of unknown type.
-    
+
     This performs no parameter validation (since it does not know the expected
     parameters). It simply assumes that all provided values are valid, and
     provides the same interface as `ModelParams`.
-    
+
     Typically, when a `Model` is instantiated which contains submodels, their
     `SubmodelParams` are automatically replaced by the appropriate `ModelParams`.
-    
+
     .. Note:: For consistency, `SubmodelParams` always returns its parameters
        with parameter names in lexicographical order.
 
@@ -269,10 +312,10 @@ class SubmodelParams(ModelParams):
        instantiation (instead of during *class creating*, as could be done with
        a generic type). This also means that an *instance's* `Parameters` class
        is distinct from the *class'* `Parameters` class.
-       
-       
+
+
     Example usage::
-    
+
     >>> from sinn.models import Model, SubmodelParams
     >>>
     >>> class MyModel(Model):
@@ -317,7 +360,7 @@ class SubmodelParams(ModelParams):
         """
         return super()._set_values(
             values, must_set_all_params=False, must_not_set_other_params=False, borrow=borrow)
-                    
+
 ModelParams.update_forward_refs()
 
 # Model decorators
@@ -346,6 +389,13 @@ def updatefunction(hist_nm, inputs):
     def dec(upd_fn):
         return PendingUpdateFunction(hist_nm, inputs, upd_fn)
     return dec
+
+# This text is added to the docstring of each model
+__model_docstring_footer__ = textwrap.dedent("""
+    .. Warning::
+       If you need to set the model to a predictable state, use the provided
+       `~Model.reseed_rngs` method. Simply setting the state of `self.rng`
+       will work for NumPy RNGs, but not symbolic ones.""")
 
 class ModelMetaclass(pydantic.main.ModelMetaclass):
     # Partial list of magical things done by this metaclass:
@@ -629,7 +679,7 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
                 params_namespace = {}
             Parameters = paramsmeta("Parameters", (OldParameters, ModelParams),
                                     params_namespace)
-                                    
+
         if any("Union" in str(field.type_)
                for field in Parameters.__fields__.values()):
            possible_offenders = [field for field in Parameters.__fields__.values()
@@ -780,7 +830,14 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         namespace['_pending_update_functions'] = list(_pending_update_functions.values())
         namespace['__annotations__'] = new_annotations
 
-        return super().__new__(metacls, cls, bases, namespace)
+        newcls = super().__new__(metacls, cls, bases, namespace)
+
+        # Replace the developer docstring with a user docstring
+        if abc.ABC not in bases:
+            # If model class is still abstract, then the dev docstring is more appropriate
+            newcls.__doc__ = newcls.summarize() + __model_docstring_footer__
+
+        return newcls
 
     # TODO: Recognize RNG as input
 
@@ -930,7 +987,7 @@ def connect_submodel_validator(submodel_name):
         return submodel
     f.__name__ = f"connect_submodel_{submodel_name.replace('.', '_')}"
     return validator(submodel_name, pre=True, allow_reuse=True)(f)
-    
+
 _concrete_parameter_classes = {}
 
 class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
@@ -984,7 +1041,12 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
        If you are subclassing Model to create another abstract class (a class
        meant to be subclassed rather than used on its own), add `abc.ABC` to
        its parents – this will identify your model as abstract, and disable
-       warnings about missing attributes like `State`.
+       warnings about missing attributes like `State`. Be sure to use `ABC` as
+       the last parent::
+
+           from sinn.models import Model
+           class MyModel(Model, abc.ABC):
+               ...
 
     .. Warning::
        If you need to set the model to a predictable state, use the provided
@@ -1038,7 +1100,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     # =================================================
     # Construction, initialization, copying, validation
     # =================================================
-        
+
     # Register subclasses so they can be deserialized
     def __init_subclass__(cls):
         if not inspect.isabstract(cls) and '__throwaway_class' not in cls.__dict__:
@@ -1169,7 +1231,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         since we don't support true generic types for submodels).
         """
         global _concrete_parameter_classes
-        
+
         subparams = {submodelname: submodel.Parameters
                      for submodelname, submodel in self.nested_models.items()}
         param_type_key = (type(self), tuple(subparams.values()))
@@ -2010,7 +2072,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             return t
 
     get_time.__doc__ = History.get_time.__doc__
-    
+
     # ------------------------
     # User-facing descriptions
 
@@ -2123,8 +2185,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     def summarize(self, hists=None):
         nested_models = self._model_identifiers
         if isinstance(self, type):
-            nameline = "Model '{}'".format(self.name)
-            paramline = "Parameters: " + ', '.join(self.Parameters.__annotations__) + "\n"
+            name = getattr(self, '__name__', type(self).__name__)  # Copied from `def name()`, so it works also when called as a class method
+            nameline = "Model '{}'".format(name)
+            paramline = "Parameters: " + ', '.join(getattr(self.Parameters, '__annotations__', ["<undefined>"])) + "\n"
             if len(nested_models) == 0:
                 nestedline = ""
             else:
@@ -2147,7 +2210,10 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             nested_summaries = [model.summarize(hists)
                                 for model in self.nested_models.values()]
         nameline += '\n' + '-'*len(nameline) + '\n'  # Add separating line under name
-        stateline = "State variables: " + ', '.join(self.State.__annotations__)
+        try:
+            stateline = "State variables: " + ', '.join(self.State.__annotations__)
+        except AttributeError:
+            stateline = "State variables: <undefined>"
         stateline = stateline + "\n"
         updateblock = '\n\n'.join([
             f"Update function for {hist_desc}:\n" + upd_src
@@ -2155,22 +2221,22 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         summary = (nameline + stateline + paramline + nestedline
                    + '\n' + updateblock)
         return '\n'.join((summary, *nested_summaries))
-    
+
     def print_parameter_info(self, indent=0):
         """
         Print for each parameter a set of info typically useful for debugging:
         Python type, NumPy dtype, Theano broadcast pattern / dimensions,
         shape (if numeric value). Usage:
         Print parameter info for model `model`::
-        
+
         >>> model.print_parameter_info()
-        
+
         Print parameter info for an arbitrary parameter set `params`
         (may be dict, ParameterSet, ModelParams or IndexableNamespace)::
-        
+
         >>> from sinn import Model
         >>> Model.print_parameter_info(params)
-        
+
         Mild formatting is used to keep the output human-readable.
         """
         if isinstance(self, (dict, sinn.ModelParams, mtb.typing.IndexableNamespace)):
@@ -2397,7 +2463,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         Clears any kernel cache which depends on these parameters.
         By default, also clears unlocked histories: if one assumes stationarity
         of parameters, then a parameter change invalidates histories.
-        
+
         TODO: Make `new_params` a dict and just update parameters in the dict.
 
         Parameters
@@ -2426,7 +2492,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # TODO: Everything with old_ids & clear_advance_fn should be deprecatable
         # We don't need to clear the advance function if all new parameters
         # are just the same Theano objects with new values.
-        
+
         old_ids = {name: id(val) for name, val in self.params}
         # clear_advance_fn = any(id(getattr(self.params, p)) != id(newp)
         #                        for p, newp in pending_params.dict().items())
@@ -2842,9 +2908,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         Return the computational graph of the function `f` evaluated at all
         time points between `curtidx` (inclusive) and `stoptidx` (exclusive).
         The caller is responsible for compiling this graph into a function.
-        
+
         Assumptions:
-        
+
         - During graph creation, all unlocked histories are synchronized
           (their current time indices match, after correcting for padding).
           A RuntimeError is raised if this is not the case.
@@ -2852,18 +2918,18 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         - *Locked* histories have their current index ≥ `stoptidx` - 1.
         - Expressions in `updates` and `shim.get_updates()` correspond to
           *pointwise* (or one-step-ahead) computations.
-        
+
         Expressions in both `f` and `updates` may depend on any number of
         `_num_tidx` variables attached to histories (which correspond to that
         history's current time index).
         Concretely, this function thus evaluates `f`, replaces all `_num_tidx`
         variables by an appropriately shifted `curtidx`, and creates a Theano
         `scan` op, which iterates over time points. The op does three things:
-        
+
         - Collect the evaluations of `f`.
         - Advance any unlocked histories.
         - Iterate additional updates listed in `updates`.
-        
+
         Like `scan`, `map_over_time` returns two variables, *outputs* and
         *updates*.
         *Outputs* are the evaluations of `f`.
@@ -2919,20 +2985,20 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         SymbArray or List[SymbArray] (if `f` ≠ None):
             The result of `f`, evaluated at each time point.
             When `f` is not None, the output shape is the same as `scan`:
-            
+
             - If `f` returns a single values, returns a symbolic array,
               of length equal to ``stoptidx - curtidx``.
             - If `f` returns multiple values, returns a list of symbolic arrays,
               each of length equal to ``stoptidx - curtidx``.
               The order of arrays matches the order in which `f` returns values.
             - If `f` is None, only the update dictionary is returned.
-            
+
         Update dictionary:
             Can be passed as the `updates` parameter when compiling a function
             to update shared variables; the most common use case is to fill
             histories up to `stoptidx` - 1.
             The returned dictionary will include updates for:
-            
+
             - The `_num_data` shared variable(s) underlying any unlocked history
               required to compute `f`.
             - The `_num_data` shared variable(s) underlying all additional
@@ -3000,7 +3066,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         anchor_tidx_typed = self.time.Index(anchor_tidx)  # Do only once to keep graph as clean as possible
         tidxsubs = {h._num_tidx: anchor_tidx_typed.convert(h.time)
                     for h in self.unlocked_histories}
-                    
+
         # Compute anchored expression graphs for `f`.
         if f:
             f_outputs = f(anchor_tidx_typed+1)
@@ -3026,12 +3092,12 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 f"histories: {problem_hists}")
 
         ## Construction of outputs_info (init vals & taps) ##
-                
+
         # Initialize the `outputs_info` list for the scan step with the
         # outputs of `f`. Since these don't require taps, we create dummy taps
         # for them. (See https://github.com/aesara-devs/aesara/issues/500)
         # C.f. following `if len(negtaps) == 0` below.
-        
+
         outputs = f_outputs.copy()
         outputs_info = []
         output_taps_replace = []  # Flattened list of taps. Used to construct the
@@ -3047,7 +3113,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             # init_val.name = f"{name}[scan init, dummy]"
             # tap_names.append(f"{name}[k-1]")
             # outputs_info.append({'initial': init_val, 'taps': [-1]})
-        
+
         # Collect the information for the variables that are iterated forward
         # We split taps into forward/positive (> 0) and backward/negative (≤ 0).
         # Backward taps will become the `outputs_info` variable to scan.
@@ -3182,7 +3248,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             # NB: It's important to do the taps substitution before the tidx
             #   substitutions, because once the tidcs are changed, the subgraphs
             #   corresponding to taps no longer have the same identity.
-            step_outputs = [shim.graph.clone(shim.graph.clone(o, 
+            step_outputs = [shim.graph.clone(shim.graph.clone(o,
                                 replace=taps_replace_dict),
                                 replace=tidxsubs)  # Convert all hist anchors to expressions relative the unanchored tidx
                             for o in outputs]
@@ -3308,7 +3374,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             #                shim.graph.clone(outslc.stop,  replace=tidxsubs))
             # Sanity check: outslc resolves to a non-empty slice of same shape as out
             evalslc = None if not inp else shim.eval(outslc, givens=inp, if_too_costly='ignore')
-            # # DEBUG >>>>> 
+            # # DEBUG >>>>>
             # print([h.name for h in self.unlocked_histories])
             # print(shim.eval(out, givens=inp, max_cost=None))
             # import theano
@@ -3341,10 +3407,10 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             raise AssertionError("There are multiple updates targeting the "
                                  f"following variables:\n{repeated_upds}")
         upds = dict(chain(upds.items(), *(d.items() for d in hist_updates)))
-        
+
         # Remove history updates from `outs`, since they are now in `upds`
         outs = outs[:len(f_outputs)]
-        
+
         # Remove undesired history updates (typically intermediate histories)
         excl_hists = (h for h in self.history_set if h not in histories)
         excl_upds = set(chain(*((h._num_tidx, *(h._num_data if isinstance(h._num_data, tuple) else [h._num_data]))
@@ -3352,7 +3418,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         for k in list(upds.keys()):
             if k in excl_upds:
                 del upds[k]
-            
+
         # Any remaining anchor tidx should map to curtidx; replace by the symbolic `curtidx` in the tidx substitution dictionary
         tidxsubs = {anchor_tidx: curtidx,
                     **{k: shim.graph.clone(v, replace={anchor_tidx: curtidx})
@@ -3360,7 +3426,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         outs = [shim.graph.clone(v, replace=tidxsubs) for v in outs]
         upds = {k: shim.graph.clone(v, replace=tidxsubs)
                 for k,v in upds.items()}
-            
+
         # Assert that none of the anchor time indices are left as inputs in the graph
         # Time indices should be functions of `curtidx` or `stoptidx` only.
         disallowed_tidx_inputs = (({h._num_tidx for h in self.history_set if h.locked} | {anchor_tidx})
@@ -3434,7 +3500,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         -----
         UserWarning
             : If the wrapped function has 2 arguments and the first is not 'self'.
-            
+
         .. Todo:: Add a mechanism for optionally advancing histories at the
            same time a value is accumulated.
         """
