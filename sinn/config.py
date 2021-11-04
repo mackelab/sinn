@@ -92,7 +92,7 @@ class CompatVersion:
     def set(self, version_str):
         self._compat_version = self.parse(version_str)
     def parse(other):
-        if isnstance(other, str):
+        if isinstance(other, str):
             return packaging.version.parse(other)
         else:
             return other

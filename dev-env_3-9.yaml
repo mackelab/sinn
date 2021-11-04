@@ -9,6 +9,7 @@ dependencies:
   # - theano
   - theano-pymc
   - tqdm   # Planned to be moved to dev packages
+  - tabulate
   - packaging
   - pip
   - pip:
