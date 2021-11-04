@@ -17,7 +17,8 @@ TODO:
 import numpy as np
 import theano_shim as shim
 import pint
-ureg = pint.UnitRegistry()
+ureg = pint.get_application_registry()
+pint.set_application_registry(ureg)
 import mackelab_toolbox as mtb
 import mackelab_toolbox.typing
 import mackelab_toolbox.cgshim
@@ -26,7 +27,6 @@ import mackelab_toolbox.theano
 import mackelab_toolbox.serialize
 mackelab_toolbox.theano.GraphCache.activated = False
 mackelab_toolbox.theano.CompiledGraphCache.activated = False
-mtb.typing.PintUnit.ureg = ureg
 
 import pytest
 from conftest import clean_theano_dir

@@ -44,7 +44,7 @@ import mackelab_toolbox.typing
 import mackelab_toolbox.iotools
 from mackelab_toolbox.transform import Transform
 from mackelab_toolbox.typing import (
-    Array, NPValue, DType, Number, Integral, Real, PintValue, QuantitiesValue,
+    Array, NPValue, DType, Number, Integral, Real, AnyUnitType,
     Shared, FloatX)
 
 from inspect import signature, isabstract
@@ -114,7 +114,7 @@ class TimeAxis(RangeAxis):
     # bugs with Pydantic, and even if I could find a way to get it to work
     # nicely, it would obscure the inheritance more than it is useful to.
     label: str = 't'
-    time_unit: ClassVar[Union[PintValue,QuantitiesValue]] = unitless
+    time_unit: ClassVar[Union[AnyUnitType]] = unitless
     unit : Optional[mtb.typing.AnyUnitType]
     @validator('unit', pre=True, always=True)
     def set_unit_default(cls, unit):
@@ -158,7 +158,7 @@ class TimeArrayAxis(ArrayAxis):
     ## TimeAxisMixin ##
     # See comment in TimeAxis
     label: str = 't'
-    time_unit: ClassVar[Union[PintValue,QuantitiesValue]] = unitless
+    time_unit: ClassVar[Union[AnyUnitType]] = unitless
     unit : Optional[Any]
     @validator('unit', pre=True, always=True)
     def set_unit_default(cls, unit):

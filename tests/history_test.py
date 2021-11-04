@@ -24,7 +24,8 @@ from mackelab_toolbox.transform import Transform
 import mackelab_toolbox.typing
 import mackelab_toolbox.cgshim
 import pint
-ureg = pint.UnitRegistry()
+ureg = pint.get_application_registry()
+pint.set_application_registry(ureg)
 
 # Series.__fields__
 
@@ -42,7 +43,6 @@ from conftest import clean_theano_dir
 def _test_history_series_indexing(cgshim):
 
     shim.load(cgshim)
-    mtb.typing.PintUnit.ureg = ureg
     
     mtb.typing.freeze_types()
     from sinn.histories import (
@@ -103,7 +103,6 @@ def _test_history_series_indexing(cgshim):
 
 def _test_history_spiketrain_indexing(cgshim):
     shim.load(cgshim)
-    mtb.typing.PintUnit.ureg = ureg
 
     mtb.typing.freeze_types()
     from sinn.histories import (
@@ -185,7 +184,6 @@ def _test_history_spiketrain_indexing(cgshim):
 
 def _test_history_series_updates(cgshim):
     shim.load(cgshim)
-    mtb.typing.PintUnit.ureg = ureg
     
     mtb.typing.freeze_types()
     from sinn.histories import (
@@ -295,7 +293,6 @@ def _test_history_series_updates(cgshim):
 
 def _test_history_spiketrain_updates(cgshim):
     shim.load(cgshim)
-    mtb.typing.PintUnit.ureg = ureg
     
     mtb.typing.freeze_types()
     from sinn.histories import (
@@ -389,7 +386,6 @@ def _test_history_spiketrain_updates(cgshim):
 def _test_history_serialization(cgshim):
 
     shim.load(cgshim)
-    mtb.typing.PintUnit.ureg = ureg
 
     mtb.typing.freeze_types()
     import sinn.config

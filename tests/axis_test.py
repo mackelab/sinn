@@ -4,9 +4,8 @@ from mackelab_toolbox.transform import Transform, Bijection
 import mackelab_toolbox as mtb
 import mackelab_toolbox.typing
 import pint
-ureg = pint.UnitRegistry()
-mtb.typing.PintValue.ureg = ureg
-mtb.typing.PintUnit.ureg = ureg
+ureg = pint.get_application_registry()
+pint.set_application_registry(ureg)
 import quantities as Q
 
 import theano_shim  as shim
