@@ -222,7 +222,7 @@ def _test_map_axis(cglib):
     # Clean up state of symbolic updates
     shim.reset_updates()
 
-def _test_regular_axis(cglib):
+def _test_range_axis(cglib):
 
     shim.load(cglib)
     mtb.typing.freeze_types()
@@ -235,7 +235,19 @@ def _test_regular_axis(cglib):
     axis1 = RangeAxis(label='r1', min=0., max=10., step=Δt, unit=ureg.s)
     axis2 = RangeAxis(label='r2', transform=B1, min=0., max=9.99,  step=Δt, unit=ureg.s)
     axis3 = RangeAxis(label='r3', min=0., max=10.01, step=Δt, unit=ureg.s)
+    with pytest.raises(ValueError):
+        RangeAxis(label='e1', min=1, max=0, step=Δt)  # Error: max < min
+    # Following axes only used to test unit conversions
+    axis4 = RangeAxis(label='r4', min=1.*ureg.s, max=5000.*ureg.ms, step=Δt,        unit=ureg.s)  # Compatible units are converted
+    axis5 = RangeAxis(label='r5', min=1.*ureg.s, max=5.,            step=Δt*ureg.s, unit=ureg.s)
+    # axis6 = RangeAxis(label='r6', min=1000.*ureg.ms, max=5, step=Δt, unit=ureg.s)  # Compatible units are converted
+    with pytest.raises(ValueError):
+        RangeAxis(label='e2', min=1.*ureg.m, max=5, step=Δt, unit=ureg.s)  # Error: Units don't match
+    assert axis4.min == axis5.min == 1
+    assert axis4.max == axis5.max == 5
+    assert axis4.unit == axis5.unit == ureg.s
 
+    # Utilties for checking compatibility of new values
     assert axis1.unit_check(1*ureg.s)
     assert not axis1.unit_check(1.)
     assert not axis1.unit_check(1*Q.s)
@@ -549,10 +561,10 @@ def test_num_map_axis():
     _test_map_axis('numpy')
 def test_theano_map_axis(clean_theano_dir):
     _test_map_axis('theano')
-def test_num_regular_axis():
-    _test_regular_axis('numpy')
-def test_theano_regular_axis(clean_theano_dir):
-    _test_regular_axis('theano')
+def test_num_range_axis():
+    _test_range_axis('numpy')
+def test_theano_range_axis(clean_theano_dir):
+    _test_range_axis('theano')
 def test_num_symbolic_indexing():
     _test_symbolic_indexing('numpy')
 def test_theano_symbolic_indexing(clean_theano_dir):
@@ -564,6 +576,6 @@ def test_theano_numeric_indexing(clean_theano_dir):
 
 if __name__ == "__main__":
     # test_map_axis()
-    # test_regular_axis()
+    # test_range_axis()
     # test_num_numeric_indexing()
     test_theano_symbolic_indexing()

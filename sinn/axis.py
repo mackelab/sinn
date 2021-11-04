@@ -83,7 +83,7 @@ import numpy as np
 
 import mackelab_toolbox as mtb
 import mackelab_toolbox.units
-from typing import Callable, Optional, Any, Union, Type, ClassVar
+from typing import Union, Callable, Optional, Any, Union, Type, ClassVar
 # from types import FunctionType
 from mackelab_toolbox.typing import (
     Range, Sequence, Number, Integral, Real, NPValue, Array, FloatX, AnyUnitType)
@@ -98,6 +98,7 @@ from mackelab_toolbox.utils import (
 from mackelab_toolbox.transform import Transform, Bijection
 from sinn import config
 import sinn
+from sinn.utils.pydantic import initializer
 
 # The unitless object is assigned as the `unit` to an axis with no units.
 # This allows us to test for presence of units simply writing
@@ -191,6 +192,8 @@ class Axis(BaseModel, abc.ABC):
     Abstract axis class. Only stores label, unit, and optional min and max
     values. For an axis with defined stops (as needed for must numerical
     applications), use `DiscretizedAxis`.
+    
+    .. Note:: As an abstract class, `Axis` is not instantiable on its own.
 
     **Transformed axes**
        It is possible to attach a
@@ -250,10 +253,10 @@ class Axis(BaseModel, abc.ABC):
         description = "Specify either `transform` or `label`. If `label` is "
                        "not provided, it's value deduced from `transform`. "
                        "`label` is required if `transform` is not provided.")
-    min_      : Optional[Number] = Field(None, alias='min')
-    max_      : Optional[Number] = Field(None, alias='max')
     unit      : Union[AnyUnitType] = unitless
     unit_label: Optional[str]
+    min_      : Optional[Number] = Field(None, alias='min')
+    max_      : Optional[Number] = Field(None, alias='max')
     
     class Config:
         allow_population_by_field_name = True  # More reliable deserialization
@@ -322,14 +325,6 @@ class Axis(BaseModel, abc.ABC):
             # We get more consistent serialization if we always export aliases
         return super().dict(*args, **{**kwargs, 'by_alias': True})
 
-    @root_validator(skip_on_failure=True)  # Executing when either set_label or set_transform fails just throws a confusing error
-    def label_or_transform(cls, values):
-        label, transform = (values.get(x, None) for x in
-                            ('label', 'transform'))
-        if (label is None) and (transform is None):
-            raise TypeError("Either `label` or `transform` must be specified.")
-        return values
-
     @validator('transform', pre=True)
     def set_transform(cls, transform):
         if transform is not None:
@@ -338,20 +333,11 @@ class Axis(BaseModel, abc.ABC):
 
     @validator('label', pre=True)
     def set_label(cls, label, values):
-        """If label isn't given, try to deduce form transform."""
+        """If label isn't given, try to deduce from transform."""
         if label is None:
             transform = values.get('transform', None)
             label = getattr(transform, 'xname', None)
         return label
-
-    @validator('max_')  # max_ after min_ => min_ in `values`
-    def check_axis_minmax_consistent(cls, max_, values):
-        min_ = values.get('min', None)
-        if min_ is not None and max_ is not None:
-            if min_ >= max_:
-                raise ValueError("Axis `min` must be smaller than `max`.\n"
-                                 f"min: {min_}\nmax: {max_}")
-        return max_
 
     @validator('unit')
     def default_unit(cls, unit):
@@ -362,6 +348,28 @@ class Axis(BaseModel, abc.ABC):
                 assert unit == 1
             unit = unitless
         return unit
+        
+    @initializer('min_', 'max_')
+    def standardize_units(cls, value: Union[None, float,AnyUnitType], unit) -> float:
+        if value is not None:
+            return mtb.units.ensure_units(unit, value)
+
+    @validator('max_')  # max_ after min_ => min_ in `values`
+    def check_axis_minmax_consistent(cls, max_, values):
+        min_ = values.get('min', None)
+        if min_ is not None and max_ is not None:
+            if min_ >= max_:
+                raise ValueError("Axis `min` must be smaller than `max`.\n"
+                                 f"min: {min_}\nmax: {max_}")
+        return max_
+
+    @root_validator(skip_on_failure=True)  # Executing when either set_label or set_transform fails just throws a confusing error
+    def label_or_transform(cls, values):
+        label, transform = (values.get(x, None) for x in
+                            ('label', 'transform'))
+        if (label is None) and (transform is None):
+            raise TypeError("Either `label` or `transform` must be specified.")
+        return values
 
     # ------------
     # Pickling
@@ -1812,6 +1820,9 @@ class SequenceMapping(BaseModel):
                 "Length of `index_range` exceeds allowed maximum. If you need "
                 "a longer index, change the value of `SequenceMapping.max_len`."
                 " len(index_range) = {}".format(len(index_range)))
+        elif len(index_range) == 0:
+            raise ValueError(
+                f"`index_range` is empty.\nReceived value: {index_range}")
         return index_range
 
     @validator('index_range')
@@ -3704,6 +3715,9 @@ class RangeAxis(MapAxis):
             if None in (min, max, step):
                 raise ValueError("You must specify all of `min`, `max` and "
                                  "`step`.")
+            max  = mtb.units.ensure_units(unit, max)
+            min  = mtb.units.ensure_units(unit, min)
+            step = mtb.units.ensure_units(unit, step)
             nsteps = (max-min) / step
             if not mtb.units.is_dimensionless(nsteps):
                 warn("While creating a RangeAxis, the value of `(max-min)/step` "
