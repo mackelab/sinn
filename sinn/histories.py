@@ -1325,11 +1325,14 @@ class History(HistoryBase, abc.ABC):
             raise RuntimeError("Unrecognized axis_index {} of type {}. (history: {})"
                                .format(axis_index, type(axis_index), self.name))
         # Check bounds
-        if not (earliest.in_bounds and latest.in_bounds):
+        earliest_val = shim.eval(earliest, max_cost=None)
+        latest_val = shim.eval(latest, max_cost=None)
+        if earliest_val <= latest_val and not (earliest.in_bounds and latest.in_bounds):
+            # If the first test is false, we will return an empty slice, so the in_bounds test doesn't matter
             raise IndexError(f"Index {axis_index} is out of bounds for "
                              f"history {self.name}.")
         # if shim.eval(latest, max_cost=None) > shim.eval(self._sym_tidx, max_cost=None):
-        if shim.eval(latest, max_cost=None) - self.cur_tidx > self._latest_tap:
+        if latest_val - self.cur_tidx > self._latest_tap:
             return NotComputed.NotYetComputed
         # Within bounds => retrieve the cached value
         else:
@@ -2961,6 +2964,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
             
         
         outs = []  # Collects time slices to stack for the symbolic op
+        out = None
         # if axis_index_evaled.stop > self.cur_tidx + 1:
         #     assert self.symbolic  # If the History were not symbolic, compute_up_to would have advanced cur_tidx
         #     raise NotImplementedError(
@@ -3017,7 +3021,9 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
                     outs.append(outi)
                 # _taps are stacked together below
                 
-        if self.symbolic and not index_is_scalar:
+        if out is None and len(outs) == 0:
+            out = shim.shared(np.empty((0,)+self.shape, dtype=self.dtype), name=self.name + " (empty slice)")
+        elif self.symbolic and not index_is_scalar:
             out = shim.stack(outs)
             
         return out
@@ -3660,6 +3666,8 @@ class Series(ConvolveMixin, History):
             if shim.isscalar(axis_index):
                 assert len(taps) == 1
                 return taps[0]
+            elif len(taps) == 0:
+                return shim.shared(np.empty((0,)+self.shape), name=self.name + " (empty slice)")
             else:
                 return shim.stack(taps)
         elif self.symbolic:
@@ -3723,11 +3731,13 @@ class Series(ConvolveMixin, History):
             if shim.isscalar(axis_index):
                 assert len(taps) == 1
                 return taps[0]
+            elif len(taps) == 0:
+                return shim.shared(np.empty((0,)+self.shape), name=self.name + " (empty slice)")
             else:
                 return shim.stack(taps)
 
         else:
-            return self._num_data[self.time.axis_to_data_index(axis_index)]
+            return self._num_data.get_value()[self.time.axis_to_data_index(axis_index)]
 
     def update(self, tidx, value):
         """

@@ -57,6 +57,13 @@ def _test_history_series_indexing(cgshim):
     x2 = Series(name='x2', time=taxis, shape=(2,), dtype=np.float64)
     assert x1.cur_tidx == -1
     assert x1.tnidx == len(taxis)-1 == len(x1)-1
+    
+    # Empty index slices within possible range return empty value arrays, even when out of bounds
+    assert repr(shim.eval(x1[:0]))  == repr(np.empty((0,)+x1.shape, dtype=x1.dtype))
+        # NB: Don't use np.all(), because that would always be True on an empty array
+    assert x1[2:2] == NotComputed.NotYetComputed
+    with pytest.raises(IndexError):  # Empty slices outside range still fail
+        x1[:-1]
 
     x1[:] = np.random.uniform(0, 1, size=(x1.time.padded_length,3))
     assert x1.tnidx == x1.cur_tidx
@@ -121,6 +128,13 @@ def _test_history_spiketrain_indexing(cgshim):
     assert shim.eval(x1._num_data[0].shape, max_cost=None) == (0,)
     assert shim.eval(x1._num_data[1].shape, max_cost=None) == (0,)
     assert shim.eval(x1._num_data[2].shape, max_cost=None) == (x1.time.padded_length + 1,)
+    
+    # Empty index slices within possible range return empty value arrays, even when out of bounds
+    assert repr(shim.eval(x1[:0]))  == repr(np.empty((0,)+x1.shape, dtype=x1.dtype))
+        # NB: Don't use np.all(), because that would always be True on an empty array
+    assert x1[2:2] == NotComputed.NotYetComputed
+    with pytest.raises(IndexError):  # Empty slices outside range still fail
+        x1[:-1]
 
     def gen_spike_data(num_timepoints, shape, p=0.03):
         return [np.random.binomial(n=1, p=p, size=shape)
