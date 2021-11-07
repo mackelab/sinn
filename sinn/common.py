@@ -3,7 +3,11 @@
 Created on Sat Feb 4 2017
 
 Copyright 2017-2020 Alexandre René
+
+TODO: Rename common.py to utils.py
 """
+from __future__ import annotations
+
 import abc
 import os
 import sys

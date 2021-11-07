@@ -1529,7 +1529,7 @@ class History(HistoryBase, abc.ABC):
         .. FIXME:: `allow_rounding` is currently ignored and effectively `False`
 
         Parameters
-        ---------   -
+        ----------
         start: idx | time
             If `None`, no initial truncation. In particular, keeps any padding.
             If `end` is given, initial time of the truncated history.
@@ -1552,7 +1552,10 @@ class History(HistoryBase, abc.ABC):
         # TODO: if inplace=False, return a view of the data
         # TODO: invalidate caches ?
         # TODO: Can't pad (resize) after truncate
-        warn("Function `truncate()` is a work in progress.")
+        raise NotImplementedError("Function `truncate()` has become stale.\nSee "
+                                  "in-source comments for hints on updating it")
+        # DEVNOTE: `_apply_op` implements a time axis truncation; the logic may
+        #          be transposable.
         # if self._sym_tidx != self._num_tidx:
         if self._latest_tap:
             raise NotImplementedError("There are uncommitted symbolic updates.")
@@ -1570,7 +1573,7 @@ class History(HistoryBase, abc.ABC):
         # imin = 0 if start is None else self.get_tidx(start)
         # imax = len(self._tarr) if end is None else self.get_tidx(end)
 
-        hist = self if inplace else self.deepcopy()
+        hist = self if inplace else self.copy()
 
         if (shim.issparse(hist._num_data)
             and not isinstance(hist._num_data, sp.sparse.lil_matrix)):
@@ -1628,7 +1631,8 @@ class History(HistoryBase, abc.ABC):
                                   "of type '{}'.".format(type(self).__name__))
 
     def _compute_up_to(self, tidx, start='symbolic'):
-        """Compute the history up to `tidx` inclusive.
+        """
+        Compute the history up to `tidx` inclusive.
 
         .. Warning::
         For symbolic `tidx`, the logic in this function assumes them to be

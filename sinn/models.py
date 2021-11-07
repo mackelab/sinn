@@ -362,6 +362,7 @@ class SubmodelParams(ModelParams):
             values, must_set_all_params=False, must_not_set_other_params=False, borrow=borrow)
 
 ModelParams.update_forward_refs()
+SubmodelParams.update_forward_refs()
 
 # Model decorators
 
@@ -2477,6 +2478,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             Alternative to specifying parameters with `new_params`
             Keyword arguments take precedence over values in `new_params`.
         """
+
         ## Parse new parameters into the format defined by self.Parameters
         if isinstance(new_params, self.Parameters):
             new_params = new_params.dict()
