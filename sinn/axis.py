@@ -587,6 +587,21 @@ class Axis(BaseModel, abc.ABC):
     def discretize(self, stops, format='centers', **kwargs):
         return DiscretizedAxis(
             **self.desc, stops=stops, format=format, **kwargs)
+            
+    def resize(self,
+               min: Union[None,float,AnyUnitType]=None,
+               max: Union[None,float,AnyUnitType]=None,
+               ) -> RangeAxis:
+        """
+        Return a new Axis equivalent to `self`, but with max=`T`.
+        """
+        desc = self.dict()
+        if min is not None:
+            desc['min'] = min
+        if max is not None:
+            desc['max'] = max
+        new_self = type(self)(**desc)
+        return new_self
 
 class Axes(tuple):
     """Set of multiple Axis instances"""
@@ -3563,6 +3578,12 @@ class DiscretizedAxis(Axis):
             object.__setattr__(self, '_centers_axis', axis)
 
         return self._centers_axis
+        
+    def resize(self,
+               min: Union[None,float,AnyUnitType]=None,
+               max: Union[None,float,AnyUnitType]=None,
+               ) -> RangeAxis:
+       raise NotImplementedError
 
 DiscretizedAxis.transformed_type = DiscretizedAxis
 
@@ -3910,6 +3931,25 @@ class RangeAxis(MapAxis):
             return super().index(value, allow_rounding=ar)
                 # Converts units, then passes to self.stops.index
             # return self.stops.index(value, allow_rounding=ar)
+            
+    # TODO: DRY w/ Axis.resize
+    def resize(self,
+               min: Union[None,float,AnyUnitType]=None,
+               max: Union[None,float,AnyUnitType]=None,
+               ) -> RangeAxis:
+        """
+        Return a new RangeAxis equivalent to `self`, but with max=`T`.
+        Note that padding is always conserved.
+        """
+        desc = self.dict()
+        del desc['stops']  # We will use 'step' instead of 'stops'
+        if min is not None:
+            desc['min'] = min
+        if max is not None:
+            desc['max'] = max
+        new_self = type(self)(**desc, step=self.step)
+        new_self.pad(self.pad_left.plain, self.pad_right.plain)
+        return new_self
 
 class ArrayAxis(DiscretizedAxis):
     """

@@ -175,11 +175,20 @@ def _test_map_axis(cglib):
     # assert axis1.index(0.25*Q.m) == 5
     # assert axis2.index(0.2*ureg.s) == 2
     assert (axis1.stops.pad(2) == (2,0))
-    assert (axis1.stops.pad(2) == (0,0))  # Padding isn't duplicated
+    assert (axis1.stops.pad(2) == (0,0))  # Padding is not added twice
     assert axis1.index(0*Q.m) == 0
     assert axis1.data_index(0*Q.m) == 2
 
     assert axis1[5] == (0.5)**2*Q.m
+
+    for slc in (np.s_[0*Q.m:1*Q.m],   # Test slicing conversions
+                np.s_[:1*Q.m],        # In particular that with empty start or end,
+                np.s_[0*Q.m:]):       # the results of `index` and `data_index` are consistent wrt padding
+        idx = axis1.index(slc); axidx = axis1.data_index(slc)
+        assert idx.start == axis1.data_to_axis_index(axidx.start)
+        assert idx.stop == axis1.data_to_axis_index(axidx.stop)
+        assert axis1.axis_to_data_index(idx.start) == axidx.start
+        assert axis1.axis_to_data_index(idx.stop) == axidx.stop
 
     assert axis1.stops.pad_left == 2
     assert axis1copy.stops.pad_left == 0
@@ -340,9 +349,18 @@ def _test_range_axis(cglib):
     # assert axis1.index(0.25*Q.m) == 5
     # assert axis2.index(0.2*ureg.s) == 2
     assert (axis1.stops.pad(2) == (2,0))
-    assert (axis1.stops.pad(2) == (0,0))  # Padding isn't duplicated
+    assert (axis1.stops.pad(2) == (0,0))  # Padding is not added twice
     assert axis1.index(0*ureg.s) == 0
     assert axis1.data_index(0*ureg.s) == 2
+    
+    for slc in (np.s_[0*ureg.s:1*ureg.s],  # Test slicing conversions
+                np.s_[:1*ureg.s],          # In particular that with empty start or end,
+                np.s_[0*ureg.s:]):         # the results of `index` and `data_index` are consistent wrt padding
+        idx = axis1.index(slc); axidx = axis1.data_index(slc)
+        assert idx.start == axis1.data_to_axis_index(axidx.start)
+        assert idx.stop == axis1.data_to_axis_index(axidx.stop)
+        assert axis1.axis_to_data_index(idx.start) == axidx.start
+        assert axis1.axis_to_data_index(idx.stop) == axidx.stop
 
     assert axis1[5] == 0.5*ureg.s
 
@@ -353,6 +371,35 @@ def _test_range_axis(cglib):
     assert axis1.stops.unpadded_length == 101
     assert len(axis1) == axis1.padded_length
 
+    # Resizing
+    axis1r1 = axis1.resize(max=3.)
+    axis1r2 = axis1.resize(min=-3., max=16.)
+    axis1r3 = axis1.resize(min=3.)
+    assert (axis1r1.min, axis1r1.max) == (axis1.min, 3.)
+    assert (axis1r2.min, axis1r2.max) == (-3., 16.)
+    assert (axis1r3.min, axis1r3.max) == (3., axis1.max)
+    # On an interval where all axes are defined, they all return the same values
+    # NB: Because the x0 changes, there may be small numerical differences, hence the use of `isclose` instead of `==`
+    assert np.all(np.isclose(axis1[1.:2.], axis1r1[1.:2.])) \
+        and np.all(np.isclose(axis1[1.:2.], axis1r2[1.:2.]))
+    assert np.all(np.isclose(axis1[5.:6.], axis1r2[5.:6.])) \
+        and np.all(np.isclose(axis1[5.:6.], axis1r3[5.:6.]))
+    # The underlying indices however have shifted
+    assert axis1.index(3.).plain == axis1r1.index(3.).plain == 30
+    assert axis1r3.index(3.) == 0
+    assert axis1r3.data_index(3.) == axis1.pad_left
+    assert np.isclose(axis1r3.stops[-axis1.pad_left], 3. - axis1.pad_left*Δt)
+    assert axis1r3.stops.index_range[0] == -axis1.pad_left
+    axis1r2.index(-1.)  # Now within bounds => does not raise
+    axis1r2.index(13.)  # Now within bounds => does not rais
+    # These values are now out of bounds for the resized axes
+    with pytest.raises(IndexError):
+        axis1r1.index(5.)  
+    with pytest.raises(IndexError):
+        axis1r2.index(-5.)
+    with pytest.raises(IndexError):
+        axis1r3.index(2.)
+    
     # FIXME: should raise an error
     # with pytest.raises(TypeError): # Can't pad with absolute index
     #     axis1.pad(axis1.Index(5))
