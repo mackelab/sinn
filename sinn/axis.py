@@ -2213,7 +2213,14 @@ class SequenceMapping(BaseModel):
                 raise TypeError(
                     "`data_to_axis_index` expects an integer. "
                     f"Argument:{data_index}, of type {type(data_index)}.")
-            return self.Index(self.index_range[data_index])
+            try:
+                return self.Index(self.index_range[data_index])
+            except IndexError:
+                # Special cases: we allow indexing one beyond, to allow slices up to the end
+                if data_index == len(self.index_range):
+                    return self.Index(self.index_range[-1] + 1)
+                else:
+                    raise
 
     def axis_to_data_index(self,
                            axis_index :Union[Integral, AbstractAxisIndex, Slice]):
@@ -2277,7 +2284,7 @@ class SequenceMapping(BaseModel):
 
     def data_index_slice(self, axis_slice, include_padding=False):
         """
-        Convert an axis to a data slice, optionally including padding.
+        Convert an axis slice to a data slice, optionally including padding.
 
         Parameters
         ----------
@@ -3274,9 +3281,16 @@ class DiscretizedAxis(Axis):
               units. Because the index points are not regularly spaced,
               a slice cannot specify a step.
         """
+        # NB: Keep in sync with `index()` below (or better, don't repeat code…)
         if isinstance(value, slice):
-            start = self.data_index(value.start)
-            stop  = self.data_index(value.stop)
+            if value.start is None:
+                start = 0
+            else:
+                start = self.data_index(value.start)
+            if value.stop is None:
+                stop = len(self.stops)
+            else:
+                stop  = self.data_index(value.stop)
             if value.step is not None:
                 raise ValueError("`DiscretizedAxis.index()` doesn't support  "
                                  "the `step` argument. If your axis is "
@@ -3319,6 +3333,7 @@ class DiscretizedAxis(Axis):
         **index_kwds:
             Passed on to `self.stops.index()`.
         """
+        # NB: Keep in sync with `data_index()` above (or better, don't repeat code…)
         if isinstance(value, slice):
             if value.start is None:
                 start = self.stops.Index(self.stops.index_range[0])
@@ -3374,6 +3389,10 @@ class DiscretizedAxis(Axis):
             axis_slice.start = self.index(axis_slice.start)
         if self.is_compatible_value(axis_slice.stop):
             axis_slice.stop = self.index(axis_slice.stop)
+        if axis_slice.step is not None:
+            raise ValueError("`DiscretizedAxis.data_index_slice()` doesn't "
+                             "support the `step` argument. If your axis is "
+                             "regular, try `RangeAxis` or `ArrayAxis`.")
         return self.stops.data_index_slice(axis_slice, include_padding)
 
     def pad(self, pad_left, pad_right=0):
