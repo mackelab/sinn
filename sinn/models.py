@@ -36,9 +36,10 @@ import pydantic
 from pydantic import BaseModel, PrivateAttr, validator, root_validator
 from pydantic.typing import AnyCallable
 from pydantic.fields import ModelField
+from pydantic.utils import lenient_issubclass
 from typing import (
-    Any, Optional, Union, Tuple, Sequence, List, Dict, Set, Generator,
-    Callable as CallableT, NamedTuple)
+    Any, Optional, Union, ClassVar, Type, Tuple, Sequence, List, Dict, Set,
+    Generator, Callable as CallableT, NamedTuple)
 from types import SimpleNamespace
 from dataclasses import dataclass
 from parameters import ParameterSet
@@ -142,8 +143,16 @@ def get_model(modelname, *args, **kwargs):
 #      Replace all occurrences of IndexableNamespace with NumericModelParams
 from mackelab_toolbox.typing import IndexableNamespace
 
-class ModelParams(BaseModel):
+class ModelParamsMetaclass(pydantic.main.ModelMetaclass):
+    # NB: Simply assigning to type_dict in a __init_subclass__ method doesn't
+    #     work with composite models
+    @property
+    def type_dict(cls):
+        return dict(cls._nested_types())
+
+class ModelParams(BaseModel, metaclass=ModelParamsMetaclass):
     "Use the `.info()` method for a summary of expected parameters."
+    type_dict: ClassVar[Dict[str,Type]]
 
     class Config:
         json_encoders = mtb.typing.json_encoders
@@ -161,6 +170,15 @@ class ModelParams(BaseModel):
         # Reconstruct hierarchies from dotted parameter names
         kwargs = ParameterSet(kwargs)
         super().__init__(*args, **kwargs)
+
+    @classmethod
+    def _nested_types(cls):
+        for θnm, field in cls.__fields__.items():
+            if lenient_issubclass(field.type_, ModelParams):
+                for subθnm, subT in field.type_._nested_types():
+                    yield f"{θnm}.{subθnm}", subT
+            else:
+                yield θnm, field.type_
 
     def get_values(self, borrow: bool=False):  # -> NumericModelParams
         """
@@ -371,14 +389,21 @@ SubmodelParams.update_forward_refs()
 # PendingUpdateFunction = namedtuple('PendingUpdateFunction',
 #                                    ['hist_nm', 'inputs', 'upd_fn'])
 @dataclass
-class PendingUpdateFunction:
+class PendingFunction:
     hist_nm: str
     inputs : List[str]
-    upd_fn : CallableT
+    fn : CallableT
     def __call__(self, model, k):
-        return self.upd_fn(model, k)
+        return self.fn(model, k)
+@dataclass
+class PendingUpdateFunction(PendingFunction):
+    pass
+# @dataclass
+# class PendingDerivativeFunction(PendingFunction):
+#     hist_nm: Tuple[str]
 
-def updatefunction(hist_nm, inputs):
+# If `f` is an update function, then x[k+1] = f(k+1)
+def updatefunction(hist_nm: str, inputs: List[str]):
     """
     Decorator. Attaches the following function to the specified history,
     once the model is initialized.
@@ -390,6 +415,44 @@ def updatefunction(hist_nm, inputs):
     def dec(upd_fn):
         return PendingUpdateFunction(hist_nm, inputs, upd_fn)
     return dec
+    
+# TODO: Automatic translation to an update function
+# If `f` is a derivative, then x[k+1] = x[k] + f(k)*Δt
+def derivative(hist_nm: Union[str, Tuple[str]], inputs: List[str]):
+    """
+    Decorator. Indicates that the following function ``f`` is the derivative of
+    the specified history `hist_nm`. When the model is initialized, the
+    corresponding update function (i.e. ``h[t] = h[t-1] + f(t)*Δt``) will be
+    attached to `hist_nm`.
+    
+    .. warning:: This decorator still WIP and highly experimental. At present
+       it just adds it to the '_derivatives' dictionary.
+    
+    Planned:
+    - Construct `updatefunction` from a `derivative` using Euler scheme.
+    - Support for different integration schemes. Explicit schemes which
+    do not require evaluations at intermediate points should be trivial to
+    implement (they are just a different update equation to Euler). Other
+    schemes may require more work, or need to limit themselves to special cases
+    (e.g. only  derivatives which don't depend on other histories).
+    """
+    # For consistency, we always use a tuple as key, to allow higher order derivatives
+    if isinstance(hist_nm, str):
+        hist_nm = (hist_nm,)
+    def dec(f):
+        f._derivative = hist_nm
+        f._inputs = inputs
+        return f
+    return dec
+    
+@dataclass
+class DerivativesView:
+    model: Model
+    def __getitem__(self, histnm):
+        if isinstance(histnm, str):
+            histnm = (histnm,)
+        fn_nm = self.model._derivatives[histnm].__name__  # _derivatives contains the *plain functions* attached to the *class*
+        return getattr(self.model, fn_nm)                 # returns the same-named *method* attached to the *instance*
 
 # This text is added to the docstring of each model
 __model_docstring_footer__ = textwrap.dedent("""
@@ -399,11 +462,22 @@ __model_docstring_footer__ = textwrap.dedent("""
        will work for NumPy RNGs, but not symbolic ones.""")
 
 class ModelMetaclass(pydantic.main.ModelMetaclass):
+    
+    def _param_typedict(params: Union[Model,Type[Model],Type[ModelParams]]):
+        if isinstance(params, Model) or lenient_issubclass(params, Model):
+            params = params.Parameters
+        for θnm, field in params.__fields__.items():
+            if lenient_issubclass(field.type_, ModelParams):
+                for subθnm, subT in get_param_types(field.type_):
+                    yield f"{θnm}.{subθnm}", subT
+            else:
+                yield θnm, field.type_
+    
     # Partial list of magical things done by this metaclass:
     # - Transform a plain `Parameters` class into a pydantic BaseModel
     #   (specifically, ModelParams)
     # - Add the `params: Parameters` attribute to the annotatons.
-    #   Ensure in inherits from the changed `Parameters`
+    #   Ensure it inherits from the changed `Parameters`
     # - Move `params` to the front of the annotations list, so it is available
     #   to validators.
     # - Add the `time` annotation if it isn't already present.
@@ -483,9 +557,11 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         inherited_pending_updates = dict(ChainMap(
             *({obj.hist_nm: obj for obj in _get_inherited_updates(b)}
               for b in bases)))
+        inherited_derivatives = dict(ChainMap(
+            *(_get_inherited_derivatives(b) for b in bases)))
             # NB: Although the _order_ of a ChainMap is set by iterating over
-            #     bases right-to-left, the _precedence_ of values goes
-            #     left-to-right.
+            #     bases left-to-right, the _precedence_ of values goes
+            #     right-to-left.
             #     This makes it comparable to a chain of .update() calls.
         # Old version which didn't work with mixins:
         # # (We only iterate over immediate bases, since those already contain
@@ -512,6 +588,7 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         _hist_identifiers = inherited_hist_identifiers
         _model_identifiers = {}  # Use dict as an ordered set
         _pending_update_functions = inherited_pending_updates
+        _derivatives = inherited_derivatives
             # pending updates use a dict to allow derived classes to override
 
         # Model validation
@@ -780,9 +857,21 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
             if isinstance(obj, PendingUpdateFunction):
                 if obj.hist_nm not in _hist_identifiers:
                     raise TypeError(
-                        f"Update function {obj.upd_fn} is intended for history "
+                        f"Update function {obj.fn} is intended for history "
                         f"{obj.hist_nm}, but it is not defined in the model.")
                 _pending_update_functions[obj.hist_nm] = obj
+                
+        # Add derivatives to dict
+        for obj in namespace.values():
+            # NB: Existence of '_derivative' attribute indicates that function is a derivative
+            #     Value of '_derivative' attribute indicates of which variable it is the derivative
+            # if isinstance(obj, Callable) and hasattr(obj, '_derivative'):
+            if isinstance(obj, Callable) and hasattr(obj, '_derivative'):
+                if not set(obj._derivative) <= set(_hist_identifiers):
+                    raise TypeError(
+                        f"Derivative function is intended for histories "
+                        f"{obj._derivative}, but they are not defined in the model.")
+                _derivatives[obj._derivative] = obj
 
         # Add AutoHist validators
         for nm, obj in list(namespace.items()):
@@ -829,7 +918,10 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         namespace['_hist_identifiers'] = sorted(_hist_identifiers)
         namespace['_model_identifiers'] = list(_model_identifiers)  # Must not be sorted: order sets precedence
         namespace['_pending_update_functions'] = list(_pending_update_functions.values())
+        namespace['_derivatives'] = _derivatives
         namespace['__annotations__'] = new_annotations
+        
+        # Kind of a hacky way
 
         newcls = super().__new__(metacls, cls, bases, namespace)
 
@@ -891,6 +983,17 @@ def _get_inherited_updates(cls):
             if isinstance(obj, PendingUpdateFunction):
                 pending_update_functions.append(obj)
     return pending_update_functions
+def _get_inherited_derivatives(cls):
+    derivatives = getattr(cls, '_derivatives', None)
+    if derivatives is None:
+        # cls doesn't inherit from Model – probably a mixin
+        derivatives = {}
+        for obj in cls.__dict__.values():
+            # NB: Existence of '_derivative' attribute indicates that function is a derivative
+            #     Value of '_derivative' attribute indicates of which variable it is the derivative
+            if isinstance(obj, Callable) and hasattr(obj, '_derivative'):
+                derivatives[obj._derivative] = obj
+    return derivatives
 
 def init_autoseries(cls, autohist: AutoHist, values) -> Series:
     time = values.get('time', None)
@@ -1070,6 +1173,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # Store RNG updates generated in `get_advance_updates`, so that
         # `reseed_RNGs` knows which RNG need to be seeded.
         # Structure: _rng_updates[cache_key][rng] = [upd1, upd2, ...]
+    _derivatives_view: Optional[DerivativesView]=PrivateAttr(None)
     _numeric: Optional[Model]=PrivateAttr(None)
         # Used by `numeric` property to store a reference to the non-symbolic version 
         # of the model, ensuring that the same instance is reused if called again.
@@ -1175,10 +1279,55 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             self.initialize(initializer)
 
     def copy(self, *args, deep=False, **kwargs):
-        m = super().copy(*args, deep=deep, **kwargs)
-        m._base_initialize(shallow_copy=not deep)
-        # m.initialize()
-        return m
+        if deep:
+            return self.copy_with_resize()
+        else:
+            m = super().copy(*args, deep=deep, **kwargs)
+            m._base_initialize(shallow_copy=not deep)
+            # m.initialize()
+            return m
+        
+    def copy_with_resize(self, T: Optional[Union[float,PintValue]]=None,
+                         _desc: Optional[dict]=None) -> Model:
+        """
+        Return a copy of `self` for which time axes have been resized to
+        have length `T`.
+        If `T` is `None`, this equivalent to a deep copy.
+        """
+        if _desc is None:
+            _desc = ParameterSet(self.dict())
+        # Recurse into submodels
+        for subnm, submodel in self.nested_models.items():
+            _desc[subnm] = submodel.copy_with_resize(T, _desc[subnm])
+            for low_hist, high_hist in _desc['connections'].get(subnm, {}).items():
+                _desc[high_hist] = getattr(_desc[subnm], low_hist)
+        del _desc['connections']  # No longer needed, and not in format expected by initializer
+        # Set history length to T
+        if T is not None:
+            time = self.time
+            tmax = (mtb.units.ensure_units(time.unit, time.t0)
+                    + mtb.units.ensure_units(time.unit, T))
+            _desc['time'] = self.time.resize(max=tmax)
+            for hnm, h in self.nonnested_histories.items():
+                try:
+                    hdesc = _desc[hnm]
+                except KeyError:
+                    continue
+                else:
+                    if isinstance(hdesc, History):
+                        # We end up here with connected hists, since their desc has
+                        # already been replaced by a History in the lower model
+                        assert abs(hdesc.time.max - tmax.magnitude) <= hdesc.time.dt, \
+                            f"Error copying model: time axis for history {hdesc.name} was not set properly."
+                        continue
+                    # Set time axis to length T
+                    hdesc['time'] = h.time.resize(max=tmax)
+                    # Truncate data if it exceeds time axis
+                    hdesc['data'] = hdesc['data'].copy()[:hdesc['time'].padded_length]
+        # Model initializer requires already instantiated parameter sets
+        _desc['params'] = self.Parameters(**_desc['params'])
+        # Instantiate the model
+        return self.__class__(**_desc)
 
     # TODO: Return views (first requires History.numeric to return DataView)
     #    TODO: When doing this, also search for comments "TODO:Numeric"
@@ -1348,6 +1497,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         """
         self.update_parameters_type()
         self.set_submodel_params()
+        
+        self._derivatives_view = DerivativesView(self)
 
         if update_functions is not None:
             # 1) update_functions should be a dict, and will override update function
@@ -1404,7 +1555,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 hist = getattr(self, obj.hist_nm)
                 hist._set_update_function(HistoryUpdateFunction(
                     namespace    = self,
-                    func         = obj.upd_fn,  # HistoryUpdateFunction ensures `self` points to the model
+                    func         = obj.fn,  # HistoryUpdateFunction ensures `self` points to the model
                     inputs       = obj.inputs,
                     # parent_model = self
                 ))
@@ -1443,9 +1594,14 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # NB: The order in which we iterate over nested_models is set by
         #     the order in which submodels are defined in the class
         for subnm, submodel in self.nested_models.items():
-            for objnm, obj in ChainMap(submodel.nested_histories,
-                                       submodel.nested_rngs      ).items():
+            for objnm, obj in ChainMap(submodel.nested_histories_with_repeats,
+                                       submodel.nested_rngs_with_repeats).items():
                 if id(obj) in already_seen:
+                    if already_seen[id(obj)] in conn_objs:
+                        logger.warning("Connecting a history to more than one "
+                                       "other history is likely unsafe. The "
+                                       "following history name will be lost: "
+                                       f"{subnm}.{objnm}.")
                     conn_objs[already_seen[id(obj)]] = f"{subnm}.{objnm}"
                 else:
                     already_seen[id(obj)] = f"{subnm}.{objnm}"
@@ -1714,16 +1870,35 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     @property
     def nonnested_history_set(self) -> Set[History]:
         return {getattr(self, nm) for nm in self._hist_identifiers}
+    def _nested_histories(self, include_repeats=False) -> Generator[Tuple[str, History]]:
+        already_seen = set()
+        for hnm, h in self.nonnested_histories.items():
+            already_seen.add(id(h))
+            yield hnm, h
+        for submodel_nm, submodel in self.nested_models.items():
+            for hist_nm, hist in submodel._nested_histories(include_repeats):
+                if include_repeats or id(hist) not in already_seen:
+                    already_seen.add(id(hist))
+                    yield (f"{submodel_nm}.{hist_nm}", hist)
     @property
     def nested_histories(self) -> Dict[str,History]:
         """
         Return the model's histories as {name: History} pairs, with the names
         of nested histories prefixed by the their submodel name: "{submodel}.{name}".
+        Histories shared between submodels are returned only once.
         """
-        return {**self.nonnested_histories,
-                **{f"{submodel_nm}.{hist_nm}": hist
-                   for submodel_nm, submodel in self.nested_models.items()
-                   for hist_nm, hist in submodel.nested_histories.items()}}
+        return dict(self._nested_histories())
+                # **{f"{submodel_nm}.{hist_nm}": hist
+                #    for submodel_nm, submodel in self.nested_models.items()
+                #    for hist_nm, hist in submodel.nested_histories.items()}}
+    @property
+    def nested_histories_with_repeats(self) -> Dict[str,History]:
+        """
+        Return the model's histories as {name: History} pairs, with the names
+        of nested histories prefixed by the their submodel name: "{submodel}.{name}".
+        Histories shared between submodels are returned multiple times.
+        """
+        return dict(self._nested_histories(include_repeats=True))
     @property
     def history_set(self) -> Set[History]:
         return set(chain(self.nonnested_history_set,
@@ -1744,6 +1919,14 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     @property
     def nested_models_list(self) -> List[Model]:
         return [getattr(self, nm) for nm in self._model_identifiers]
+
+    @property
+    def derivatives(self) -> DerivativesView:
+        return self._derivatives_view
+        
+    @property
+    def initial_value(self) -> Dict[str,Tensor]:
+        return {nm: h[:self.t0] for nm, h in self.nested_histories.items()}
 
     @property
     def t0(self):
@@ -1825,12 +2008,25 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             if isinstance(obj, shim.config.RNGTypes):
                 d[attr] = obj
         return d
+    def _nested_rngs(self, include_repeats=False) -> Generator[Tuple[str,mtb.typing.AnyRNG]]:
+        already_seen = set()
+        for rng_nm, rng in self.nonnested_rngs.items():
+            already_seen.add(id(rng))
+            yield rng_nm, rng
+        for submodel_nm, submodel in self.nested_models.items():
+            for rng_nm, rng in submodel._nested_rngs(include_repeats):
+                if include_repeats or id(rng) in already_seen:
+                    already_seen.add(id(rng))
+                    yield (f"{submodel_nm}.{rng_nm}", rng)
     @property
     def nested_rngs(self) -> Dict[str, mtb.typing.AnyRNG]:
-        return {**self.nonnested_rngs,
-                **{f"{submodel_nm}.{rng_nm}": rng
-                   for submodel_nm, submodel in self.nested_models.items()
-                   for rng_nm, rng in submodel.nested_rngs.items()}}
+        return dict(self._nested_rngs())
+                # **{f"{submodel_nm}.{rng_nm}": rng
+                #    for submodel_nm, submodel in self.nested_models.items()
+                #    for rng_nm, rng in submodel.nested_rngs.items()}}
+    @property
+    def nested_rngs_with_repeats(self) -> Dict[str, mtb.typing.AnyRNG]:
+        return dict(self._nested_rngs(include_repeats=True))
 
     @property
     def rng_hists(self) -> List[History]:
@@ -2170,7 +2366,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 h_nm = h
             histsdict[h_id] = h_nm
         hists = histsdict
-        funcs = {pending.hist_nm: pending.upd_fn
+        funcs = {pending.hist_nm: pending.fn
                  for pending in self._pending_update_functions}
         if not all(isinstance(h, str) for h in hists):
             raise ValueError(

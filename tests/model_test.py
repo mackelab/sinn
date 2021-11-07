@@ -59,7 +59,8 @@ def _test_model(cgshim):
     # NOTE: TestModel subclasses TestModelNoState, so we are also testing
     #       model subclassing
     from model_test_classes import TestModel
-    from sinn.histories import TimeAxis
+    from sinn.histories import TimeAxis, NotComputed
+    from history_test import hist_compare
 
     TimeAxis.time_unit = ureg.s
     TimeAxis.time_step = np.float64(2**-6)
@@ -81,16 +82,31 @@ def _test_model(cgshim):
     model.λ.eval()
     assert model.λ.cur_tidx == 3
 
+    # Copy model
+    model_shallow_copy = model.copy()
+    model_deep_copy = model.copy(deep=True)
+    model_compare(model, model_shallow_copy, shallow=True)
+    model_compare(model, model_deep_copy)
+
     # Evaluate spikes using already computed λ
     model.spikes(3)
-
+    
     # Evaluate more spikes, triggering some λ computations for tidx>3
     model.spikes(4)
-
+    
     # Evaluate all the histories in the model
     model.eval()
     assert model.spikes.get_data_trace().shape == (5,7)
     assert len(model.λ.get_data_trace()) == 5
+
+    # Shallow copy used the same history instances, so it was also advanced
+    assert not isinstance(model_shallow_copy.spikes[4], NotComputed)
+    hist_compare(model.spikes, model_shallow_copy.spikes, shallow=True)
+    assert model_deep_copy.spikes[4] == NotComputed.NotYetComputed
+    # Shallow copied model can be integrated
+    model_shallow_copy.integrate(5)
+    # Deep copied model can be integrated
+    model_deep_copy.integrate(5)
 
     end = model.time.Index(64)
     # end = model.time.tnidx
@@ -191,22 +207,27 @@ def _test_accumulator(cgshim):
     assert total_spikes > 0
     # assert total_spikes == model.spikes.data.sum()  # Only works if 'spikes' history was also advanced
 
-def model_compare(model1, model2):
+def model_compare(model1, model2, shallow=False):
     cd_to_test_dir()
     from history_test import hist_compare
     from sinn.histories import History
-    model1.cur_tidx != model2.cur_tidx
+    if shallow:
+        model1.cur_tidx == model2.cur_tidx
+        model1.time.pad_left == model2.time.pad_left
+        model1.time.pad_right == model2.time.pad_right
+    else:
+        model1.cur_tidx != model2.cur_tidx
+        model1.time.pad_left != model2.time.pad_left
+        model1.time.pad_right != model2.time.pad_right
     model1.cur_tidx.plain == model2.cur_tidx.plain
     model1.time == model2.time
     model1.time.label == model2.time.label
-    model1.time.pad_left != model2.time.pad_left
-    model1.time.pad_right != model2.time.pad_right
     model1.time.pad_left.plain == model2.time.pad_left.plain
     model1.time.pad_right.plain == model2.time.pad_right.plain
     set([h.name for h in model1.history_set]) == set([h.name for h in model2.history_set])
     set([h.name for h in model1.statehists]) == set([h.name for h in model2.statehists])
     for attr in (attr for attr,v in model1.__dict__.items() if isinstance(v, History)):
-        hist_compare(getattr(model1, attr), getattr(model2, attr))
+        hist_compare(getattr(model1, attr), getattr(model2, attr), shallow=shallow)
 
 @pytest.mark.slow
 def test_model_theano(clean_theano_dir):

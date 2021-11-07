@@ -543,14 +543,17 @@ def _test_history_serialization(cgshim):
     spikes3(60)
     hist_compare(spikes1, spikes3)
 
-def hist_compare(hist1, hist2):
+def hist_compare(hist1, hist2, shallow=False):
     assert hist1.name == hist2.name
     assert hist1.shape == hist2.shape
     assert hist1.dtype == hist2.dtype
     assert hist1.iterative == hist2.iterative
     assert hist1.symbolic == hist2.symbolic
     assert hist1.locked == hist2.locked
-    assert hist1.cur_tidx != hist2.cur_tidx
+    if shallow:
+        assert hist1.cur_tidx == hist2.cur_tidx
+    else:
+        assert hist1.cur_tidx != hist2.cur_tidx
     assert hist1.cur_tidx.plain == hist2.cur_tidx.plain
     assert hist1._latest_tap <= 0 # No pending symbolic updates
     assert hist2._latest_tap <= 0
@@ -571,12 +574,19 @@ def hist_compare(hist1, hist2):
         assert np.all(hist1._num_data.get_value() == hist2._num_data.get_value())
         assert hist1._num_data.get_value() is not hist2._num_data.get_value()
     assert hist1.time.unit._REGISTRY is hist2.time.unit._REGISTRY
-    assert hist1.time is not hist2.time
+    if shallow:
+        assert hist1.time is hist2.time
+    else:
+        assert hist1.time is not hist2.time
     assert hist1.time == hist2.time
     assert hist1.time.label == hist2.time.label
     assert np.all(hist1.time.stops_array == hist2.time.stops_array)
-    assert type(hist1.time.pad_left)  != type(hist2.time.pad_left)
-    assert type(hist1.time.pad_right) != type(hist2.time.pad_right)
+    if shallow:
+        assert type(hist1.time.pad_left)  == type(hist2.time.pad_left)
+        assert type(hist1.time.pad_right) == type(hist2.time.pad_right)
+    else:
+        assert type(hist1.time.pad_left)  != type(hist2.time.pad_left)
+        assert type(hist1.time.pad_right) != type(hist2.time.pad_right)
     # Since `pad_left` is a index interval, it can compare equal between
     # histories if the time step is the same
     if hist1.dt == hist2.dt:
