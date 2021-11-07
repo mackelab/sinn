@@ -636,6 +636,9 @@ class History(HistoryBase, abc.ABC):
     # _update_pos_stop: Optional[int]=PrivateAttr(None)
         # When computing a symbolic update, store the absolute start and end time indices
         # Used to detect recursion; see _compute_up_to
+    _numeric: Optional[History]=PrivateAttr(None)
+        # Used by `numeric` property to store a reference to the non-symbolic version 
+        # of the history, ensuring that the same instance is reused if called again.
     @property
     def input_list(self):
         raise DeprecationWarning
@@ -1481,6 +1484,11 @@ class History(HistoryBase, abc.ABC):
             super().clear()
         except AttributeError:
             pass
+            
+        # TODO:Numeric: Remove this once `numeric()` returns a DataView
+        #   (At present we invalidate the _numeric cache when the data changes,
+        #   so that subsequent calls to `numeric` get the updated data.)
+        self._numeric = None
 
     def lock(self, warn=True):
         """
@@ -1632,6 +1640,35 @@ class History(HistoryBase, abc.ABC):
     def interpolate(self, interp_times):
         raise NotImplementedError("`interpolate` not implemented for histories "
                                   "of type '{}'.".format(type(self).__name__))
+
+    # TODO: numeric() should return a `DataView`.
+    #    This would keep the data in sync, and also avoid a copy.
+    #    TODO: When doing this, also search for comments "TODO:Numeric"
+    @property  # @property makes sense if we return DataView, since that's cheap
+    def numeric(self) -> History:
+        """
+        Return a non-symbolic history. Motivating usage: converting a
+        symbolic history for data analysis pipeline.
+        
+        .. Note:: At present this returns a copy (if the history is symbolic)
+           or the history itself (if it is not symbolic). In the future this
+           may change to returning a `DataView`, which would have the
+           advantage of always keeping the data in sync. (Instead of the current
+           inconsistent "in sync if non-symbolic.)
+        """
+        if not self.symbolic:
+            return self
+        elif not self._numeric:
+            # NB: It's important that multiple calls to `numeric` always
+            #     return the same history; Model.numeric relies on this.
+            if isinstance(self._num_data, tuple):
+                data = tuple(d.get_value() for d in self._num_data)
+            else:
+                data = self._num_data.get_value()
+            self._numeric =  type(self)(
+                name=f"{self.name}_numeric", data=data,
+                symbolic=False, template=self)
+        return self._numeric
 
     def _compute_up_to(self, tidx, start='symbolic'):
         """
@@ -3073,6 +3110,11 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
             raise RuntimeError("Tried to modify locked history {}."
                                .format(self.name))
 
+        # TODO:Numeric: Remove this once `numeric()` returns a DataView
+        #   (At present we invalidate the _numeric cache when the data changes,
+        #   so that subsequent calls to `numeric` get the updated data.)
+        self._numeric = None
+                               
         time = self.time
 
         if shim.isscalar(neuron_spikes):
@@ -3763,6 +3805,11 @@ class Series(ConvolveMixin, History):
             in :py:mod:`shim`'s :py:attr:`symbolic_updates` dictionary  for
             `_num_tidx` and `_num_data`.
         """
+        
+        # TODO:Numeric: Remove this once `numeric()` returns a DataView
+        #   (At present we invalidate the _numeric cache when the data changes,
+        #   so that subsequent calls to `numeric` get the updated data.)
+        self._numeric = None
 
         # If both tidx and value are numeric, figure out the expected
         # shape of `value` and broadcast if necessary
@@ -4393,6 +4440,7 @@ class AutoHist:
 # Views
 #######################################
 
+# DEVNOTE: We would like to use this as return type to `History.numeric`.
 class DataView(HistoryBase):
     """
     Gives direct access to the history data.

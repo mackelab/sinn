@@ -1070,6 +1070,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # Store RNG updates generated in `get_advance_updates`, so that
         # `reseed_RNGs` knows which RNG need to be seeded.
         # Structure: _rng_updates[cache_key][rng] = [upd1, upd2, ...]
+    _numeric: Optional[Model]=PrivateAttr(None)
+        # Used by `numeric` property to store a reference to the non-symbolic version 
+        # of the model, ensuring that the same instance is reused if called again.
     connections: Optional[Dict[str,str]]
         # Used to connect histories between submodels; mostly used for deserialization
         # Defines connection pairs for histories in different submodels
@@ -1177,6 +1180,26 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # m.initialize()
         return m
 
+    # TODO: Return views (first requires History.numeric to return DataView)
+    #    TODO: When doing this, also search for comments "TODO:Numeric"
+    @property
+    def numeric(self):
+        """
+        Copy the model, setting each history to be numeric (i.e. non-symbolic).
+        
+        .. Caution:: At present, converting from a symbolic to a numeric model
+           will copy histories, and therefore integration functions will no
+           longer work.
+           The plan is eventually for `numeric` to return a view, which would
+           make it very cheap and also preserve integration.
+        """
+        if not self._numeric:
+            update = {hnm: h.numeric for hnm, h in self.nonnested_histories.items()}
+            for subnm, submodel in self.nested_models.items():
+                update[subnm] = submodel.numeric
+            self._numeric = self.copy(update=update)
+        return self._numeric
+        
     def dict(self, *args, exclude=None, **kwargs):
         # Remove pending update functions from the dict – they are only used
         # to pass information from the metaclass __new__ to the class __init__,
@@ -2549,6 +2572,10 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # Perform update
         self.params._set_values(pending_params)
         self.set_submodel_params()
+        # TODO:Numeric: Remove this once `numeric()` returns a View
+        #   (At present we invalidate the _numeric cache when the data or params
+        #   change, so that subsequent calls to `numeric` get the updated data.)
+        self._numeric = None
 
         ## Cleanup: clear histories/compiled fns if necessary
 
@@ -2717,6 +2744,12 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             assert(curtidx >= -1)
 
             if curtidx < endtidx:
+                # TODO:Numeric: Remove this once `numeric()` returns a View
+                #   (At present we invalidate the _numeric cache when the data changes,
+                #   so that subsequent calls to `numeric` get the updated data.)
+                self._numeric = None
+                for h in self.history_set:
+                    h._numeric = None
                 self._advance(histories)(curtidx, endtidx+1)
                 # _advance applies the updates, so should get rid of them
                 self.theano_reset()
