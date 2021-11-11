@@ -1397,6 +1397,7 @@ class History(HistoryBase, abc.ABC):
 
     @property
     def time_stops(self):
+        "Return `get_time_stops` with default arguments (all stops, excluding padding)."
         return self.get_time_stops()
         # return self.time.unpadded_stops_array
     times = time_stops  # In interactive sessions `time_stops` is too verbose
@@ -1428,7 +1429,7 @@ class History(HistoryBase, abc.ABC):
             warn(f"History '{self.name}' has no computed values. Returning "
                  "empty traces.")
             return [[] for xidx in np.ndindex(self.shape)]
-        times = self.time.unpadded_stops_array[:self.cur_tidx-self.t0idx]
+        times = self.time.unpadded_stops_array[:self.cur_tidx-self.t0idx+1]
         return [[(t, data[(tidx, *xidx)]) for tidx, t in enumerate(times)]
                 for xidx in np.ndindex(self.shape)]
 
@@ -1471,8 +1472,9 @@ class History(HistoryBase, abc.ABC):
             raise TypeError(
                 "`clear` requires a numeric (not symbolic) time index.")
         elif after is not None:
-            after = self.time.Index(after)
-            self._num_tidx.set_value(after)
+            if after < self._num_tidx.get_value():
+                after = self.time.Index(after)
+                self._num_tidx.set_value(after)
         else:
             self._num_tidx.set_value(self.t0idx - 1)
         # object.__setattr__(self, '_sym_tidx', self._num_tidx)
@@ -2658,7 +2660,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
             # We use `scipy` here because we want true numpy arrays
         if init_data is None:
             # csrdata, csridcs, csrindptr = mtydata, mtyidcs, mtyindptr
-            cur_datatidx = self.time.t0idx - 1
+            cur_datatidx = self.time.axis_to_data_index(self.time.t0idx) - 1
         elif shim.issparse(init_data):
             try:
                 assert shim.eval(init_data.shape[1]) == nneurons, \
@@ -2686,7 +2688,7 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
                 shim.shared(init_csr.indices, name=f'{self.name} (indices)'),
                 shim.shared(init_csr.indptr, name=f'{self.name} (indptr)')
                 )
-        cur_tidx = shim.shared(np.array(cur_datatidx-self.time.t0idx,
+        cur_tidx = shim.shared(np.array(self.time.data_to_axis_index(cur_datatidx),
                                         dtype=self.time.index_nptype),
                                name = 't idx (' + self.name + ')',
                                symbolic = self.symbolic)
@@ -2702,19 +2704,22 @@ class Spiketrain(ConvolveMixin, PopulationHistory, History):
             raise ValueError("[Spiketrain.clear()]: Cannot specify both "
                              "`init_data` and `after`.")
         elif after is not None:
+            if after >= self._num_tidx.get_value():
+                super().clear(after=after)
+                return  # EARLY EXIT
             after = self.time.Index(after)
-            init_data = self.get_data_trace(time_slice=np.s_[:after],
+            init_data = self.get_data_trace(time_slice=np.s_[:after+1],
                                        include_padding=True)
-        assert not shim.pending_update(self._num_data)
+        assert not shim.pending_update(self._num_data), f"Cannot clear: there are pending updates for {self.name}._num_data."
         data, tidx = self.initialized_data(init_data)
         if after is not None:
             try:
-                assert self.time.Index(shim.eval(tidx)) == after
+                assert self.time.Index(shim.eval(tidx)) == after, f"{self.name}.clear(): `initialized_data` returned the wrong shape"
             except TooCostly:
                 pass
         else:
             try:
-                assert self.time.Index(shim.eval(tidx)) == self.t0idx - 1
+                assert self.time.Index(shim.eval(tidx)) == self.t0idx - 1, f"{self.name}.clear(): `initialized_data` returned the wrong shape"
             except TooCostly:
                 pass
         # Update _num_data; _num_tidx is updated by super().clear()
@@ -3592,7 +3597,11 @@ class Series(ConvolveMixin, History):
                 # Use shared variables as-is
                 data_length = len(init_data.get_value())
                 Δtidx = self.time.padded_length - data_length
-                assert Δtidx == 0
+                if Δtidx != 0:
+                    raise NotImplementedError(
+                        "Within `initialized_data`, shared variables are used "
+                        "as-is, but must have exactly the series length "
+                        "(including padding).")
                 data = init_data
             else:
                 data_length = len(init_data)

@@ -107,6 +107,15 @@ def _test_history_series_indexing(cgshim):
     assert x1copy._taps is not x1._taps
     # assert x1copy._sym_data is x1copy._num_data
     # assert x1copy._sym_tidx is x1copy._num_tidx
+    
+    # Clear method
+    x1copy.clear(after=10)  # NB: 10 is kept; indices 11 and beyond are invalidated
+    assert x1copy.cur_tidx == 10
+    assert x1copy.data.shape == (11,)+x1copy.shape  # NB: Indices are 0–10
+    assert np.all(x1copy.data == x1.data[:11])
+    x1copy.clear()
+    assert x1copy.cur_tidx == -1
+    assert x1copy.data.shape == (0,)+x1copy.shape
 
 def _test_history_spiketrain_indexing(cgshim):
     shim.load(cgshim)
@@ -189,6 +198,15 @@ def _test_history_spiketrain_indexing(cgshim):
     assert x1copy._taps is not x1._taps
     # assert x1copy._sym_data is x1copy._num_data
     # assert x1copy._sym_tidx is x1copy._num_tidx
+    
+    # Clear method
+    x1copy.clear(after=10)  # NB: 10 is kept; indices 11 and beyond are invalidated
+    assert x1copy.cur_tidx == 10
+    assert x1copy.data.shape == (11,)+x1copy.shape  # NB: Indices are 0–10
+    assert (x1copy.data != x1.data[:11]).size == 0
+    x1copy.clear()
+    assert x1copy.cur_tidx == -1
+    assert x1copy.data.shape == (0,)+x1copy.shape
 
 # test_history_spiketrain_indexing()
 
