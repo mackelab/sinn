@@ -73,7 +73,7 @@ def _test_model(cgshim):
     assert {"λ", "spikes"} <= set(model.dict())
                       
     # Compute series history a few time steps
-    model.λ(2*model.dt)
+    model.λ(2*model.dt)      # OPTIMIZE: This and the next call take 30s
 
     # Compute series history to a particular time step, using model time axis
     model.λ(model.time.Index(3))
@@ -103,13 +103,11 @@ def _test_model(cgshim):
     assert not isinstance(model_shallow_copy.spikes[4], NotComputed)
     hist_compare(model.spikes, model_shallow_copy.spikes, shallow=True)
     assert model_deep_copy.spikes[4] == NotComputed.NotYetComputed
-    # Shallow copied model can be integrated
-    model_shallow_copy.integrate(5)
-    # Deep copied model can be integrated
-    model_deep_copy.integrate(5)
+    # Integration tests for copies are below
 
     end = model.time.Index(64)
     # end = model.time.tnidx
+    model.integrate(6)
     model.integrate(end, histories=(model.spikes,))
     
     # Sanity check on the time bin assignments:
@@ -124,6 +122,13 @@ def _test_model(cgshim):
     # Here we detect if at any point, indptr jumps by more than 10% of the total number of spikes
     assert np.all(np.diff(indptr) < 0.1*n_spikes)
     
+    # These integrations take time (new update functions must be compiled),
+    # so we do them at the end of the Theano test
+    # Shallow copied model can be integrated
+    model_shallow_copy.integrate(5)
+    # Deep copied model can be integrated
+    model_deep_copy.integrate(5)
+
     ## Serialization ##
 
     # FIXME: Support & test serialization of the CSMProperties attribute of Theano sparse array
@@ -148,13 +153,63 @@ def _test_model(cgshim):
 
     # Update functions of the deserialized work as expected
 
-    # TODO: Reset RNG and confirm that result is identical to original
     assert len(model2.spikes._num_data[0].get_value()) == 0
         # Ensure that clearing model2 removed all data, so that when we test
         # with 'sum' below, we aren't just reusing deserialized values.
     model2.integrate(30, histories=model2.spikes)
-    assert model2.spikes.data.sum() > 0
+    assert model2.spikes.data.sum() > 0        # Update functions of deserialized model work as expected
+  
+def _test_model_rng(cgshim):
+    # All sinn imports need to be guarded inside functions, to avoid
+    # shim state being messed up
+    shim.load(cgshim)
+
+    mtb.typing.freeze_types()
+    import sinn
+    cd_to_test_dir()
+    mtb.serialize.config.trust_all_inputs = True
+
+    from model_test_classes import TestModel
+    from sinn.histories import TimeAxis, NotComputed
+    from history_test import hist_compare
     
+    TimeAxis.time_unit = ureg.s
+    TimeAxis.time_step = np.float64(2**-6)
+
+    ## Test that fixing the RNG seed makes the output reproducible ##
+    model = TestModel(params = TestModel.Parameters(λ0=10, τ=1, σ=25, N=7),
+                      time = TimeAxis(min=0, max=1),
+                      rng = shim.config.RandomStream(505))  # Setting state here is equiv to setting with `reseed_rngs`
+    model.integrate(4)
+    λdata = model.λ.data.copy()
+    model.clear()
+    model.reseed_rngs(505)  # Reset RNG to the same state
+    model.integrate(4)
+    assert np.all(λdata == model.λ.data)
+    
+    ## Test that we aren't just resetting to the original state: using a different seed actually produces different data
+    # NB: We had a bug were the RNGs were only reseedable after the model had been integrated.
+    # Thus this test uses a fresh model, to ensure those also have the expected behaviour
+    model2 = TestModel(params = TestModel.Parameters(λ0=10, τ=1, σ=25, N=7),
+                      time = TimeAxis(min=0, max=1),
+                      rng = shim.config.RandomStream(505))
+    assert len(model2._rng_updates) == 0  # Clean, non-integrated state
+    model2.reseed_rngs(405)  # Set RNG to a different state than we used for model 1
+    model2.integrate(4)
+    assert np.all(λdata != model2.λ.data)  # Data are different
+    
+    # Also works with a different seed (i.e., we aren't just ignoring seed and using whatever the original state was)
+    model.clear()
+    model.reseed_rngs(305)
+    model.integrate(4)
+    assert np.all(λdata != model.λ.data)  # Seed 305 generated different data than seed 505
+    assert np.all(model2.λ.data != model.λ.data)  # Seed 305 generated different data than seed 405
+    λdata_305 = model.λ.data.copy()
+    model.clear()
+    model.reseed_rngs(305)  # Reset RNG to the same state
+    model.integrate(4)
+    assert np.all(λdata_305 == model.λ.data)  # Resetting RNG seed produced the same data
+                      
 def _test_accumulator(cgshim):
     # All sinn imports need to be guarded inside functions, to avoid
     # shim state being messed up
@@ -176,7 +231,7 @@ def _test_accumulator(cgshim):
     TimeAxis.time_step = np.float64(2**-6)
 
     model = TestModel(params = TestModel.Parameters(λ0=10, τ=1, σ=25, N=7),
-                      time = TimeAxis(min=0, max=10),
+                      time = TimeAxis(min=0, max=3),
                       rng = shim.config.RandomStream(505))
                       
     @model.accumulate
@@ -232,10 +287,16 @@ def model_compare(model1, model2, shallow=False):
 @pytest.mark.slow
 def test_model_theano(clean_theano_dir):
     return _test_model('theano')
-    
 @pytest.mark.slow
 def test_model_numpy():
     return _test_model('numpy')
+    
+@pytest.mark.slow
+def test_model_rng_theano(clean_theano_dir):
+    return _test_model_rng('theano')
+@pytest.mark.slow
+def test_model_rng_numpy():
+    return _test_model_rng('numpy')
     
 @pytest.mark.slow
 def test_accumulator_theano(clean_theano_dir):

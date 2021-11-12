@@ -1159,8 +1159,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     """
     # TODO: Use the new PrivateAttr instead of __slots__
     __slots__ = ('graph_cache', 'compile_cache', '_pymc', #'batch_start_var', 'batch_size_var',
-                 '_num_tidx', '_curtidx_var', '_stoptidx_var', '_batchsize_var',
-                 '_advance_updates', '_compiled_advance_fns')
+                 '_num_tidx', '_curtidx_var', '_stoptidx_var', '_batchsize_var')
+                 # '_advance_updates', '_compiled_advance_fns')
     _num_tidx_objs: dict=PrivateAttr({})
         # _num_tidx objects are shared variables which can be used in
         # computational graphs. This caching attribute ensures the same object
@@ -1168,7 +1168,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # computational graph. Since the variable depends on which state
         # histories are unlocked, a different object is returned for different
         # unlocked history combinations (hence the need for a dict)
-    _rng_updates  : defaultdict=PrivateAttr(
+    _advance_updates     : dict=PrivateAttr({})
+    _compiled_advance_fns: dict=PrivateAttr({})
+    _rng_updates         : defaultdict=PrivateAttr(
         defaultdict(lambda: defaultdict(lambda: [])))
         # Store RNG updates generated in `get_advance_updates`, so that
         # `reseed_RNGs` knows which RNG need to be seeded.
@@ -1280,6 +1282,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
     def copy(self, *args, deep=False, **kwargs):
         if deep:
+            if args or kwargs:
+                raise NotImplementedError("Arguments to Pydantic's `copy` are "
+                                          "not supported by Model's deep copy.")
             return self.copy_with_resize()
         else:
             m = super().copy(*args, deep=deep, **kwargs)
@@ -1566,8 +1571,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         object.__setattr__(self, 'compile_cache',
                            CompiledGraphCache('.sinn.graphcache/models.compilecache'))
             # TODO: Add other dependencies within `sinn.models` ?
-        object.__setattr__(self, '_advance_updates', {})
-        object.__setattr__(self, '_compiled_advance_fns', {})
+        # object.__setattr__(self, '_advance_updates', {})
+        # object.__setattr__(self, '_compiled_advance_fns', {})
             # Keys of these dictionary are tuples of histories passed to `integrate(histories=…)`,
             # i.e. extra histories to integrate along with the state.
             # Values of the first are update dictionaries
@@ -2660,6 +2665,14 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 rng.state_updates = rng.state_updates[len(stashed_state_updates):]
                     # NB: `reseed_rng` has changed the state updates, so we can't
                     #     just reuse cur_state_updates.
+                    
+        # Finish by reseeding the current RNG state
+        # This may not be necessary when `_rng_updates` is not empty, but it
+        # is conceivable at least that the updates to `stashed_state_updates`
+        # would depend on the extra values in `cur_state_updates`.
+        # Certainly, when `_rng_updates` is empty, this line is essential,
+        # since otherwise `seed` is never used anywhere.
+        shim.reseed_rng(rng, seed)
 
         # The code below did not require stashing RNG updates, but only works
         # with RandomStream (MRG updates cannot as easily be identified in
@@ -2677,7 +2690,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         #                 v.set_value(np.random.RandomState(int(old_r_seed)),
         #                             borrow=True)
 
-    def update_params(self, new_params, clear: bool=True, **kwargs):
+    def update_params(self, new_params: ModelParams, clear: bool=True, **kwargs):
         """
         Update model parameters.
         Clears any kernel cache which depends on these parameters.
@@ -2688,7 +2701,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
 
         Parameters
         ----------
-        new_params: self.Parameters | dict
+        new_params: ModelParams | dict
             New parameter values.
         clear:
             True (default): Also clear unlocked histories.
@@ -2699,7 +2712,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         """
 
         ## Parse new parameters into the format defined by self.Parameters
-        if isinstance(new_params, self.Parameters):
+        if isinstance(new_params, ModelParams):
             new_params = new_params.dict()
         if len(kwargs) > 0:
             new_params = {**new_params, **kwargs}
@@ -3046,6 +3059,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         for h in self.history_set:
             h._stash()  # Stash unfinished symbolic updates
         updates_stash = shim.get_updates()
+        # NB: If _rng_updates is in sync with _advance_updates (as it should), the assertion below always succeeds
         assert len(self._rng_updates[cache_key]) == 0, "`sinn.Model._rng_updates should only be modified by `get_advance_updates`"
         shim.reset_updates()
 
