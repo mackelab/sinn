@@ -378,6 +378,11 @@ class SubmodelParams(ModelParams):
         """
         return super()._set_values(
             values, must_set_all_params=False, must_not_set_other_params=False, borrow=borrow)
+            
+    # Override the Pydantic default, which fails because when it doesn't find attributes in __fields__
+    def __repr_args__(self) -> 'ReprArgs':
+        return [(k, v) for k, v in self.__dict__.items()
+                if getattr(self.__fields__.get(k), 'field_info.repr', True)]
 
 ModelParams.update_forward_refs()
 SubmodelParams.update_forward_refs()
@@ -1446,6 +1451,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         else:
             new_param_type = _concrete_parameter_classes[param_type_key]
         self.Parameters = new_param_type
+        self.params = new_param_type.parse_obj(self.params)
 
     def set_submodel_params(self):
         """
