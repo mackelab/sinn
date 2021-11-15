@@ -1846,7 +1846,9 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     # Pickling infrastructure
     # Reference: https://docs.python.org/3/library/pickle.html#pickle-state
     def __getstate__(self):
-        raise NotImplementedError
+        raise NotImplementedError("Sinn models don't currently support pickling.")
+        # NB: Since we support serialization to JSON, this must be possible,
+        #     it's just a matter of implementation and testing.
         # # Clear the nonstate histories: by definition these aren't necessary
         # # to recover the state, but they could store huge intermediate data.
         # # Pickling only stores history data up to their `cur_tidx`, so by

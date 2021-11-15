@@ -1171,11 +1171,13 @@ class History(HistoryBase, abc.ABC):
                             .format(type(other)))
 
     # Pickling infrastructure
+    # NB: Since we support serialization to JSON, pickling must be possible,
+    #     it's just a matter of implementation and testing.
     def __getstate__(self):
-        raise NotImplementedError
+        raise NotImplementedError(f"Pickling is not yet supported for {type(self)}.")
 
     def __setstate__(self, state):
-        raise NotImplementedError
+        raise NotImplementedError(f"Pickling is not yet supported for {type(self)}.")
 
     @property
     def repr_np(self):
@@ -2425,7 +2427,7 @@ class PopulationHistory(PopulationHistoryBase):
                                      for pop_slice, sum_el in zip(self.pop_slices, summand)],
                                     axis=-1)
         else:
-            raise NotImplementedError
+            raise NotImplementedError("`pop_add` is not supported for Theano objects")
 
     def pop_radd(self, summand, neuron_term):
         return self.pop_add(neuron_term, summand)
@@ -2437,7 +2439,7 @@ class PopulationHistory(PopulationHistoryBase):
                                      for pop_slice, mul_el in zip(self.pop_slices, multiplier)],
                                     axis=-1)
         else:
-            raise NotImplementedError
+            raise NotImplementedError("`pop_mul` is not supported for Theano objects")
 
     def pop_rmul(self, multiplier, neuron_term):
         return self.pop_mul(neuron_term, multiplier)
@@ -2449,7 +2451,7 @@ class PopulationHistory(PopulationHistoryBase):
                                        for pop_slice, div_el in zip(self.pop_slices, divisor)],
                                      axis = -1)
         else:
-            raise NotImplementedError
+            raise NotImplementedError("`pop_div` is not supported for Theano objects")
 
 class Spiketrain(ConvolveMixin, PopulationHistory, History):
     """

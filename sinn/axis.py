@@ -2295,7 +2295,7 @@ class SequenceMapping(BaseModel):
         ------------
         AxisIndexDelta
         """
-        raise NotImplementedError
+        raise NotImplementedError("An index delta is only sensible with constant steps. Use `RangeMapping`.")
 
     def data_index_slice(self, axis_slice, include_padding=False):
         """

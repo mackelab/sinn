@@ -449,7 +449,7 @@ class Kernel(ConvolveMixin, com.KernelBase, abc.ABC):
                 _kernel_func = lambda t: (self.eval(t) + self.eval(t+refhist.dt)) / 2
             else:
                 # TODO: higher order integration with trapeze or simpson's rule
-                raise NotImplementedError
+                raise NotImplementedError("Currently the only supported values for `config.integration_precision` are 1 and 2.")
 
             ## Kernel functions can only be defined to take times, so we wrap
             ## the function
