@@ -6,6 +6,7 @@ Copyright 2017-2020 Alexandre René
 """
 import numpy as np
 from typing import Any
+# from pydantic import PrivateAttr  # Not used, but we would like to
 
 import theano_shim as shim
 import mackelab_toolbox.utils as utils
@@ -66,8 +67,15 @@ class ConvolveMixin(CachedOperation):
     # __slots__ = ('_conv_cache',)
         # Setting __slots__ causes TypeError: multiple bases have instance lay-out conflict
         # We use the same pattern as `CachedOperation`
-    # FIXME: I think this is creating a class variable
-    _conv_cache : Any
+    # _conv_cache : com.OpCache=PrivateAttr(None)  # <-- What we would like to
+        # Under the hood, PrivateAttr uses __slots__, so it runs into the same
+        # problem as above. It seems that __slots__ and mixins don't mix so well.
+    _conv_cache : Any  # Workaround: just declare _conv_cache for purposes of source code documentation
+                       # sunder prevents `_conv_cache` being added to the BaseModel's fields
+                       # – this is also why we need to use `object.__setattr__` below
+            # Store convolutions so they don't have to be recalculated.
+            # The dictionary is keyed by the id of the kernels with which
+            # convolutions were computed.
 
     def __init__(self, *args, **kwargs):
         """
@@ -82,9 +90,6 @@ class ConvolveMixin(CachedOperation):
         object.__setattr__(self, '_conv_cache', com.OpCache(self, self.convolve_batch_wrapper))
         # object.__setattr__(self, '_conv_cache',
         #                    com.OpCache(self, self.convolve_batch_wrapper))
-            # Store convolutions so they don't have to be recalculated.
-            # The dictionary is keyed by the id of the kernels with which
-            # convolutions were computed.
         self.cached_ops.append(self._conv_cache)
             # Add this cache to the objects's list of cached ops.
             # This allows it to be pruned later, if one of the op's members changes
