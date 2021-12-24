@@ -378,7 +378,7 @@ class Axis(BaseModel, abc.ABC):
     # (e.g. when unpickling multiple indices from the same Axis).
     
     def __getnewargs_ex__(self):
-        return (), {'pickle_key':self._pickle_key}
+        return (), {'pickle_key':getattr(self, '_pickle_key', None)}  # _pickle_key is not exported if it is equal to its default
     
     # Adapted from Pydantic's __getstate__/__setstate__ to add _skip_init
     # https://github.com/samuelcolvin/pydantic/issues/1116
