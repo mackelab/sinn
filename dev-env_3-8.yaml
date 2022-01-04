@@ -11,11 +11,7 @@ dependencies:
   - tqdm   # Planned to be moved to dev packages
   - tabulate
   - packaging
-  - pip
-  - pip:
-    - odictliteral
-    - "theano_shim @ git+https://github.com/mackelab/theano_shim"
-    - "mackelab-toolbox[iotools,typing,theano,utils,parameters] @ git+https://github.com/mackelab/mackelab-toolbox"
+  
 # Development packages
 # These are required either to run tests or examples, or build documentation
   - ipykernel
@@ -29,3 +25,12 @@ dependencies:
   - matplotlib
   - seaborn
   - pandas
+  
+# pip packages
+  - pip
+  - pip:
+    - odictliteral
+    - "theano_shim @ git+https://github.com/mackelab/theano_shim"
+    - "mackelab-toolbox[iotools,typing,theano,utils,parameters] @ git+https://github.com/mackelab/mackelab-toolbox"
+    # Development packages (pip)
+    - sphinxcontrib.mermaid

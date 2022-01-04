@@ -38,8 +38,18 @@ setup(
 
       extras_require = {
         'dev': [
+            'ipykernel',
+            'pandas',
+            'pint',
             'pytest',
-            'pytest-xdist'
+            'pytest-xdist',
+            'quantities',
+            'matplotlib',
+            'scipy',
+            'seaborn',
+            'sphinx',
+            'sphinxcontrib.mermaid',
+            'xarray'
         ]
       }
      )
