@@ -589,6 +589,11 @@ class History(HistoryBase, abc.ABC):
     ----------------
     locked: bool
       History's locked status
+    tags: set[str]
+      Set of arbitrary string tags. These are not used by *sinn* itself, but
+      can be used to associate additional flags to a history. For example,
+      user code could use tags like 'observed' and 'latent', and treat histories
+      differently based on their presence.
     data : [depends on subclass]
       Initialization data.
 
@@ -658,6 +663,7 @@ class History(HistoryBase, abc.ABC):
     # Attributes which are not generally set with __init__
     # (but may be used when reconstructing from a dict())
     locked      : bool = False
+    tags        : Set[str] = set()
 
     # ------------
     # Hack to allow property setters

@@ -441,6 +441,12 @@ def _test_history_serialization(cgshim):
     ##Empty histories
     # TODO: Test with non default values for symbolic, iterative, etc.
     hist_compare(series1, series2)
+    
+    series1.tags |= {"this is a tag"}; series2 = Series.parse_raw(series1.json())
+    hist_compare(series1, series2)
+    series1.tags |= {"and another"}; series2 = Series.parse_raw(series1.json())
+    hist_compare(series1, series2)
+    series1.tags.clear()
 
     # Series
     A = np.array([-0.1, 1.8, 0.5])
@@ -464,6 +470,7 @@ def _test_history_serialization(cgshim):
     series2.update_function = x1_upd_withinputs
     series3 = series2.copy()
     series3.update_function = x1_λupd
+    series3.tags |= {"this is a tag", "and another"}
 
     series1.pad(1)
     series1[-1] = 0
@@ -568,6 +575,7 @@ def hist_compare(hist1, hist2, shallow=False):
     assert hist1.iterative == hist2.iterative
     assert hist1.symbolic == hist2.symbolic
     assert hist1.locked == hist2.locked
+    assert hist1.tags == hist2.tags
     if shallow:
         assert hist1.cur_tidx == hist2.cur_tidx
     else:
