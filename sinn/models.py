@@ -3454,13 +3454,13 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # # Replace all time indices in updates by expressions depending on anchor
         # updates = {k: shim.graph.clone(g, replace=tidxsubs)
         #            for k,g in updates.items()}
-        # Ensure that we actually do have a time dependence somewhere in the
-        # graph we send to scan
-        all_exprs = chain(outputs, output_taps_replace, updates.values())
-        if not set(shim.graph.symbolic_inputs(all_exprs)) & set(tidx_vars):
-                #    | set([anchor_tidx])) ):
-            raise RuntimeError("The updates dictionary has no dependency on "
-                               "any time index. Cannot build a scan graph.")
+        # # Ensure that we actually do have a time dependence somewhere in the
+        # # graph we send to scan
+        # all_exprs = chain(outputs, output_taps_replace, updates.values())
+        # if not set(shim.graph.symbolic_inputs(all_exprs)) & set(tidx_vars):
+        #         #    | set([anchor_tidx])) ):
+        #     raise RuntimeError("The updates dictionary has no dependency on "
+        #                        "any time index. Cannot build a scan graph.")
         all_exprs = chain(outputs, output_taps_replace, updates.values())
         # The test below could be used if anchor_tidx were a brand new variable, and not just self.num_tidx (which can be added by `accumulate`)
         # assert not set(shim.graph.symbolic_inputs(all_exprs)) & set([anchor_tidx]), \
