@@ -20,7 +20,8 @@ import sys
 import abc
 import copy
 from collections import namedtuple, OrderedDict, ChainMap, defaultdict
-from collections.abc import Sequence, Iterable, Callable
+from collections.abc import (
+    Sequence as Sequence_, Iterable, Callable as Callable_, Generator as Generator_)
 from warnings import warn, filterwarnings, catch_warnings
 import logging
 import inspect
@@ -39,7 +40,7 @@ from pydantic.fields import ModelField
 from pydantic.utils import lenient_issubclass
 from typing import (
     Any, Optional, Union, ClassVar, Type, Tuple, Sequence, List, Dict, Set,
-    Generator, Callable as CallableT, NamedTuple)
+    Generator, Callable as Callable, NamedTuple)
 from types import SimpleNamespace
 from dataclasses import dataclass
 from parameters import ParameterSet
@@ -397,7 +398,7 @@ SubmodelParams.update_forward_refs()
 class PendingFunction:
     hist_nm: str
     inputs : List[str]
-    fn : CallableT
+    fn : Callable
     def __call__(self, model, k):
         return self.fn(model, k)
 @dataclass
@@ -871,7 +872,7 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
             # NB: Existence of '_derivative' attribute indicates that function is a derivative
             #     Value of '_derivative' attribute indicates of which variable it is the derivative
             # if isinstance(obj, Callable) and hasattr(obj, '_derivative'):
-            if isinstance(obj, Callable) and hasattr(obj, '_derivative'):
+            if isinstance(obj, Callable_) and hasattr(obj, '_derivative'):
                 if not set(obj._derivative) <= set(_hist_identifiers):
                     raise TypeError(
                         f"Derivative function is intended for histories "
@@ -996,7 +997,7 @@ def _get_inherited_derivatives(cls):
         for obj in cls.__dict__.values():
             # NB: Existence of '_derivative' attribute indicates that function is a derivative
             #     Value of '_derivative' attribute indicates of which variable it is the derivative
-            if isinstance(obj, Callable) and hasattr(obj, '_derivative'):
+            if isinstance(obj, Callable_) and hasattr(obj, '_derivative'):
                 derivatives[obj._derivative] = obj
     return derivatives
 
@@ -2899,9 +2900,11 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             The value 'all' can be used to specify integrating all histories.
         """
         end = upto
-        if histories == 'all':
+        if isinstance(histories, Generator_):
+            histories = tuple(histories)  # We will iterate more than once
+        elif histories == 'all':
             histories = tuple(h for h in self.unlocked_nonstatehists)
-        if isinstance(histories, History):
+        elif isinstance(histories, History):
             histories = (histories,)
         # Remove any locked histories
         if any(h.locked for h in histories):
@@ -2930,7 +2933,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                     if not endtidx.in_bounds:
                         assert endtidx < hist.time.t0idx  # I don't see how we could exceed the upper bound
                         warn("History '{}' was locked before being computed. "
-                             "Integration aborted.".format(hist.name))
+                             "Integration aborted.".format(hist.name))  # No need to abort explicitly: `curtidx` will be larger than `endtidx`
                     else:
                         warn("Locked history '{}' is only provided "
                              "up to t={}. Output will be truncated."
@@ -3151,7 +3154,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         return self.map_over_time(None, shim.get_updates(), curtidx, stoptidx-1, histories)
 
     def map_over_time(self,
-                      f        : Optional[CallableT[[sinn.axis.SymbolicAbstractAxisIndex], Any]]=None,
+                      f        : Optional[Callable[[sinn.axis.SymbolicAbstractAxisIndex], Any]]=None,
                       updates  : Optional[dict]=None,
                       curtidx  =None,
                       stoptidx =None,
@@ -3323,7 +3326,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # Compute anchored expression graphs for `f`.
         if f:
             f_outputs = f(anchor_tidx_typed+1)
-            if not isinstance(f_outputs, Sequence):
+            if not isinstance(f_outputs, Sequence_):
                 f_outputs = [f_outputs]
         else:
             f_outputs = []
@@ -3814,7 +3817,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 # TODO: Add mechanism for optionally also advancing history
                 cost, updates = self.map_over_time(
                     fwrap, shim.get_updates(), curtidx, curtidx+batchsize)
-                if isinstance(cost, Sequence):  # NB: `map_over_time` unpacks length one lists, so cost must have at least length 2
+                if isinstance(cost, Sequence_):  # NB: `map_over_time` unpacks length one lists, so cost must have at least length 2
                     raise RuntimeError("An accumulated function should return "
                                        f"exactly one value; received {len(cost)}.")
                 # Return the final cost, along with the rest of the updates
