@@ -379,7 +379,7 @@ class SubmodelParams(ModelParams):
         """
         return super()._set_values(
             values, must_set_all_params=False, must_not_set_other_params=False, borrow=borrow)
-            
+
     # Override the Pydantic default, which fails because when it doesn't find attributes in __fields__
     def __repr_args__(self) -> 'ReprArgs':
         return [(k, v) for k, v in self.__dict__.items()
@@ -421,7 +421,7 @@ def updatefunction(hist_nm: str, inputs: List[str]):
     def dec(upd_fn):
         return PendingUpdateFunction(hist_nm, inputs, upd_fn)
     return dec
-    
+
 # TODO: Automatic translation to an update function
 # If `f` is a derivative, then x[k+1] = x[k] + f(k)*Δt
 def derivative(hist_nm: Union[str, Tuple[str]], inputs: List[str]):
@@ -430,10 +430,10 @@ def derivative(hist_nm: Union[str, Tuple[str]], inputs: List[str]):
     the specified history `hist_nm`. When the model is initialized, the
     corresponding update function (i.e. ``h[t] = h[t-1] + f(t)*Δt``) will be
     attached to `hist_nm`.
-    
+
     .. warning:: This decorator still WIP and highly experimental. At present
        it just adds it to the '_derivatives' dictionary.
-    
+
     Planned:
     - Construct `updatefunction` from a `derivative` using Euler scheme.
     - Support for different integration schemes. Explicit schemes which
@@ -450,7 +450,7 @@ def derivative(hist_nm: Union[str, Tuple[str]], inputs: List[str]):
         f._inputs = inputs
         return f
     return dec
-    
+
 @dataclass
 class DerivativesView:
     model: Model
@@ -468,7 +468,7 @@ __model_docstring_footer__ = textwrap.dedent("""
        will work for NumPy RNGs, but not symbolic ones.""")
 
 class ModelMetaclass(pydantic.main.ModelMetaclass):
-    
+
     def _param_typedict(params: Union[Model,Type[Model],Type[ModelParams]]):
         if isinstance(params, Model) or lenient_issubclass(params, Model):
             params = params.Parameters
@@ -478,7 +478,7 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
                     yield f"{θnm}.{subθnm}", subT
             else:
                 yield θnm, field.type_
-    
+
     # Partial list of magical things done by this metaclass:
     # - Transform a plain `Parameters` class into a pydantic BaseModel
     #   (specifically, ModelParams)
@@ -581,6 +581,8 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         #       for b in bases[::-1])))
 
         # Resolve string annotations (for 3.9+, annotations are always strings)
+        # FIXME: Does it make sense to resolve these with the namespace of metacls.__module__ ?
+        #        A few lines below we do this again with the module’s namespace, which seems more sensible
         for nm, annot in annotations.items():
             if isinstance(annot, str):
                 # To support forward refs, we leave as-is if undefined
@@ -608,20 +610,22 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         # (Sometimes, even if types are in the namespace, they still
         #  get set as strings in the annotations)
         # c.f. pydantic.main.update_forward_refs & pydantic.typing.evaluate_forwardref
-        globalns = sys.modules[namespace['__module__']].__dict__
+        globalns = sys.modules[namespace.get('__module__', 'builtins')].__dict__
+            # We don’t really insist on searching builtins: alternative would be
+            # to make `globalns` an empty dict if '__module__' isn’t defined.
         for nm, T in annotations.items():
             if isinstance(T, str):
                 annotations[nm] = globalns.get(T, T)
 
         ## `time` parameter
-        if 'time' not in annotations:
+        if 'time' not in all_annotations:
             annotations['time'] = TimeAxis
         else:
-            if (not isinstance(annotations['time'], type)
-                or not issubclass(annotations['time'], DiscretizedAxis)):
+            if (not isinstance(all_annotations['time'], type)
+                or not issubclass(all_annotations['time'], DiscretizedAxis)):
                 raise TypeError(
                     "`time` attribute must be an instance of `DiscretizedAxis` "
-                    f"(it has type {type(annotations['time'])}); "
+                    f"(it has type {type(all_annotations['time'])}); "
                     "in general `histories.TimeAxis` is an appropriate type.")
         # ## 'initialize' method
         # if not isinstance(namespace.get('initialize', None), Callable):
@@ -629,6 +633,8 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         #                     "method.")
 
         # Add module-level annotations
+
+        # --- From this point: annotations -> new_annotations ---
 
         # TODO?: Allow derived classes to redefine histories ?
         #        We would just need to add the inherited kernel/hists after this loop
@@ -866,7 +872,7 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
                         f"Update function {obj.fn} is intended for history "
                         f"{obj.hist_nm}, but it is not defined in the model.")
                 _pending_update_functions[obj.hist_nm] = obj
-                
+
         # Add derivatives to dict
         for obj in namespace.values():
             # NB: Existence of '_derivative' attribute indicates that function is a derivative
@@ -882,7 +888,7 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         # Add AutoHist validators
         for nm, obj in list(namespace.items()):
             if isinstance(obj, AutoHist):
-                T = annotations.get(nm, None)
+                T = all_annotations.get(nm, None)
                 # Determine a name for the initialization validator which
                 # doesn't match something already in `namespace`
                 fn_nm = f"autohist_{nm}"
@@ -926,7 +932,7 @@ class ModelMetaclass(pydantic.main.ModelMetaclass):
         namespace['_pending_update_functions'] = list(_pending_update_functions.values())
         namespace['_derivatives'] = _derivatives
         namespace['__annotations__'] = new_annotations
-        
+
         # Kind of a hacky way
 
         newcls = super().__new__(metacls, cls, bases, namespace)
@@ -1183,7 +1189,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # Structure: _rng_updates[cache_key][rng] = [upd1, upd2, ...]
     _derivatives_view: Optional[DerivativesView]=PrivateAttr(None)
     _numeric: Optional[Model]=PrivateAttr(None)
-        # Used by `numeric` property to store a reference to the non-symbolic version 
+        # Used by `numeric` property to store a reference to the non-symbolic version
         # of the model, ensuring that the same instance is reused if called again.
     connections: Optional[Dict[str,str]]
         # Used to connect histories between submodels; mostly used for deserialization
@@ -1297,7 +1303,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             m._base_initialize(shallow_copy=not deep)
             # m.initialize()
             return m
-        
+
     def copy_with_resize(self, T: Optional[Union[float,PintValue]]=None,
                          _desc: Optional[dict]=None) -> Model:
         """
@@ -1346,7 +1352,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     def numeric(self):
         """
         Copy the model, setting each history to be numeric (i.e. non-symbolic).
-        
+
         .. Caution:: At present, converting from a symbolic to a numeric model
            will copy histories, and therefore integration functions will no
            longer work.
@@ -1359,7 +1365,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 update[subnm] = submodel.numeric
             self._numeric = self.copy(update=update)
         return self._numeric
-        
+
     def dict(self, *args, exclude=None, **kwargs):
         # Remove pending update functions from the dict – they are only used
         # to pass information from the metaclass __new__ to the class __init__,
@@ -1509,7 +1515,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         """
         self.update_parameters_type()
         self.set_submodel_params()
-        
+
         self._derivatives_view = DerivativesView(self)
 
         if update_functions is not None:
@@ -1937,7 +1943,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     @property
     def derivatives(self) -> DerivativesView:
         return self._derivatives_view
-        
+
     @property
     def initial_value(self) -> Dict[str,Tensor]:
         return {nm: h[:self.t0] for nm, h in self.nested_histories.items()}
@@ -2674,7 +2680,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 rng.state_updates = rng.state_updates[len(stashed_state_updates):]
                     # NB: `reseed_rng` has changed the state updates, so we can't
                     #     just reuse cur_state_updates.
-                    
+
         # Finish by reseeding the current RNG state
         # This may not be necessary when `_rng_updates` is not empty, but it
         # is conceivable at least that the updates to `stashed_state_updates`
@@ -3346,6 +3352,13 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 "`map_over_time` requires that symbolic "
                 "updates only look forward one time step.\nProblematic "
                 f"histories: {problem_hists}")
+                # The reason for that is that it's not clear how we should
+                # deal with forward taps >1: the scan still iterates 1 step at
+                # a time, so should we shift all time points back by k-1 ?
+                # More likely, a user would expect that we use Theano's support
+                # for forward taps – but then what do we do with other,
+                # uncomputed histories ? In short, it starts breaking our
+                # fundamental causality assumption.
 
         ## Construction of outputs_info (init vals & taps) ##
 
@@ -3378,10 +3391,10 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         # since the others don't change during iteration, we can keep indexing
         # directly into their `_num_data`.
 
-        # Create the list of output variables for the scan step
+        # Create the list of output variables for the scan step.
         # Negative tap variables (which appear within the graph of positive
-        # tap variables) are substituted in by the `onestep` function below
-        # `clone` replaces time index vars by expressions depending on the anchor
+        # tap variables) are substituted in by the `onestep` function below.
+        # `clone` replaces time index vars by expressions depending on the anchor.
         # outputs = [shim.graph.clone(h[h._num_tidx+1], replace=tidxsubs)
         outputs += [h._taps[h.time.Index.Delta(1)] for h in output_hists]
         for o, h in zip(outputs[len(f_outputs):], output_hists):
@@ -3417,7 +3430,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             else:
                 scantaps = [k-1 for k in negtaps]
                 init_length = -min(scantaps)
-                assert init_length > 0, "create scan -> output_info -> init length must be positive"
+                assert init_length > 0, "create scan (map_over_time) -> output_info -> init length must be positive"
                 # NB: This will add any intermediate tap to the history's _taps;
                 #     I'm undecided on whether this is desired or not.
                 # NB: We take care here that the instances in output_taps_replace
@@ -3706,7 +3719,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
     # ---------------------------------------------
     # Helper decorators for building cost functions
 
-    def accumulate_with_offset(self, start_offset):
+    def accumulate_with_offset(self, start_offset, init_discard=0):
         """
         .. Note:: In most cases, it will is easier to use one of the helper functions,
            either `accumulate` or `static_accumulate`.
@@ -3742,6 +3755,14 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                    any history updates. This means dependencies on parameters are
                    likely lost.
                    Equivalent to `static_accumulate`.
+            Note that we don't have a clear use case for values ≥ 2, and do not
+            support them at this time.
+        init_discard: Axis index delta | int
+            When computing the total cost, discard this many initial points.
+            This can be used to integrate the model symbolic for some number of
+            steps before starting the accumulator. If the resulting cost will be
+            differentiated, it's usually a good idea to include such steps to
+            ensure that BPTT produces sensible gradient estimates.
 
         Raises
         ------
@@ -3794,6 +3815,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                     f"but is defined with {len(sig.parameters)}.")
             # Create the accumulator function
             def accumulated_function(curtidx, batchsize):
+                # NB: batch_size is actually batch_size+init_discard – i.e., the number of time points summed is batchsize-init_discard
                 # Ensuring this works correctly with shared variables would require more testing
                 assert shim.is_pure_symbolic(curtidx) and shim.is_pure_symbolic(batchsize)
                 # time index anchor
@@ -3816,7 +3838,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 # Convert the step update to an iteration
                 # TODO: Add mechanism for optionally also advancing history
                 cost, updates = self.map_over_time(
-                    fwrap, shim.get_updates(), curtidx, curtidx+batchsize)
+                    fwrap, shim.get_updates(), curtidx, curtidx+batchsize)  
                 if isinstance(cost, Sequence_):  # NB: `map_over_time` unpacks length one lists, so cost must have at least length 2
                     raise RuntimeError("An accumulated function should return "
                                        f"exactly one value; received {len(cost)}.")
@@ -3825,7 +3847,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
                 # cost_total = updates.pop(cost)
                 # shim.remove_update(cost)
                 shim.add_updates(updates)
-                res = cost.sum()
+                Δ = getattr(init_discard, 'plain', init_discard)
+                res = cost[Δ:].sum()
                 res.name = f"accumulated_{f.__name__}"  # TODO: Allow setting different var name (e.g. "loss")
                 return res, shim.get_updates()
             # Attach the offset, so functions can determine by how much they
@@ -3843,7 +3866,7 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
             return accumulated_function
         return wrapped_acc
 
-    def accumulate(self, f):
+    def accumulate(self, f=None, init_discard=0):
         """
         Accumulate (sum) the function f. Histories are integrated along
         with the accumulator.
@@ -3865,12 +3888,19 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         >>> @model.accumulate
         >>> def mse(tidx):
         >>>     return (y[tidx] - model.x(tidx))**2
+        >>> @model.accumulate(init_discard=2)  # Discard the first two time points
+        >>> def mse2(tidx):
+        >>>     return (y[tidx] - model.x(tidx))**2
+        Both examples will integrate the same date points, but the result
+        returned by ``mse2`` will include two terms less than ``mse``.
         """
-        acc_f = self.accumulate_with_offset(1)(f)
+        if f is None:
+            return partial(self.accumulate, init_discard=init_discard)
+        acc_f = self.accumulate_with_offset(1, init_discard)(f)
         acc_f._accumulator = 'accumulate'
         return acc_f
 
-    def static_accumulate(self, f):
+    def static_accumulate(self, f=None, init_discard=0):
         """
         Accumulate (sum) the function f without updating histories.
         In `f`, use [] indexing to make sure you don't accidentally
@@ -3887,6 +3917,8 @@ class Model(pydantic.BaseModel, abc.ABC, metaclass=ModelMetaclass):
         *Not* intended for:
             - Training the model dynamics.
         """
-        acc_f = self.accumulate_with_offset(0)(f)
+        if f is None:
+            return partial(self.static_accumulate, init_discard=init_discard)
+        acc_f = self.accumulate_with_offset(0, init_discard)(f)
         acc_f._accumulator = 'static_accumulate'
         return acc_f
