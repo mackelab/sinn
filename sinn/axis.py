@@ -973,6 +973,8 @@ class SpecAxisIndexMeta(type):
             '__new__'         : metacls.__clsnew__,
             '__init__'        : metacls.__clsinit__,
             '__reduce__'      : metacls._instance___reduce__,
+            '__copy__'        : metacls._instance___copy__,
+            '__deepcopy__'    : metacls._instance___deepcopy__,
             '__eq__'          : metacls._instance___eq__,
             '__ne__'          : metacls._instance___ne__,
             '__add__'         : metacls._instance___add__,
@@ -1033,10 +1035,10 @@ class SpecAxisIndexMeta(type):
                                 )
             cls.Absolute.Absolute = cls.Absolute
 
-    # The __new__ method for the generated class
-    # Doesn't actually do anything, but allows subclasses to specialize __init__
+    # Actual method of SpecAxisIndexMeta
     @staticmethod
-    def __clsnew__(cls, *a, **kw):
+    def super(cls):
+        "Use instead of super()"
         # Problem: super(cls, cls) -> Infinite recursion
         # HACK: Find the first cls in MRO for which the *next* cls is not AxisIndex
         #       (super() starts looking at the next class)
@@ -1045,7 +1047,13 @@ class SpecAxisIndexMeta(type):
             if not issubclass(C, AbstractAxisIndexDelta):
                 break
             base = C
-        new = super(base, cls).__new__
+        return  super(base, cls)
+        
+    # The __new__ method for the generated class
+    # Doesn't actually do anything, but allows subclasses to specialize __init__
+    @staticmethod
+    def __clsnew__(cls, *a, **kw):
+        new = SpecAxisIndexMeta.super(cls).__new__
         if new is object.__new__:
             # object.__new__ takes no argument
             return new(cls)
@@ -1119,6 +1127,18 @@ class SpecAxisIndexMeta(type):
         return (SpecAxisIndexMeta.unpickle_axisindex,
                 (self.axis, symbolic, delta),
                 self.__getstate__())
+                
+    # We need to define copy methods, because we subclass numpy.number which defines them.
+    # Otherwise copy.copy(axisindex) returns a plain Numpy scalar
+    def _instance___copy__(self):
+        cls = type(self)
+        c = SpecAxisIndexMeta.super(cls).__copy__(self)
+        return cls(c)
+        
+    def _instance___deepcopy__(self, memo):
+        cls = type(self)
+        c = SpecAxisIndexMeta.super(cls).__deepcopy__(self, memo)
+        return cls(c)
     
     # ------------------
     # Instance methods & attributes
